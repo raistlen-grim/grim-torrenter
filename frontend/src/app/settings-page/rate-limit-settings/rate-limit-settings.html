@@ -1,0 +1,146 @@
+<fieldset [formGroup]="form()">
+  <legend class="heading-font">Rate limiting</legend>
+  <p class="group-hint">Global caps shared across every torrent's combined traffic.</p>
+
+  <div class="setting-row">
+    <div class="setting-label">
+      <label for="uploadLimitKibPerSec">Upload limit</label>
+      <p class="setting-description">Caps combined upload speed across all torrents.</p>
+    </div>
+    <div class="rate-control">
+      <p-inputgroup class="rate-input">
+        <p-inputnumber
+          inputId="uploadLimitKibPerSec"
+          formControlName="uploadLimitKibPerSec"
+          [min]="0"
+          [showButtons]="false"
+          inputStyleClass="rate-input-field"
+        />
+        <p-inputgroup-addon>KiB/s</p-inputgroup-addon>
+      </p-inputgroup>
+      <label class="unlimited-toggle">
+        <p-checkbox inputId="uploadUnlimited" formControlName="uploadUnlimited" [binary]="true" />
+        Unlimited
+      </label>
+    </div>
+  </div>
+
+  <div class="setting-row">
+    <div class="setting-label">
+      <label for="downloadLimitKibPerSec">Download limit</label>
+      <p class="setting-description">Caps combined download speed across all torrents.</p>
+    </div>
+    <div class="rate-control">
+      <p-inputgroup class="rate-input">
+        <p-inputnumber
+          inputId="downloadLimitKibPerSec"
+          formControlName="downloadLimitKibPerSec"
+          [min]="0"
+          [showButtons]="false"
+          inputStyleClass="rate-input-field"
+        />
+        <p-inputgroup-addon>KiB/s</p-inputgroup-addon>
+      </p-inputgroup>
+      <label class="unlimited-toggle">
+        <p-checkbox inputId="downloadUnlimited" formControlName="downloadUnlimited" [binary]="true" />
+        Unlimited
+      </label>
+    </div>
+  </div>
+
+  <div class="setting-row">
+    <div class="setting-label">
+      <label for="burstSeconds">Burst allowance</label>
+      <p class="setting-description">
+        How many seconds' worth of unused bandwidth can accumulate and be spent at once, for
+        traffic that comes in bursts rather than steadily. 0 uses the default of 1 second.
+        Applies to whichever limit is currently active, including the scheduled window below.
+      </p>
+    </div>
+    <p-inputgroup class="rate-input">
+      <p-inputnumber inputId="burstSeconds" formControlName="burstSeconds" [min]="0" [showButtons]="false" inputStyleClass="rate-input-field" />
+      <p-inputgroup-addon>sec</p-inputgroup-addon>
+    </p-inputgroup>
+  </div>
+
+  <div class="schedule-section">
+    <div class="setting-row">
+      <div class="setting-label">
+        <label for="scheduleEnabled">Scheduled off-hours limits</label>
+        <p class="setting-description">
+          Use a different upload/download limit during a daily time window - e.g. higher limits
+          overnight.
+        </p>
+      </div>
+      <p-toggleswitch inputId="scheduleEnabled" formControlName="scheduleEnabled" />
+    </div>
+
+    <div class="setting-row">
+      <div class="setting-label">
+        <label for="scheduleStart">Window</label>
+        <p class="setting-description">Applies every day. A window crossing midnight (e.g. 23:00 to 07:00) works.</p>
+      </div>
+      <div class="time-range">
+        <input
+          type="time"
+          id="scheduleStart"
+          formControlName="scheduleStart"
+          class="time-input"
+          aria-label="Off-hours window start time"
+        />
+        <span class="time-range-sep">to</span>
+        <input
+          type="time"
+          id="scheduleEnd"
+          formControlName="scheduleEnd"
+          class="time-input"
+          aria-label="Off-hours window end time"
+        />
+      </div>
+    </div>
+
+    <div class="setting-row">
+      <div class="setting-label">
+        <label for="scheduleUploadLimitKibPerSec">Upload limit during window</label>
+      </div>
+      <div class="rate-control">
+        <p-inputgroup class="rate-input">
+          <p-inputnumber
+            inputId="scheduleUploadLimitKibPerSec"
+            formControlName="scheduleUploadLimitKibPerSec"
+            [min]="0"
+            [showButtons]="false"
+            inputStyleClass="rate-input-field"
+          />
+          <p-inputgroup-addon>KiB/s</p-inputgroup-addon>
+        </p-inputgroup>
+        <label class="unlimited-toggle">
+          <p-checkbox inputId="scheduleUploadUnlimited" formControlName="scheduleUploadUnlimited" [binary]="true" />
+          Unlimited
+        </label>
+      </div>
+    </div>
+
+    <div class="setting-row">
+      <div class="setting-label">
+        <label for="scheduleDownloadLimitKibPerSec">Download limit during window</label>
+      </div>
+      <div class="rate-control">
+        <p-inputgroup class="rate-input">
+          <p-inputnumber
+            inputId="scheduleDownloadLimitKibPerSec"
+            formControlName="scheduleDownloadLimitKibPerSec"
+            [min]="0"
+            [showButtons]="false"
+            inputStyleClass="rate-input-field"
+          />
+          <p-inputgroup-addon>KiB/s</p-inputgroup-addon>
+        </p-inputgroup>
+        <label class="unlimited-toggle">
+          <p-checkbox inputId="scheduleDownloadUnlimited" formControlName="scheduleDownloadUnlimited" [binary]="true" />
+          Unlimited
+        </label>
+      </div>
+    </div>
+  </div>
+</fieldset>

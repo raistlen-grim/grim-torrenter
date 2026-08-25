@@ -1,0 +1,71 @@
+<p-dialog
+  [visible]="visible()"
+  (visibleChange)="visibleChange.emit($event)"
+  [modal]="true"
+  [dismissableMask]="true"
+  header="Seeding limits"
+  styleClass="seeding-limits-dialog"
+>
+  @if (loaded()) {
+    <form [formGroup]="form" class="seeding-limits-form">
+      <p class="torrent-name">{{ torrentName() }}</p>
+
+      <div class="limit-row">
+        <label for="ratioMode">Ratio limit</label>
+        <div class="limit-control">
+          <p-select
+            inputId="ratioMode"
+            formControlName="ratioMode"
+            [options]="ratioModeOptions()"
+            optionLabel="label"
+            optionValue="value"
+            styleClass="limit-mode-select"
+            [appendTo]="'body'"
+          />
+          <p-inputnumber
+            formControlName="ratioValue"
+            aria-label="Custom ratio limit"
+            [min]="0.01"
+            [minFractionDigits]="1"
+            [maxFractionDigits]="2"
+            [showButtons]="false"
+            suffix="x"
+            inputStyleClass="limit-value-field"
+          />
+        </div>
+      </div>
+
+      <div class="limit-row">
+        <label for="timeMode">Time limit</label>
+        <div class="limit-control">
+          <p-select
+            inputId="timeMode"
+            formControlName="timeMode"
+            [options]="timeModeOptions()"
+            optionLabel="label"
+            optionValue="value"
+            styleClass="limit-mode-select"
+            [appendTo]="'body'"
+          />
+          <p-inputnumber
+            formControlName="timeValueHours"
+            aria-label="Custom time limit, in hours"
+            [min]="0.1"
+            [minFractionDigits]="0"
+            [maxFractionDigits]="1"
+            [showButtons]="false"
+            suffix=" hours"
+            inputStyleClass="limit-value-field"
+          />
+        </div>
+      </div>
+
+      <div class="dialog-actions">
+        <p-button label="Cancel" severity="secondary" [text]="true" (onClick)="close()" [disabled]="saving()" />
+        <p-button label="Save" (onClick)="save()" [loading]="saving()" />
+      </div>
+    </form>
+  } @else {
+    <p class="loading-hint">Loading…</p>
+  }
+</p-dialog>

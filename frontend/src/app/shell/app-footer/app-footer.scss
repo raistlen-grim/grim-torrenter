@@ -1,0 +1,29 @@
+/* Pinned to the bottom of the viewport (not just the end of the document) - an opaque
+ * background is needed since it now floats over scrolled content rather than sitting in
+ * normal document flow after it; --p-content-background is Aura's own light/dark-aware
+ * "page content" background token, so this stays correct in both themes without a
+ * hand-picked color. .shell-main's bottom padding (app.scss) keeps real content clear of
+ * the space this now occupies. */
+.shell-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-6);
+  padding: var(--space-4) var(--space-8);
+  border-top: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+  font-size: 0.75rem;
+  opacity: 0.6;
+  position: fixed;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 30;
+  background: var(--p-content-background);
+}
+
+.shell-footer .pi {
+  font-size: 0.7rem;
+}
+
+.free-space {
+  margin-left: auto;
+}

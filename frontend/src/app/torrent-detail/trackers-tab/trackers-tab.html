@@ -1,0 +1,28 @@
+@if (trackers().length === 0) {
+  <p class="empty-message">No trackers — this torrent relies on DHT.</p>
+} @else {
+  <ul class="tracker-list">
+    @for (tracker of trackers(); track tracker.url) {
+      <li class="tracker-card">
+        <div class="tracker-url">{{ tracker.url }}</div>
+        <div class="tracker-meta">
+          <span class="tier-badge">Tier {{ tracker.tier }}</span>
+          <app-status-indicator
+            [icon]="statusDisplay(tracker.status).icon"
+            [label]="statusDisplay(tracker.status).label"
+            [tone]="statusDisplay(tracker.status).tone"
+          />
+        </div>
+        @if (tracker.lastError) {
+          <div class="error-detail">{{ tracker.lastError }}</div>
+        }
+        <div class="tracker-stats tabular-nums">
+          <span>{{ tracker.seeders ?? '—' }} seeders</span>
+          <span>{{ tracker.leechers ?? '—' }} leechers</span>
+          <span>Last {{ tracker.lastAnnouncedAt ? (tracker.lastAnnouncedAt | date: 'short') : '—' }}</span>
+          <span>Next {{ tracker.nextAnnounceAt ? (tracker.nextAnnounceAt | date: 'short') : '—' }}</span>
+        </div>
+      </li>
+    }
+  </ul>
+}

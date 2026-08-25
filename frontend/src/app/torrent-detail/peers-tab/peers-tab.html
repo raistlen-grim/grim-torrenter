@@ -1,0 +1,33 @@
+@if (peers().length === 0) {
+  <p class="empty-message">No connected peers.</p>
+} @else {
+  <ul class="peer-list">
+    @for (peer of peers(); track peer.address + ':' + peer.port) {
+      <li class="peer-card">
+        <div class="peer-address tabular-nums">{{ peer.address }}:{{ peer.port }}</div>
+        <div class="peer-status">
+          <app-status-indicator
+            [icon]="peer.peerChoking ? 'pi-lock' : 'pi-lock-open'"
+            [label]="'They ' + (peer.peerChoking ? 'choke us' : 'unchoked us')"
+            [tone]="peer.peerChoking ? 'dim' : 'active'"
+          />
+          <app-status-indicator
+            [icon]="peer.amChoking ? 'pi-lock' : 'pi-lock-open'"
+            [label]="'We ' + (peer.amChoking ? 'choke them' : 'unchoked them')"
+            [tone]="peer.amChoking ? 'dim' : 'active'"
+          />
+        </div>
+        <div class="peer-rates tabular-nums">
+          <span [pTooltip]="peer.downloadRateWindows | formatRateWindows" tooltipPosition="top">
+            <i class="pi pi-arrow-down" aria-hidden="true"></i>
+            {{ peer.downloadedBytes | formatBytes }} &mdash; {{ peer.downloadRateBytesPerSec | formatRate }}
+          </span>
+          <span [pTooltip]="peer.uploadRateWindows | formatRateWindows" tooltipPosition="top">
+            <i class="pi pi-arrow-up" aria-hidden="true"></i>
+            {{ peer.uploadedBytes | formatBytes }} &mdash; {{ peer.uploadRateBytesPerSec | formatRate }}
+          </span>
+        </div>
+      </li>
+    }
+  </ul>
+}
