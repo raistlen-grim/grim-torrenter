@@ -1,6 +1,0 @@
-<div class="piece-grid" role="img" [attr.aria-label]="summary()">
-  @for (piece of pieces(); track $index) {
-    <span class="piece" [class.piece-in-progress]="piece === 'IN_PROGRESS'" [class.piece-complete]="piece === 'COMPLETE'"></span>
-  }
-</div>
-<p class="piece-summary tabular-nums">{{ summary() }}</p>
