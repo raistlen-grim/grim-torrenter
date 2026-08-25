@@ -1,0 +1,53 @@
+.shell-sidebar {
+  position: sticky;
+  top: var(--shell-header-height);
+  align-self: start;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-6) var(--space-3);
+  min-width: 180px;
+  max-height: calc(100vh - var(--shell-header-height) - var(--shell-footer-height));
+  overflow-y: auto;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-left: 2px solid transparent;
+  color: inherit;
+  text-decoration: none;
+  font-size: 0.875rem;
+  opacity: 0.75;
+}
+
+.nav-item:hover,
+.nav-item:focus-visible {
+  opacity: 1;
+  background: color-mix(in srgb, currentColor 6%, transparent);
+}
+
+/* Selection is a 2px accent left edge, never a filled row - style guide §06's own rule,
+ * applied here too for consistency. */
+.nav-item.active {
+  opacity: 1;
+  border-left-color: var(--p-primary-color);
+  color: var(--p-primary-color);
+}
+
+.nav-label {
+  flex: 1;
+}
+
+.nav-count {
+  opacity: 0.6;
+  font-size: 0.75rem;
+}
+
+.settings-item {
+  margin-top: var(--space-6);
+  padding-top: var(--space-4);
+  border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+}

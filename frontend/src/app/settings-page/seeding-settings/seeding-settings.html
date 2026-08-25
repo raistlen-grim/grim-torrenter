@@ -1,0 +1,51 @@
+<fieldset [formGroup]="form()">
+  <legend class="heading-font">Seeding limits</legend>
+  <p class="group-hint">
+    Automatically stop a torrent once it's seeded enough - whichever enabled limit is reached
+    first. A per-torrent override is available from each torrent's right-click menu.
+  </p>
+
+  <div class="setting-row">
+    <div class="setting-label">
+      <label for="ratioLimitEnabled">Ratio limit</label>
+      <p class="setting-description">Stop seeding once upload has reached this multiple of download.</p>
+    </div>
+    <div class="rate-control">
+      <p-inputgroup class="rate-input">
+        <p-inputnumber
+          formControlName="ratioLimit"
+          aria-label="Ratio limit value"
+          [min]="0"
+          [minFractionDigits]="1"
+          [maxFractionDigits]="2"
+          [showButtons]="false"
+          inputStyleClass="rate-input-field"
+        />
+        <p-inputgroup-addon>x</p-inputgroup-addon>
+      </p-inputgroup>
+      <p-toggleswitch inputId="ratioLimitEnabled" formControlName="ratioLimitEnabled" />
+    </div>
+  </div>
+
+  <div class="setting-row">
+    <div class="setting-label">
+      <label for="timeLimitEnabled">Time limit</label>
+      <p class="setting-description">Stop seeding once a torrent has been complete for this long.</p>
+    </div>
+    <div class="rate-control">
+      <p-inputgroup class="rate-input">
+        <p-inputnumber
+          formControlName="timeLimitHours"
+          aria-label="Time limit value"
+          [min]="0"
+          [minFractionDigits]="0"
+          [maxFractionDigits]="1"
+          [showButtons]="false"
+          inputStyleClass="rate-input-field"
+        />
+        <p-inputgroup-addon>hours</p-inputgroup-addon>
+      </p-inputgroup>
+      <p-toggleswitch inputId="timeLimitEnabled" formControlName="timeLimitEnabled" />
+    </div>
+  </div>
+</fieldset>

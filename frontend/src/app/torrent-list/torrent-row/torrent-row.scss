@@ -1,0 +1,30 @@
+// Deliberately minimal - real visual design is pending the reference app.
+
+:host(.row-pending) {
+  opacity: 0.6;
+  transition: opacity 0.15s ease;
+}
+
+/* display:flex was previously set directly on the <td> itself - overriding a table-cell's
+ * own display takes it out of normal table box generation (the browser has to invent an
+ * anonymous table-cell wrapper around it instead), and its computed content height can then
+ * differ from sibling <td>s by a pixel or two, visibly misaligning this column's top/bottom
+ * border. Flex now lives on an inner <div> instead, so the <td> itself stays a plain
+ * table-cell like every other column. The invisible <p-contextMenu> (see torrent-row.html)
+ * is a sibling of that div, not one of its flex items, for the same reason. */
+.actions-inner {
+  display: flex;
+  gap: var(--space-1);
+}
+
+.error-detail {
+  margin-top: var(--space-1);
+  font-size: 0.8rem;
+  color: var(--p-red-500, #dc2626);
+}
+
+.byte-progress {
+  margin-top: var(--space-1);
+  font-size: 0.8rem;
+  color: var(--p-text-muted-color, #6b7280);
+}

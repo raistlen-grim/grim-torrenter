@@ -1,0 +1,44 @@
+<fieldset [formGroup]="form()">
+  <legend class="heading-font">Network</legend>
+
+  <div class="setting-row">
+    <div class="setting-label">
+      <label for="dhtEnabled">DHT</label>
+      <p class="setting-description">
+        Find peers for magnet links and trackerless torrents, and back up trackers that are down. Takes effect
+        after the app restarts.
+      </p>
+    </div>
+    <p-toggleswitch inputId="dhtEnabled" formControlName="dhtEnabled" />
+  </div>
+
+  <div class="setting-row">
+    <div class="setting-label">
+      <label for="acceptIncomingConnections">Accept incoming connections</label>
+      <p class="setting-description">
+        Let other peers connect to this client directly, not just the other way around. Takes effect after the
+        app restarts.
+      </p>
+    </div>
+    <p-toggleswitch inputId="acceptIncomingConnections" formControlName="acceptIncomingConnections" />
+  </div>
+
+  <div class="setting-row">
+    <div class="setting-label">
+      <label for="encryptionMode">Protocol encryption</label>
+      <p class="setting-description">
+        Obfuscates connections to resist basic ISP traffic shaping. "Preferred" falls back to a plain connection
+        for peers that don't support it; "Required" refuses those peers outright. Applies to new connections
+        immediately.
+      </p>
+    </div>
+    <p-select
+      inputId="encryptionMode"
+      formControlName="encryptionMode"
+      [options]="encryptionModeOptions"
+      optionLabel="label"
+      optionValue="value"
+      styleClass="encryption-mode-select"
+    />
+  </div>
+</fieldset>
