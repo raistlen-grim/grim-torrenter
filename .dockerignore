@@ -1,0 +1,7 @@
+**/target/
+**/node_modules/
+**/dist/
+**/.angular/
+.git/
+design_docs/
+*.md

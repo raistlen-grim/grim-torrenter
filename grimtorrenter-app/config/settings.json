@@ -1,0 +1,12 @@
+{
+  "acceptIncomingConnections" : true,
+  "dhtEnabled" : true,
+  "downloadRateLimitBytesPerSec" : 0,
+  "encryptionMode" : "PREFERRED",
+  "rateLimitScheduleEnabled" : false,
+  "rateLimitScheduleEnd" : "07:00",
+  "rateLimitScheduleStart" : "23:00",
+  "scheduledDownloadRateLimitBytesPerSec" : 0,
+  "scheduledUploadRateLimitBytesPerSec" : 0,
+  "uploadRateLimitBytesPerSec" : 0
+}

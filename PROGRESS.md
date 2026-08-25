@@ -1,0 +1,239 @@
+# GrimTorrenter — Progress
+
+Snapshot of what's built and what's left. Rationale for any decision
+mentioned here lives in `design_docs/` (one file per decision, linked
+below) — this file is a status/TODO list, not a source of truth for *why*.
+
+## Current state
+
+**Phase 1 (MVP) and Phase 2 (usable day to day) are functionally
+complete**, per the phased scope in [[0009-phased-scope]]:
+
+- Full engine: bencode, metainfo parsing, HTTP + UDP tracker announce
+  with multi-tracker/tier fallback, peer wire protocol, piece/block
+  management with SHA-1 verification, disk I/O (single + multi-file
+  torrents), sequential piece selection, real seeding (choking algorithm,
+  block serving).
+- Resume state persists across restarts — a restart re-verifies on-disk
+  data in the background and picks torrents back up in whatever
+  running/paused state they were left in ([[0026-resume-state-persistence]]).
+- Magnet link support is fully usable end-to-end via embedded trackers —
+  BEP 10 extension protocol, BEP 9 `ut_metadata` fetch, wired into the
+  same `addTorrent` pipeline every `.torrent` upload uses
+  ([[0028-magnet-links-and-dht]]).
+- Web UI: upload a `.torrent` file or paste a magnet link, live
+  progress/rate/peer-count/upload display, pause/resume/remove (with an
+  optional "delete downloaded files too"), optimistic "Processing" row
+  and an explicit "already added" signal on upload
+  ([[0029-optimistic-upload-feedback]]).
+- **Mainline DHT (BEP 5)** — node ID, k-bucket routing table, KRPC over
+  UDP (ping/find_node/get_peers/announce_peer), bootstrap, iterative node
+  lookup ([[0028-magnet-links-and-dht]]). Wired into `TorrentEngine` for
+  trackerless magnets (peer discovery for a magnet with no usable
+  tracker, and re-seeding a trackerless torrent's known peers on
+  restore), **and as a backstop for regular (tracker-bearing) torrents
+  whose trackers are all currently unreachable**
+  ([[0036-dht-backstop-for-tracker-bearing-torrents]]). A `GET
+  /api/dht/status` endpoint exposes node count.
+- Full per-torrent detail view: tabbed Pieces/Files/Peers/Trackers, each
+  a self-contained on-demand endpoint
+  ([[0031-torrent-detail-endpoints]]), plus per-entry pending/error
+  feedback on Pause/Resume/Remove ([[0033-per-entry-action-feedback]]).
+- **Visual design pass** — done, against a user-supplied style guide
+  reconciled with vanilla PrimeNG
+  ([[0032-style-guide-and-primeng-theme]], [[0033-per-entry-action-feedback]],
+  [[0034-ink-weight-status-display]],
+  [[0035-spacing-table-density-and-empty-state]]).
+- Re-adding a previously-removed-but-data-kept torrent now reuses and
+  re-verifies its existing data in the background instead of silently
+  re-downloading it from scratch
+  ([[0037-reuse-existing-data-on-readd]]).
+- **Incoming peer connections** — a shared `PeerServer` (one per engine, not
+  per torrent) accepts connections peers initiate to us and routes them to
+  the right torrent by info hash, operator-toggleable like DHT
+  ([[0038-incoming-peer-connections]]).
+- The detail header now shows when a tracker-bearing torrent is actively
+  leaning on the DHT backstop (distinct from the trackerless-only `usesDht`
+  tag) — the UI-visibility question left open in
+  [[0036-dht-backstop-for-tracker-bearing-torrents]] ([[0039-dht-backstop-visibility]]).
+- **Peer Exchange (BEP 11)** — connected peers gossip who else they're
+  connected to (IPv4 `added`/`dropped` only, session-wide delta every 60s),
+  supplementing tracker/DHT discovery ([[0040-peer-exchange]]). First
+  Phase 3 item done.
+- **Live settings store** — a JSON-backed `SettingsStore`
+  (`grimtorrenter.config-directory`, independently mountable from
+  `download-directory`) for user-editable settings that persist and take
+  effect without a restart. `dhtEnabled`/`acceptIncomingConnections`
+  migrated onto it as the first fields (both still apply on restart only,
+  not live - see the doc) ([[0041-live-settings-store]]).
+- **Upload/download rate limiting** — a global (not per-torrent) shared
+  token bucket per direction, genuinely live via the settings store above;
+  `PeerConnection` blocks on it before sending/after receiving real piece
+  data ([[0042-rate-limiting]]). No REST endpoint or UI to set it yet -
+  `settings.json` only, for now.
+- **App shell** — a persistent header (aggregate ↓/↑ rate, a DHT status
+  pill, a settings link), a left sidebar with a status filter nav
+  (All/Downloading/Seeding/Paused/Error/**Harvest**, each with a live
+  count), and a footer (torrent count, aggregate rate, ratio, disk free
+  space via a new `GET /api/system/disk-usage` endpoint)
+  ([[0043-app-shell-and-filtering]]).
+- **Torrent list**: a name-search box composing with the sidebar's status
+  filter, sortable columns (Name/Size/Status/Progress), a per-row
+  right-click context menu (Pause/Resume, copy magnet link, remove), and
+  global Pause all/Resume all toolbar actions ([[0043-app-shell-and-filtering]]).
+- **Torrent detail is now a non-modal slide-out drawer**, not a full-page
+  navigation — still routed at `/torrents/:infoHash` (bookmarkable, closes
+  on back-button, survives a refresh) but as a *child* of the list route,
+  so the list stays mounted and fully interactive behind it. The four
+  detail tabs (Piece map/Files/Peers/Trackers) were reworked from wide
+  tables to stacked cards to actually fit the drawer's ~430px width
+  ([[0044-torrent-detail-drawer]]).
+- **A real `/settings` page** — a `GET`/`PUT /api/settings` REST endpoint
+  over the live settings store, and a frontend form grouped by topic
+  (Network: DHT/incoming connections, restart-required; Rate limiting:
+  upload/download caps in KiB/s, live). Built so a future settings group
+  is a self-contained addition rather than a rework — each group is its
+  own component/form-builder pair, saved together in one atomic `PUT`
+  ([[0045-settings-page]]). The rate-limit fields use a paired
+  "Unlimited" checkbox that disables the number field, rather than
+  relying on a "0 = unlimited" hint text.
+- **A daily off-hours rate-limit schedule** — a single time window (can
+  cross midnight), the same every day, with its own upload/download
+  limit pair (either direction, not required to be higher than the base
+  limit) that takes over while it's active. Lives inline in the Rate
+  limiting settings group; resolved live via the same
+  `ToLongFunction<Settings>` seam `RateLimiter` already reads its base
+  limit through, so no new polling/background component was needed
+  ([[0046-rate-limit-schedule]]).
+- **Message Stream Encryption (MSE)** — hand-rolled RC4 + Diffie-Hellman (no new dependency;
+  `grimtorrenter-engine` still has zero production dependencies), a global
+  `DISABLED`/`PREFERRED`/`REQUIRED` mode (default `PREFERRED`, live — takes effect on the next
+  connection, no restart), wired into both outbound `PeerConnection.connect()` (with a
+  fresh-connection fallback to plaintext in `PREFERRED` mode) and inbound `PeerServer`
+  (peek-and-branch detection, SKEY matching to recover which torrent an obfuscated incoming
+  connection is for). Last item from the original Phase 3 list
+  ([[0052-message-stream-encryption]]). Last Phase 3 item done.
+- **Rate-limit burst allowance** — a configurable `rateLimitBurstSeconds` widens
+  `RateLimiter`'s token-bucket capacity beyond the previous hardcoded "one second's worth of
+  the current limit," so bursty traffic can spend saved-up bandwidth faster than the
+  steady-state rate alone would allow. One shared value for both directions and both the base
+  and scheduled limit, live like the rate limits themselves; 0 (the default, and what any
+  pre-existing `settings.json` resolves to) means the original 1-second behavior, not "no
+  burst" ([[0053-rate-limit-burst-allowance]]).
+- **Seeding limits** — stop a torrent from seeding once it crosses a ratio and/or time limit,
+  whichever first. A global default (both disabled by default), **with a per-torrent
+  override** — the first per-torrent-override mechanism in this codebase, via a new
+  `key=value` marker file per torrent directory (`.grimtorrenter-seeding-limit-override`) and
+  `GET`/`PUT /api/torrents/{infoHash}/seeding-limits`. Checked by a new engine-wide scheduled
+  task that reuses `pauseTorrent()` for the actual stop, so persistence stays correct for
+  free. Set from a new "Seeding limits…" row context-menu item opening a `p-dialog` — the
+  first modal form in this frontend — with a 3-state "use default / custom / no limit"
+  control per metric. Neither metric survives a process restart, matching the existing
+  (already non-persisted) upload/download byte counters they're computed from
+  ([[0054-seeding-limits]]).
+- Along the way: fixed a pre-existing bug in the per-row right-click context menu
+  ([[0043-app-shell-and-filtering]]) — wrong popup position (the table's own scrollable
+  wrapper was clipping/mispositioning it) and a previously-open row's menu not closing when a
+  different row was right-clicked (a right-click fires no `click` event, so PrimeNG's own
+  "click outside closes it" logic never saw it). Both surfaced while testing the seeding-limits
+  context-menu item, fixed alongside it ([[0054-seeding-limits]]).
+
+**Not yet built** (the rest of Phase 3):
+
+- Per-torrent rate limit overrides and multiple/day-of-week-specific schedule rules — the
+  remaining natural additions to the rate-limiting settings group
+  ([[0045-settings-page]], [[0046-rate-limit-schedule]]). **Deliberately pushed to the back of
+  the backlog** (2026-08-25 user decision) — both have a plausible but marginal real-world
+  case (per-torrent overrides is at least precedented in real clients, but largely substitutable
+  by pause/resume; multi-rule scheduling is a narrow edge case the existing single daily window
+  already mostly covers), and lower priority than seeding limits (now built), which reflected a
+  much more common real-world need.
+- The "multi-torrent global bandwidth budget" item from [[0009-phased-scope]]'s original list
+  is now considered **retired as its own item** — it predates [[0042-rate-limiting]], which
+  already delivered exactly that (one global cap shared across every torrent's combined
+  traffic). If something more specific was meant by it (e.g. fair per-torrent allocation when
+  the global cap is saturated), that's really the per-torrent-overrides item above, not a
+  separate one.
+
+### Engine stability/scale
+
+A resource-usage audit (prompted by wanting the engine solid and stable under many
+simultaneous torrents, since it's built to eventually stand as its own product) found the
+concurrency model itself sound — virtual-thread-per-connection matches
+[[0007-concurrency-model]], per-torrent connection caps and socket timeouts already exist,
+cleanup on error is solid — but no bound at all on total open file descriptors: every
+torrent's files were opened once and held open for its whole lifetime, even while paused.
+
+- **Fixed**: a shared, bounded, LRU `FileHandlePool` — every read/write now borrows a
+  channel from an engine-wide cache (configurable size, default 256) instead of holding one
+  open forever. Bounds total fd usage regardless of torrent count or paused/running state,
+  and structurally can't reintroduce [[0030-pause-resume-storage-lifecycle]]'s old
+  ClosedChannelException bug, since every access is now a transparent reopen-on-demand
+  rather than a one-way close ([[0047-bounded-file-handle-pool]]).
+- **Fixed**: piece verification (a full-piece read plus a SHA-1 hash, both on restart
+  re-verify and on normal completion) now goes through a shared, engine-wide `Semaphore` —
+  bounds how many pieces can be mid-verification at once regardless of how many torrents are
+  restoring or completing pieces simultaneously, instead of every restoring torrent's own
+  unthrottled virtual thread piling on all at once. Defaults to the available processor
+  count (configurable) since hashing is CPU-bound and parallelizing past that buys nothing
+  but more buffers in memory ([[0048-piece-verification-throttling]]).
+- **Fixed**: `ManyTorrentsRestoreLoadTest` restores 40 real torrents concurrently against a
+  deliberately undersized shared pool (5 file slots) and verification limiter (4 permits),
+  proving both hold their bounds and every torrent still verifies correctly under real,
+  adversarial concurrent load — not just the individual scenarios each mechanism's own unit
+  tests construct ([[0049-many-torrents-load-test]]).
+- **Fixed**: `PieceManager`'s bookkeeping methods now use a `ReentrantLock` instead of
+  `synchronized` - not a fix for a live bug (the audit found none: nothing blocking ever ran
+  while the monitor was held), but it closed the doc/reality gap against
+  [[0007-concurrency-model]]'s "avoid `synchronized` in the hot path" guidance outright,
+  rather than leaving an explained exception to it. Reentrancy (`selectNextPiece()` calling
+  back into `stateOf()`) is preserved - `ReentrantLock` supports it the same way
+  `synchronized` did ([[0050-piece-manager-reentrant-lock]]).
+- All four findings from the original stability/scale audit - unbounded file descriptors,
+  unbounded verification bursts, no load test to prove either, and this `synchronized` usage
+  - are now fully addressed. Remaining engine-level work is [[0009-phased-scope]]'s ordinary
+  Phase 3 backlog below, not a stability gap.
+- **Stability promoted to a standing consideration for every future decision**, not just a
+  one-time audit - every new/revised `design_docs/` entry should now say something about
+  resource/failure behavior, even briefly ([[0051-stability-as-a-standing-consideration]]).
+  Also recorded in `CLAUDE.md`. See `STABILITY.md` for the full narrative this grew out of.
+- **Fixed a real flake in `ManyTorrentsRestoreLoadTest`** ([[0049-many-torrents-load-test]]),
+  found while working on seeding limits and confirmed to fail consistently right after
+  `mvn clean`: its 40 `restoreAsync()` calls ran sequentially on the main thread, and with only
+  4 tiny pieces per torrent, verification could finish and release its semaphore permit before
+  the next torrent's call even started - so peak observed concurrency never rose above 1, not
+  because nothing was bounding it, but because nothing had asked for more than one permit at a
+  time. Fixed by launching all 40 `restoreAsync()` calls from their own threads behind a shared
+  start gate, so they genuinely race for the shared pool/semaphore at once
+  ([[0054-seeding-limits]]).
+
+## Known gaps / TODO
+
+- **Upload/magnet-add latency has no deeper fix, only better feedback.**
+  `TorrentSession.start()`'s initial tracker announce is still fully
+  synchronous within the add request; 0029's optimistic "Processing" row
+  covers the *feedback* gap, not the underlying latency. Revisit if it
+  proves to matter in practice — would mean loosening `start()`'s
+  synchronous contract, a bigger change than it looks given how much
+  else assumes it.
+- **A per-row pending action (Pause/Resume/Remove) clears its spinner on
+  response, but the row's displayed state still only catches up on the
+  next ~2s WebSocket snapshot** — a brief window where the row looks
+  normal again but hasn't visually caught up yet. Flagged by the user as
+  worth revisiting with an optimistic local update if it feels
+  unresponsive in practice; see [[0033-per-entry-action-feedback]]'s
+  Future work section.
+
+## Suggested next steps, in rough priority order
+
+Phase 2 is fully complete; Phase 3 has Peer Exchange, rate limiting (with a daily off-hours
+schedule and a burst allowance), a real settings page, and MSE done — every item from the
+original Phase 3 list is now built; the engine stability/scale audit is fully closed out;
+seeding limits (picked from `TODO.md`) are done:
+
+1. The pending-action-vs-2s-snapshot-lag gap noted above, if it proves to
+   matter in practice.
+2. The rest of `TODO.md` (events viewer, a notification service), whenever picked up.
+3. The rate-limiting settings group's remaining natural additions (per-torrent overrides,
+   multi-rule schedule) — pushed to the back of the backlog (2026-08-25), marginal real-world
+   value relative to the items above.
