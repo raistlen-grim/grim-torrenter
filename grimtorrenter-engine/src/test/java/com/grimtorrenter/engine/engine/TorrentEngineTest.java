@@ -560,6 +560,24 @@ class TorrentEngineTest {
                 .noneMatch(e -> e.type() == EventType.SEEDING_LIMIT_REACHED));
     }
 
+    /** Exactly one TorrentEngine per running process in production, so recording this at
+     * construction is equivalent to "the app started" - lets a timeline of events be
+     * correlated against process restarts (e.g. an auto-updater like Watchtower recreating the
+     * container). See design_docs/0055. */
+    @Test
+    void constructingAnEngineRecordsAServerStartedEvent(@TempDir Path tempDir) {
+        InMemoryEventStore eventStore = new InMemoryEventStore();
+
+        TorrentEngine engine = new TorrentEngine(tempDir, 6881, new NoOpListener(), false, false,
+                new InMemorySettingsStore(), FileHandlePool.unbounded(), Integer.MAX_VALUE, eventStore);
+
+        List<LibraryEvent> started = eventStore.all().stream()
+                .filter(e -> e.type() == EventType.SERVER_STARTED).toList();
+        assertEquals(1, started.size());
+        assertNull(started.get(0).infoHash());
+        assertNull(started.get(0).torrentName());
+    }
+
     /** addTorrent() records ADDED exactly once for a genuinely new torrent, and not again for
      * an idempotent re-add of the same info hash. */
     @Test

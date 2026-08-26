@@ -35,13 +35,16 @@ export function trackerStateDisplay(state: TrackerState): StatusDisplay {
 
 /** See design_docs/0055. ERROR reuses the same alarm tone as a torrent/tracker error;
  * SEEDING_LIMIT_REACHED is 'dim' rather than 'alarm' - it's an expected, user-configured
- * outcome (a limit doing exactly what it was set to do), not a problem. */
+ * outcome (a limit doing exactly what it was set to do), not a problem. SERVER_STARTED is
+ * 'active' - a genuinely notable timeline marker (e.g. correlating other events against an
+ * auto-updater like Watchtower recreating the container), not routine noise. */
 const EVENT_TYPE_DISPLAY: Record<EventType, StatusDisplay> = {
   ADDED: { icon: 'pi-plus-circle', label: 'Added', tone: 'active' },
   COMPLETED: { icon: 'pi-check-circle', label: 'Completed', tone: 'active' },
   ERROR: { icon: 'pi-exclamation-triangle', label: 'Error', tone: 'alarm' },
   REMOVED: { icon: 'pi-trash', label: 'Removed', tone: 'dim' },
   SEEDING_LIMIT_REACHED: { icon: 'pi-pause', label: 'Seeding limit reached', tone: 'dim' },
+  SERVER_STARTED: { icon: 'pi-server', label: 'Server started', tone: 'active' },
 };
 
 export function eventTypeDisplay(type: EventType): StatusDisplay {

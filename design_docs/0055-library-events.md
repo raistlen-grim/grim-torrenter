@@ -2,7 +2,7 @@
 
 **Status:** Accepted - built for a first event set (ADDED/COMPLETED/ERROR/REMOVED/
 SEEDING_LIMIT_REACHED); see "Deferred from this pass" below for what's intentionally not
-wired up yet.
+wired up yet. `SERVER_STARTED` added 2026-08-26 - see its own section below.
 
 ## Decision
 
@@ -18,12 +18,13 @@ this.
 
 A new `LibraryEvent` record (`grimtorrenter-engine`, new `events` package):
 `(Instant timestamp, EventType type, String infoHash, String torrentName, String message)`.
-`infoHash`/`torrentName` are nullable - most events are torrent-scoped, but nothing rules out a
-future engine-wide event (e.g. "DHT bootstrap failed") that isn't. `EventType` is a closed enum
-(`ADDED`, `COMPLETED`, `ERROR`, `REMOVED`, `SEEDING_LIMIT_REACHED` - see "Deferred from this
-pass" below for two more originally scoped in) rather than a free-form string tag, so the
-frontend can render a fixed icon/label set instead of guessing at arbitrary text - matching
-`TorrentState`'s own closed-enum precedent rather than `Settings`' more open shape.
+`infoHash`/`torrentName` are nullable - most events are torrent-scoped, but `SERVER_STARTED`
+(added 2026-08-26, see its own section below) is a genuinely engine-wide event that isn't.
+`EventType` is a closed enum (`ADDED`, `COMPLETED`, `ERROR`, `REMOVED`,
+`SEEDING_LIMIT_REACHED`, `SERVER_STARTED` - see "Deferred from this pass" below for two more
+originally scoped in but not yet built) rather than a free-form string tag, so the frontend can
+render a fixed icon/label set instead of guessing at arbitrary text - matching `TorrentState`'s
+own closed-enum precedent rather than `Settings`' more open shape.
 
 ### The reason gap this closes
 
@@ -45,14 +46,49 @@ status still updates either way) - it's just never the place a *library* event g
 for this particular transition.
 
 For the two outcomes that genuinely are just a state transition with no separate decision point
-to hook into - reaching `ERROR`, and completing a download (`DOWNLOADING` -> `SEEDING`
-specifically, not every arrival at `SEEDING`, since restoring an already-complete torrent
-re-enters `SEEDING` from `VERIFYING` without having "just completed" anything) -
-`TorrentEventListener` (`grimtorrenter-app`, the one place that already receives every
-`onStateChanged` callback to bridge it to the WebSocket) maps `oldState`/`newState` straight to
-an `EventType` and records it, no reason string needed since the transition shape alone is
-already unambiguous for these two cases. Any other transition (including ordinary
-pause/resume) maps to nothing and is recorded as nothing.
+to hook into - reaching `ERROR`, and completing a download - `TorrentEventListener`
+(`grimtorrenter-app`, the one place that already receives every `onStateChanged` callback to
+bridge it to the WebSocket) maps `oldState`/`newState` to an `EventType` and records it.
+
+**Correction (2026-08-26), a real bug found in production**: the first cut assumed
+`DOWNLOADING` -> `SEEDING` alone was enough to mean "just completed," on the theory that
+restoring an already-complete torrent re-enters `SEEDING` straight from `VERIFYING` without
+passing through `DOWNLOADING` at all. That assumption was wrong - `enterDownloading()`
+unconditionally calls `checkForCompletion()` on **every** `start()`, restore included, so an
+already-complete torrent genuinely does transition `DOWNLOADING` -> `SEEDING` again on every
+restart. In production this showed up exactly as that implies: the same long-finished torrent
+recorded a fresh `COMPLETED` event on every server restart, forever.
+
+Fixed with a new `TorrentSession.wasCompleteOnRestore()` flag (set once, during
+`verifyThenSettle()`'s restore-only re-verification pass, to whatever
+`pieceManager.isAllComplete()` found *before* this session's first `start()` ever ran) - `false`
+for a `create()`d session (never pre-populated) and for a restored session that genuinely had
+data missing, `true` for a restored session whose data was already fully present and valid.
+`TorrentEventListener` now records `COMPLETED` only when
+`oldState == DOWNLOADING && newState == SEEDING && completedAtEpochMillis() == 0 &&
+!wasCompleteOnRestore()` - the existing `completedAtEpochMillis() == 0` guard alone (already
+used to gate seed-time-limit re-stamping, [[0054-seeding-limits]]) catches a same-process
+pause/resume of a torrent this process has already seen complete once, but can't catch the
+cross-restart case, since a brand-new `TorrentSession` object always starts with
+`completedAtEpochMillis` back at 0 - `wasCompleteOnRestore()` is what's actually needed for
+that. No reason string needed for either event - the transition shape plus these two flags is
+unambiguous. Any other transition (including ordinary pause/resume) maps to nothing and is
+recorded as nothing.
+
+### `SERVER_STARTED` (added 2026-08-26): the first engine-wide event
+
+User request, prompted by the `COMPLETED`-duplication bug above and how it was actually noticed
+- a timeline of events is more useful for diagnosing surprises like that one if process restarts
+are visible in the same feed, especially for a deployment fronted by an auto-updater like
+Watchtower that recreates the container unattended. `LibraryEvent`'s `infoHash`/`torrentName`
+being nullable had already anticipated exactly this - `SERVER_STARTED` is the first type that
+actually uses that, with both null.
+
+Recorded once, at the end of `TorrentEngine`'s canonical constructor - exactly one
+`TorrentEngine` exists per running process in production
+(`TorrentEngineProducer`'s `@ApplicationScoped` bean, constructed once), so construction time is
+equivalent to "the app started." No new lifecycle hook needed - the constructor already runs
+exactly when it needs to.
 
 ### Storage: rolling daily files, not one ever-growing file
 
@@ -130,16 +166,23 @@ itself is seeded then kept live.
   `REMOVED` one. Filtered by the test's own `infoHash` throughout, never asserting on the
   unfiltered list, since `JsonLinesEventStore` is one `@QuarkusTest`-shared singleton other
   test classes in the same run also write into.
-- **Gap, not covered by a test in this pass**: `TorrentEventListener`'s `ERROR`/`COMPLETED`
-  mapping (the `oldState`/`newState` -> `EventType` logic added to `onStateChanged`) has no
-  dedicated test - it would need either a real `TorrentSession` driven into `ERROR` (no cheap,
-  deterministic way to do that at the engine-test level the way seeding limits' degenerate
-  ratio/time-of-zero trick allows) or extracting that mapping into an independently testable
-  pure function. Left as a follow-up if this logic needs to change again.
+- **Gap, partially closed (2026-08-26)**: the `COMPLETED` half of this gap now has dedicated
+  coverage - `TorrentEventListenerTest` (new, plain JUnit, `grimtorrenter-app`) proves a
+  genuinely fresh `create()`d session records `COMPLETED`, and a `restoreAsync()`d
+  already-complete session does not (the regression test for the duplicate-event bug above);
+  `TorrentSessionTest` (new cases, `grimtorrenter-engine`) proves `wasCompleteOnRestore()`
+  itself is set correctly across all three shapes (restored-and-complete, restored-and-
+  incomplete, freshly created). The `ERROR` half still has no dedicated test - it would need a
+  real `TorrentSession` driven into `ERROR` (no cheap, deterministic way to do that at the
+  engine-test level the way seeding limits' degenerate ratio/time-of-zero trick allows) or
+  extracting that mapping into an independently testable pure function. Left as a follow-up if
+  this logic needs to change again.
 - `SettingsResourceTest` (new case) - a `PUT` with `eventLogRetentionDays: 0` comes back `200`
   with the field normalized to `30`, confirming the compact constructor's normalization (not a
   `SettingsResource`-level rejection - see above) is reachable through the real REST layer, not
   just `Settings`' own constructor.
+- `TorrentEngineTest` (new case, 2026-08-26) - constructing a `TorrentEngine` records exactly
+  one `SERVER_STARTED` event with `infoHash`/`torrentName` both null.
 
 ## Deferred from this pass
 

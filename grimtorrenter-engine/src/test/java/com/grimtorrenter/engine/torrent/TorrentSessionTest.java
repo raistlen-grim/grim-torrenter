@@ -451,6 +451,11 @@ class TorrentSessionTest {
             assertEquals(1.0, session.progress());
             assertEquals(new Request(0, 0, content.length), receivedRequest.get());
             assertTrue(tracker.requests.stream().anyMatch(r -> r.event() == TrackerEvent.COMPLETED));
+            // A genuinely just-downloaded torrent (never restored) must never be flagged as
+            // "already complete before we started" - that flag is what TorrentEventListener
+            // (grimtorrenter-app) uses to tell a real completion apart from a restore/resume
+            // rediscovering old data, and this is the one case that must still count as real.
+            assertFalse(session.wasCompleteOnRestore());
         } finally {
             session.stop();
         }
@@ -1163,6 +1168,11 @@ class TorrentSessionTest {
             assertEquals(TorrentState.SEEDING, session.state());
             assertEquals(1, session.completedPieceCount());
             assertEquals(content.length, session.bytesDownloaded());
+            // wasCompleteOnRestore() is what stops TorrentEventListener (grimtorrenter-app)
+            // from recording a fresh COMPLETED library event every time this same
+            // already-complete torrent is restored again on a later restart - see
+            // design_docs/0055's own real duplicate-event bug this field fixes.
+            assertTrue(session.wasCompleteOnRestore());
         } finally {
             session.stop();
         }
@@ -1184,6 +1194,9 @@ class TorrentSessionTest {
         awaitState(session, TorrentState.STOPPED);
         assertEquals(1, session.completedPieceCount());
         assertTrue(tracker.requests.isEmpty());
+        // wasCompleteOnRestore() must be set even when this restore doesn't auto-start -
+        // a later manual resume of this same session object still needs it set correctly.
+        assertTrue(session.wasCompleteOnRestore());
     }
 
     @Test
@@ -1200,6 +1213,7 @@ class TorrentSessionTest {
 
         awaitState(session, TorrentState.DOWNLOADING);
         assertEquals(0, session.completedPieceCount());
+        assertFalse(session.wasCompleteOnRestore(), "genuinely incomplete data must not be flagged as already complete");
         session.stop();
     }
 

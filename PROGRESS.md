@@ -156,10 +156,25 @@ complete**, per the phased scope in [[0009-phased-scope]]:
     distinctly-labeled `MAGNET_RESOLVED` (a resolved magnet already produces an `ADDED` event
     via the shared `addTorrent()` pipeline, just not one that says "via magnet"). See
     [[0055-library-events]]'s own "Deferred from this pass" section.
-  - **Known test gap**: `TorrentEventListener`'s `ERROR`/`COMPLETED` recording (the
-    `oldState`/`newState` → `EventType` mapping added to `onStateChanged`) has no dedicated
-    test — no cheap, deterministic way to drive a real `TorrentSession` into `ERROR` the way
-    seeding limits' degenerate-zero trick covers `SEEDING`/`STOPPED`.
+  - **Real bug found in production and fixed (2026-08-26)**: the same already-long-since-
+    complete torrent recorded a fresh `COMPLETED` event on every server restart, forever —
+    `DOWNLOADING` → `SEEDING` alone turned out not to mean "just completed": restoring an
+    already-complete torrent replays that exact transition on every restart too (`
+    enterDownloading()` unconditionally re-checks completion on every `start()`). Fixed with a
+    new `TorrentSession.wasCompleteOnRestore()` flag, set once during restore-time
+    re-verification; `TorrentEventListener` now also requires `completedAtEpochMillis() == 0`
+    and `!wasCompleteOnRestore()` before recording `COMPLETED`. New regression coverage:
+    `TorrentEventListenerTest` (`grimtorrenter-app`) and three new `TorrentSessionTest` cases
+    (`grimtorrenter-engine`). See [[0055-library-events]]'s own dated correction.
+  - **Remaining known test gap**: `TorrentEventListener`'s `ERROR` mapping still has no
+    dedicated test — no cheap, deterministic way to drive a real `TorrentSession` into `ERROR`
+    the way seeding limits' degenerate-zero trick covers `SEEDING`/`STOPPED`.
+  - **`SERVER_STARTED` added (2026-08-26, user request)** — the first genuinely engine-wide
+    library event (`infoHash`/`torrentName` both null), recorded once at the end of
+    `TorrentEngine`'s constructor (equivalent to "the app started," since exactly one engine
+    exists per running process in production). Lets a timeline of events be correlated against
+    process restarts — the motivating case was an auto-updater like Watchtower recreating the
+    container unattended.
 - **Watch folder** (picked as the explicit next thing to build, 2026-08-26, ahead of everything
   else on the list at the time) — drop a `.torrent` file into a new configurable
   `grimtorrenter.watch-directory` and it's auto-added, no manual upload needed. Polled every 30

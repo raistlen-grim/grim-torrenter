@@ -14,6 +14,7 @@ import com.grimtorrenter.engine.storage.FileHandlePool;
 import com.grimtorrenter.engine.torrent.TorrentSession;
 import com.grimtorrenter.engine.torrent.TorrentSessionListener;
 import com.grimtorrenter.engine.torrent.TorrentState;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -40,6 +41,23 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * the watch-folder mechanism itself, not tracker communication; a resulting ERROR state
  * transition (and its own, unrelated ERROR library event) is expected and not asserted against. */
 class WatchFolderTest {
+
+    /** Every test's engine is tracked here and shut down in tearDown() - each construction
+     * starts a daemon-threaded maintenanceScheduler running two periodic tasks
+     * (checkSeedingLimits()/scanWatchFolder()); left unshut down, it keeps ticking for the
+     * rest of this JVM's test run instead of just this one test's duration. Unlike
+     * TorrentEngineTest's own many intentionally-unshut-down engines (an accepted tradeoff
+     * there, see TorrentEngine's own maintenanceScheduler field Javadoc), this file's tests
+     * all construct their engine through the one newEngine() helper, so tracking and shutting
+     * down here costs nothing extra per test. */
+    private TorrentEngine engine;
+
+    @AfterEach
+    void tearDown() {
+        if (engine != null) {
+            engine.shutdown();
+        }
+    }
 
     private static final class NoOpListener implements TorrentSessionListener {
         @Override
@@ -84,7 +102,7 @@ class WatchFolderTest {
     @Test
     void scanWatchFolderIsANoOpWhenDisabled(@TempDir Path root) {
         Path watchDir = root.resolve("watch");
-        TorrentEngine engine = newEngine(root.resolve("downloads"), watchDir,
+        engine = newEngine(root.resolve("downloads"), watchDir,
                 settingsWithWatchFolder(false, 7), new InMemoryEventStore());
 
         engine.scanWatchFolder();
@@ -96,7 +114,7 @@ class WatchFolderTest {
     void aDroppedValidTorrentFileIsAddedAndMovedToAdded(@TempDir Path root) throws IOException {
         Path watchDir = Files.createDirectories(root.resolve("watch"));
         InMemoryEventStore eventStore = new InMemoryEventStore();
-        TorrentEngine engine = newEngine(root.resolve("downloads"), watchDir,
+        engine = newEngine(root.resolve("downloads"), watchDir,
                 settingsWithWatchFolder(true, 7), eventStore);
         Files.write(watchDir.resolve("drop-me.torrent"), torrentBytes("watch-add.bin", new byte[]{1, 2, 3}));
 
@@ -115,7 +133,7 @@ class WatchFolderTest {
     void aMalformedFileIsMovedToFailedAndRecordsAnErrorEvent(@TempDir Path root) throws IOException {
         Path watchDir = Files.createDirectories(root.resolve("watch"));
         InMemoryEventStore eventStore = new InMemoryEventStore();
-        TorrentEngine engine = newEngine(root.resolve("downloads"), watchDir,
+        engine = newEngine(root.resolve("downloads"), watchDir,
                 settingsWithWatchFolder(true, 7), eventStore);
         Files.write(watchDir.resolve("garbage.torrent"), "not a real torrent file".getBytes());
 
@@ -133,7 +151,7 @@ class WatchFolderTest {
     void anIdempotentReAddStillMovesToAddedWithoutASecondAddedEvent(@TempDir Path root) throws IOException {
         Path watchDir = Files.createDirectories(root.resolve("watch"));
         InMemoryEventStore eventStore = new InMemoryEventStore();
-        TorrentEngine engine = newEngine(root.resolve("downloads"), watchDir,
+        engine = newEngine(root.resolve("downloads"), watchDir,
                 settingsWithWatchFolder(true, 7), eventStore);
         byte[] torrent = torrentBytes("watch-dup.bin", new byte[]{9, 9, 9});
         Files.write(watchDir.resolve("first.torrent"), torrent);
@@ -156,7 +174,7 @@ class WatchFolderTest {
     void aSameNamedFileDroppedTwiceGetsACollisionSuffixOnItsSecondMove(@TempDir Path root) throws IOException {
         Path watchDir = Files.createDirectories(root.resolve("watch"));
         InMemoryEventStore eventStore = new InMemoryEventStore();
-        TorrentEngine engine = newEngine(root.resolve("downloads"), watchDir,
+        engine = newEngine(root.resolve("downloads"), watchDir,
                 settingsWithWatchFolder(true, 7), eventStore);
 
         Files.write(watchDir.resolve("same-name.torrent"), torrentBytes("watch-first.bin", new byte[]{1}));
@@ -175,7 +193,7 @@ class WatchFolderTest {
     void aFileThatChangesBetweenTicksIsNotYetProcessed(@TempDir Path root) throws IOException {
         Path watchDir = Files.createDirectories(root.resolve("watch"));
         InMemoryEventStore eventStore = new InMemoryEventStore();
-        TorrentEngine engine = newEngine(root.resolve("downloads"), watchDir,
+        engine = newEngine(root.resolve("downloads"), watchDir,
                 settingsWithWatchFolder(true, 7), eventStore);
         Path file = watchDir.resolve("still-writing.torrent");
         Files.write(file, torrentBytes("watch-partial.bin", new byte[]{1, 2, 3}));
@@ -200,7 +218,7 @@ class WatchFolderTest {
         Files.write(recentFile, new byte[]{2});
         Files.setLastModifiedTime(oldFile, FileTime.from(Instant.now().minus(40, ChronoUnit.DAYS)));
 
-        TorrentEngine engine = newEngine(root.resolve("downloads"), watchDir,
+        engine = newEngine(root.resolve("downloads"), watchDir,
                 settingsWithWatchFolder(true, 7), new InMemoryEventStore());
         engine.scanWatchFolder();
 

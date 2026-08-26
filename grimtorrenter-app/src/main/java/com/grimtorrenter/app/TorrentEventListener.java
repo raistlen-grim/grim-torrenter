@@ -27,12 +27,12 @@ import java.time.Instant;
  *
  * <p>Also the recording point for the two library events (design_docs/0055) that are outcomes
  * of a state transition rather than something TorrentEngine itself decided to do: reaching
- * ERROR, and completing a download (DOWNLOADING -> SEEDING - only that specific transition, not
- * every arrival at SEEDING, since restoring an already-complete torrent re-enters SEEDING from
- * VERIFYING without having "just completed" anything). An ordinary pause/resume (any other
- * transition, including SEEDING -> STOPPED - TorrentEngine's own seeding-limit check records
- * that case itself, with the actual reason, before it ever reaches this listener) is not an
- * event a user needs reviewing, so nothing is recorded for it.
+ * ERROR, and genuinely completing a download for the first time (DOWNLOADING -> SEEDING, gated
+ * by TorrentSession.completedAtEpochMillis()/wasCompleteOnRestore() - see
+ * recordLibraryEventIfNotable()'s own Javadoc for why both are needed). An ordinary pause/resume
+ * (any other transition, including SEEDING -> STOPPED - TorrentEngine's own seeding-limit check
+ * records that case itself, with the actual reason, before it ever reaches this listener) is not
+ * an event a user needs reviewing, so nothing is recorded for it.
  */
 @ApplicationScoped
 public class TorrentEventListener implements TorrentSessionListener {
@@ -49,11 +49,23 @@ public class TorrentEventListener implements TorrentSessionListener {
         broadcast(new TorrentEventMessage("state-changed", TorrentView.from(session)));
     }
 
+    /** A DOWNLOADING -&gt; SEEDING transition alone isn't enough to mean "just finished
+     * downloading" - it also fires every time an already-complete torrent is (re)started,
+     * since enterDownloading() unconditionally calls checkForCompletion() on every start(),
+     * restore included. Two guards, both needed, catching two different repeat scenarios:
+     * completedAtEpochMillis() == 0 catches a same-process pause/resume of a torrent this
+     * process has already seen complete once (it's stamped non-zero the first time and never
+     * reset); wasCompleteOnRestore() catches the cross-restart case that guard alone can't -
+     * a brand-new TorrentSession object always starts with completedAtEpochMillis back at 0,
+     * even for a torrent that finished long before this process even started. This is exactly
+     * the real bug that shipped with 0055's first cut: the same already-long-since-complete
+     * torrent recorded a fresh COMPLETED event on every server restart. */
     private void recordLibraryEventIfNotable(TorrentSession session, TorrentState oldState, TorrentState newState) {
         EventType type;
         if (newState == TorrentState.ERROR) {
             type = EventType.ERROR;
-        } else if (oldState == TorrentState.DOWNLOADING && newState == TorrentState.SEEDING) {
+        } else if (oldState == TorrentState.DOWNLOADING && newState == TorrentState.SEEDING
+                && session.completedAtEpochMillis() == 0 && !session.wasCompleteOnRestore()) {
             type = EventType.COMPLETED;
         } else {
             return;

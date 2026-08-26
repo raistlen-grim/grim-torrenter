@@ -140,6 +140,20 @@ public final class TorrentSession implements AutoCloseable {
      * checkForCompletion() running again on every subsequent start() of an already-complete
      * torrent - see that method's own comment. */
     private volatile long completedAtEpochMillis;
+    /** True if verifyThenSettle() (the restore-only re-verification pass) found every piece
+     * already present and valid on disk, before this session's first start() was ever called -
+     * false for a create()d session (never pre-populated, always starts everything NEEDED) and
+     * false for a restored session that genuinely had data still missing. Distinct from
+     * completedAtEpochMillis == 0 (which only distinguishes "first completion in this
+     * process" from "a later resume of a torrent this same process already saw complete"):
+     * this additionally catches the cross-restart case, where completedAtEpochMillis is back
+     * at 0 on a brand-new session object even though the torrent finished long before this
+     * process even started. Read by TorrentEventListener (grimtorrenter-app) alongside
+     * completedAtEpochMillis to decide whether a DOWNLOADING -&gt; SEEDING transition is a
+     * genuinely new completion worth a library event, or just this restart/resume rediscovering
+     * data that was already done - see design_docs/0055's own COMPLETED-event Javadoc and the
+     * real duplicate-event bug this field was added to fix. */
+    private volatile boolean wasCompleteOnRestore;
 
     private final Set<PeerConnection> connections = ConcurrentHashMap.newKeySet();
     private final Set<PeerAddress> knownAddresses = ConcurrentHashMap.newKeySet();
@@ -383,6 +397,10 @@ public final class TorrentSession implements AutoCloseable {
             if (state != TorrentState.VERIFYING) {
                 return;
             }
+            // Recorded before setState()/start() ever run, regardless of autoStart - a
+            // torrent restored but not yet auto-started can still be resumed manually later,
+            // and checkForCompletion() needs this flag set correctly whenever that happens.
+            wasCompleteOnRestore = pieceManager.isAllComplete();
             setState(TorrentState.STOPPED);
         }
         if (autoStart) {
@@ -1006,6 +1024,11 @@ public final class TorrentSession implements AutoCloseable {
      * purely in-memory. See design_docs/0054. */
     public long completedAtEpochMillis() {
         return completedAtEpochMillis;
+    }
+
+    /** See this field's own Javadoc. */
+    public boolean wasCompleteOnRestore() {
+        return wasCompleteOnRestore;
     }
 
     public SeedingLimitOverride seedingLimitOverride() {

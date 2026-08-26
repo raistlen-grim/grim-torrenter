@@ -319,6 +319,12 @@ public final class TorrentEngine {
                 SEEDING_LIMIT_CHECK_INTERVAL_SECONDS, SEEDING_LIMIT_CHECK_INTERVAL_SECONDS, TimeUnit.SECONDS);
         this.maintenanceScheduler.scheduleWithFixedDelay(this::scanWatchFolder,
                 WATCH_FOLDER_SCAN_INTERVAL_SECONDS, WATCH_FOLDER_SCAN_INTERVAL_SECONDS, TimeUnit.SECONDS);
+        // Exactly one TorrentEngine per running process in production (TorrentEngineProducer's
+        // @ApplicationScoped bean, constructed once), so recording this here is equivalent to
+        // "the app started" - lets a timeline of events be correlated against process restarts
+        // (e.g. an auto-updater like Watchtower recreating the container). Engine-wide, not
+        // torrent-scoped - infoHash/torrentName are both null. See design_docs/0055.
+        eventStore.record(new LibraryEvent(Instant.now(), EventType.SERVER_STARTED, null, null, null));
     }
 
     /** Reuses pauseTorrent() outright for the actual stop, rather than calling
