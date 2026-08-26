@@ -45,12 +45,17 @@ import com.grimtorrenter.engine.tracker.UdpTrackerClient;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalDouble;
@@ -105,6 +110,13 @@ public final class TorrentEngine {
     private static final String SEEDING_LIMIT_OVERRIDE_MARKER_FILENAME = ".grimtorrenter-seeding-limit-override";
     private static final long SEEDING_LIMIT_CHECK_INTERVAL_SECONDS = 30;
 
+    /** See design_docs/0056. */
+    private static final String WATCH_ADDED_SUBDIRECTORY = "added";
+    private static final String WATCH_FAILED_SUBDIRECTORY = "failed";
+    private static final String TORRENT_FILE_EXTENSION = ".torrent";
+    private static final String WATCH_FOLDER_SOURCE = "watch folder";
+    private static final long WATCH_FOLDER_SCAN_INTERVAL_SECONDS = 30;
+
     private static final int MAGNET_NUM_WANT = 50;
     /** Tried sequentially, not concurrently - see design_docs/0028 for the accepted
      * worst-case-latency trade-off this implies. */
@@ -152,21 +164,42 @@ public final class TorrentEngine {
      * lower-arity constructors default to a private, unpersisted InMemoryEventStore so every
      * pre-existing caller/test is unaffected. */
     private final EventStore eventStore;
-    /** Ticks every SEEDING_LIMIT_CHECK_INTERVAL_SECONDS, checking every currently-SEEDING
-     * session against its effective seeding limit and reusing pauseTorrent() outright for the
-     * actual stop - see checkSeedingLimits()'s own Javadoc for why reusing that method, not
-     * calling TorrentSession.stop() directly, was the deliberate choice here. Daemon threads,
-     * unlike TorrentSession's own per-session scheduler - this one runs unconditionally for
-     * every engine instance (no opt-in flag, matching RateLimiters), including the many
-     * short-lived test-constructed engines that never call shutdown(); a non-daemon thread
-     * here would leak a live, never-reclaimed thread per such instance. See design_docs/0054. */
-    private final ScheduledExecutorService seedingLimitScheduler =
+    /** Deploy-time config, same category as baseDownloadDirectory - see design_docs/0056.
+     * Never read (and never even created on disk) unless Settings.watchFolderEnabled is true,
+     * checked fresh on every scanWatchFolder() tick. */
+    private final Path watchDirectory;
+    /** Tracks each watch-folder candidate file's (size, lastModifiedTime) from the previous
+     * tick, so scanWatchFolder() only processes a file once it's stopped changing for a full
+     * poll interval - see that method's own Javadoc. Rebuilt fresh every tick (not mutated) so
+     * a file that was processed or that vanished is simply absent from the next tick's map,
+     * with no separate cleanup needed. Never accessed concurrently - only ever read/written
+     * from maintenanceScheduler's single thread (or a test calling scanWatchFolder() directly,
+     * never concurrently with the real scheduler in the same test). See design_docs/0056. */
+    private volatile Map<String, WatchCandidateSnapshot> watchFolderSnapshot = Map.of();
+    /** Ticks every SEEDING_LIMIT_CHECK_INTERVAL_SECONDS/WATCH_FOLDER_SCAN_INTERVAL_SECONDS,
+     * running checkSeedingLimits() and scanWatchFolder() - two cheap, independent periodic
+     * engine-maintenance concerns sharing one thread rather than each getting its own
+     * (originally named seedingLimitScheduler, generalized when the watch folder needed a
+     * second periodic task - design_docs/0056). checkSeedingLimits() checks every
+     * currently-SEEDING session against its effective seeding limit and reuses pauseTorrent()
+     * outright for the actual stop - see that method's own Javadoc for why reusing that
+     * method, not calling TorrentSession.stop() directly, was the deliberate choice there.
+     * Daemon threads, unlike TorrentSession's own per-session scheduler - this one runs
+     * unconditionally for every engine instance (no opt-in flag, matching RateLimiters),
+     * including the many short-lived test-constructed engines that never call shutdown(); a
+     * non-daemon thread here would leak a live, never-reclaimed thread per such instance. See
+     * design_docs/0054. */
+    private final ScheduledExecutorService maintenanceScheduler =
             Executors.newSingleThreadScheduledExecutor(TorrentEngine::newDaemonThread);
 
     private static Thread newDaemonThread(Runnable task) {
-        Thread thread = new Thread(task, "seeding-limit-check");
+        Thread thread = new Thread(task, "engine-maintenance");
         thread.setDaemon(true);
         return thread;
+    }
+
+    /** See watchFolderSnapshot's own Javadoc. */
+    private record WatchCandidateSnapshot(long size, FileTime lastModifiedTime) {
     }
 
     /** DHT and inbound peer connections both disabled - equivalent to enableDht=false,
@@ -240,6 +273,19 @@ public final class TorrentEngine {
                 fileHandlePool, maxConcurrentPieceVerifications, new InMemoryEventStore());
     }
 
+    /** Same as the ten-arg overload below but with a placeholder "watch" watch directory -
+     * harmless since scanWatchFolder() never touches the filesystem at all unless
+     * Settings.watchFolderEnabled is true, and every pre-existing caller/test leaves that
+     * false by default. Kept so every pre-existing caller/test is unaffected by this addition;
+     * production wiring (grimtorrenter-app's TorrentEngineProducer) passes a real configured
+     * directory instead. See design_docs/0056. */
+    public TorrentEngine(Path baseDownloadDirectory, int ourListenPort, TorrentSessionListener listener,
+                          boolean enableDht, boolean acceptIncomingConnections, SettingsStore settingsStore,
+                          FileHandlePool fileHandlePool, int maxConcurrentPieceVerifications, EventStore eventStore) {
+        this(baseDownloadDirectory, ourListenPort, listener, enableDht, acceptIncomingConnections, settingsStore,
+                fileHandlePool, maxConcurrentPieceVerifications, eventStore, Path.of("watch"));
+    }
+
     /**
      * fileHandlePool bounds this engine's total open torrent-data file handles across every
      * TorrentSession it creates or restores - see design_docs/0047. maxConcurrentPieceVerifications
@@ -248,11 +294,14 @@ public final class TorrentEngine {
      * pre-existing caller/test is unaffected; production wiring (grimtorrenter-app's
      * TorrentEngineProducer) passes real bounded values, both sized from configurable
      * properties. eventStore records library-management events (design_docs/0055) - see this
-     * class's own eventStore field Javadoc.
+     * class's own eventStore field Javadoc. watchDirectory is the auto-add watch folder
+     * (design_docs/0056) - deploy-time config like baseDownloadDirectory, gated live by
+     * Settings.watchFolderEnabled rather than by construction.
      */
     public TorrentEngine(Path baseDownloadDirectory, int ourListenPort, TorrentSessionListener listener,
                           boolean enableDht, boolean acceptIncomingConnections, SettingsStore settingsStore,
-                          FileHandlePool fileHandlePool, int maxConcurrentPieceVerifications, EventStore eventStore) {
+                          FileHandlePool fileHandlePool, int maxConcurrentPieceVerifications, EventStore eventStore,
+                          Path watchDirectory) {
         this.baseDownloadDirectory = baseDownloadDirectory;
         this.ourListenPort = ourListenPort;
         this.listener = listener;
@@ -265,8 +314,11 @@ public final class TorrentEngine {
         this.pieceVerificationLimiter = new Semaphore(maxConcurrentPieceVerifications);
         this.settingsStore = settingsStore;
         this.eventStore = eventStore;
-        this.seedingLimitScheduler.scheduleWithFixedDelay(this::checkSeedingLimits,
+        this.watchDirectory = watchDirectory;
+        this.maintenanceScheduler.scheduleWithFixedDelay(this::checkSeedingLimits,
                 SEEDING_LIMIT_CHECK_INTERVAL_SECONDS, SEEDING_LIMIT_CHECK_INTERVAL_SECONDS, TimeUnit.SECONDS);
+        this.maintenanceScheduler.scheduleWithFixedDelay(this::scanWatchFolder,
+                WATCH_FOLDER_SCAN_INTERVAL_SECONDS, WATCH_FOLDER_SCAN_INTERVAL_SECONDS, TimeUnit.SECONDS);
     }
 
     /** Reuses pauseTorrent() outright for the actual stop, rather than calling
@@ -319,6 +371,159 @@ public final class TorrentEngine {
         }
 
         return Optional.empty();
+    }
+
+    /**
+     * Auto-adds any stable .torrent file dropped into watchDirectory, moving it to added/ on
+     * success or failed/ on failure - see design_docs/0056 for the full design. A no-op (does
+     * not even touch the filesystem) unless Settings.watchFolderEnabled is true, checked fresh
+     * on every tick, same live-toggle spirit as the rate limits.
+     *
+     * <p>Package-private, not private, purely so a test can call this directly rather than
+     * waiting on the real WATCH_FOLDER_SCAN_INTERVAL_SECONDS-second scheduler tick - same
+     * spirit as checkSeedingLimits() above.
+     */
+    void scanWatchFolder() {
+        if (!settingsStore.current().watchFolderEnabled()) {
+            return;
+        }
+        try {
+            Files.createDirectories(watchDirectory);
+        } catch (IOException e) {
+            LOG.log(System.Logger.Level.WARNING, "Could not create watch directory " + watchDirectory, e);
+            return;
+        }
+
+        Path addedDir = watchDirectory.resolve(WATCH_ADDED_SUBDIRECTORY);
+        Path failedDir = watchDirectory.resolve(WATCH_FAILED_SUBDIRECTORY);
+        int retentionDays = settingsStore.current().watchFolderRetentionDays();
+        pruneWatchFolderOutcomeDirectory(addedDir, retentionDays);
+        pruneWatchFolderOutcomeDirectory(failedDir, retentionDays);
+
+        List<Path> candidates;
+        try (var entries = Files.list(watchDirectory)) {
+            candidates = entries
+                    .filter(Files::isRegularFile)
+                    .filter(p -> p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(TORRENT_FILE_EXTENSION))
+                    .toList();
+        } catch (IOException e) {
+            LOG.log(System.Logger.Level.WARNING, "Could not scan watch folder " + watchDirectory, e);
+            return;
+        }
+
+        Map<String, WatchCandidateSnapshot> previousSnapshot = watchFolderSnapshot;
+        Map<String, WatchCandidateSnapshot> nextSnapshot = new HashMap<>();
+        for (Path candidate : candidates) {
+            String filename = candidate.getFileName().toString();
+            WatchCandidateSnapshot snapshot;
+            try {
+                snapshot = new WatchCandidateSnapshot(Files.size(candidate), Files.getLastModifiedTime(candidate));
+            } catch (IOException e) {
+                // Vanished or became unreadable between listing and stating - try again next
+                // tick rather than failing the whole scan over one file.
+                continue;
+            }
+            if (!snapshot.equals(previousSnapshot.get(filename))) {
+                // New, or still changing (e.g. a slow copy still in progress) - wait for it to
+                // stabilize across a full poll interval before ever reading its contents.
+                nextSnapshot.put(filename, snapshot);
+                continue;
+            }
+            processWatchedFile(candidate, addedDir, failedDir);
+            // Not added to nextSnapshot - processed (moved out) or its move failed and it's
+            // still sitting here, in which case it's treated as newly-seen again next tick,
+            // requiring one more stable interval before being retried. See design_docs/0056's
+            // Stability section for why that's an acceptable, narrow edge case rather than
+            // something worth more machinery to fully close off.
+        }
+        watchFolderSnapshot = nextSnapshot;
+    }
+
+    /** Reads and adds the file, then moves it to addedDir or failedDir depending on the
+     * outcome - the move is attempted regardless of which, but a move failure is only ever
+     * logged (not re-recorded as a second event): the outcome of the *add* is the thing worth
+     * an event, the outcome of the subsequent housekeeping move is not. See design_docs/0056. */
+    private void processWatchedFile(Path file, Path addedDir, Path failedDir) {
+        String filename = file.getFileName().toString();
+        boolean added;
+        try {
+            byte[] torrentFileBytes = Files.readAllBytes(file);
+            addTorrent(torrentFileBytes, WATCH_FOLDER_SOURCE);
+            added = true;
+        } catch (IOException | RuntimeException e) {
+            added = false;
+            LOG.log(System.Logger.Level.WARNING, "Watch folder could not add " + filename, e);
+            eventStore.record(new LibraryEvent(Instant.now(), EventType.ERROR, null, null,
+                    "Watch folder: could not add " + filename + " (" + e.getMessage() + ")"));
+        }
+        try {
+            moveWithCollisionSuffix(file, added ? addedDir : failedDir);
+        } catch (IOException e) {
+            LOG.log(System.Logger.Level.WARNING,
+                    "Could not move watch-folder file " + filename + " to " + (added ? addedDir : failedDir), e);
+        }
+    }
+
+    /** Guards against destinationDir having been deleted (by the user, or anything else)
+     * since the last tick - recreated here, immediately before the one operation that
+     * actually needs it to exist, rather than relying solely on an earlier check in the same
+     * tick. Renames with a "-2", "-3", ... suffix on a name collision (the same filename
+     * already moved here once before), reusing resolveDownloadDirectory()'s own collision
+     * convention rather than inventing a second one. Explicitly stamps the moved file's
+     * last-modified time to now - Files.move preserves the *original* file's timestamp by
+     * default, which would otherwise make pruneWatchFolderOutcomeDirectory() judge a
+     * long-since-downloaded .torrent file as immediately due for deletion the moment it's
+     * dropped in, rather than counting from when it was actually resolved. See
+     * design_docs/0056. */
+    private static void moveWithCollisionSuffix(Path source, Path destinationDir) throws IOException {
+        Files.createDirectories(destinationDir);
+        String filename = source.getFileName().toString();
+        Path destination = destinationDir.resolve(filename);
+        int suffix = 2;
+        while (Files.exists(destination)) {
+            destination = destinationDir.resolve(insertFilenameSuffix(filename, suffix));
+            suffix++;
+        }
+        Files.move(source, destination);
+        Files.setLastModifiedTime(destination, FileTime.from(Instant.now()));
+    }
+
+    /** "foo.torrent" + 2 -> "foo-2.torrent" - inserted before the extension rather than
+     * appended after it, so the result still opens/sorts as a recognizable .torrent file. */
+    private static String insertFilenameSuffix(String filename, int suffix) {
+        int dot = filename.lastIndexOf('.');
+        return dot <= 0
+                ? filename + "-" + suffix
+                : filename.substring(0, dot) + "-" + suffix + filename.substring(dot);
+    }
+
+    /** A missing directory (nothing has ever succeeded/failed yet) is a normal, silent no-op -
+     * not a warning-worthy problem, unlike an actual I/O failure while a directory does exist.
+     * Uses each file's own last-modified time (see moveWithCollisionSuffix's own Javadoc for
+     * why that's stamped to the move time, not left at the original file's time) rather than a
+     * filename-embedded date - unlike JsonLinesEventStore's day-files, these are ordinary files
+     * whose real mtime is already meaningful once stamped correctly. See design_docs/0056 and
+     * design_docs/0051. */
+    private static void pruneWatchFolderOutcomeDirectory(Path directory, int retentionDays) {
+        if (!Files.isDirectory(directory)) {
+            return;
+        }
+        LocalDate cutoff = LocalDate.now(ZoneId.systemDefault()).minusDays(retentionDays);
+        try (var entries = Files.list(directory)) {
+            for (Path entry : entries.filter(Files::isRegularFile).toList()) {
+                try {
+                    LocalDate entryDate = LocalDate.ofInstant(
+                            Files.getLastModifiedTime(entry).toInstant(), ZoneId.systemDefault());
+                    if (entryDate.isBefore(cutoff)) {
+                        Files.deleteIfExists(entry);
+                    }
+                } catch (IOException e) {
+                    LOG.log(System.Logger.Level.WARNING, "Could not prune " + entry, e);
+                }
+            }
+        } catch (IOException e) {
+            LOG.log(System.Logger.Level.WARNING, "Could not list " + directory + " for pruning", e);
+        }
     }
 
     private PeerServer createPeerServer(int port) {
@@ -400,6 +605,14 @@ public final class TorrentEngine {
      * existing session rather than creating a second one.
      */
     public AddTorrentResult addTorrent(byte[] torrentFileBytes) throws IOException {
+        return addTorrent(torrentFileBytes, null);
+    }
+
+    /** source is null for a direct upload (the public overload above) or a short label like
+     * "watch folder" (scanWatchFolder()) - folded into the resulting ADDED library event's
+     * message ("Added via watch folder") so it's distinguishable from a direct upload, without
+     * adding a new parameter to every existing caller. See design_docs/0055/0056. */
+    AddTorrentResult addTorrent(byte[] torrentFileBytes, String source) throws IOException {
         TorrentMetadata metadata = MetainfoParser.parse(torrentFileBytes);
         TrackerClient trackerClient = createTrackerClient(metadata);
         InfoHash infoHash = metadata.infoHash();
@@ -450,8 +663,9 @@ public final class TorrentEngine {
             throw creationFailure.get();
         }
         if (wasNewlyCreated.get()) {
+            String message = source != null ? "Added via " + source : null;
             eventStore.record(new LibraryEvent(
-                    Instant.now(), EventType.ADDED, infoHash.hex(), metadata.name(), null));
+                    Instant.now(), EventType.ADDED, infoHash.hex(), metadata.name(), message));
         }
         return new AddTorrentResult(session, !wasNewlyCreated.get());
     }
@@ -712,7 +926,7 @@ public final class TorrentEngine {
      * stays as the desired state for the next restore(), regardless of why the process
      * is exiting. */
     public void shutdown() {
-        seedingLimitScheduler.shutdownNow();
+        maintenanceScheduler.shutdownNow();
         for (TorrentSession session : sessions.values()) {
             session.close();
         }

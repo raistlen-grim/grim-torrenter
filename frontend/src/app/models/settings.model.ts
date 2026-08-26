@@ -22,7 +22,11 @@ export type EncryptionMode = 'DISABLED' | 'PREFERRED' | 'REQUIRED';
  * "unlimited" value - the backend silently normalizes anything below 1 to a default of 30
  * rather than rejecting it, since an unbounded event log is exactly what this field exists to
  * prevent. The settings form still enforces a minimum of 1 in its own input so a user never
- * sees that silent substitution happen. See design_docs/0055. */
+ * sees that silent substitution happen. See design_docs/0055. watchFolderEnabled/
+ * watchFolderRetentionDays govern the watch-folder auto-add feature (see design_docs/0056) -
+ * both live, checked fresh on every scan tick; defaults disabled/7 days.
+ * watchFolderRetentionDays follows the same no-unlimited-value, silently-normalized-below-1
+ * treatment as eventLogRetentionDays, for the same reason. */
 export interface Settings {
   dhtEnabled: boolean;
   acceptIncomingConnections: boolean;
@@ -40,4 +44,6 @@ export interface Settings {
   seedTimeLimitEnabled: boolean;
   seedTimeLimitMinutes: number;
   eventLogRetentionDays: number;
+  watchFolderEnabled: boolean;
+  watchFolderRetentionDays: number;
 }

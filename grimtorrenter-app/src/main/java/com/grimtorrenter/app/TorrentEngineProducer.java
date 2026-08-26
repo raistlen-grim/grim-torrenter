@@ -42,6 +42,13 @@ public class TorrentEngineProducer {
     @ConfigProperty(name = "grimtorrenter.max-concurrent-piece-verifications", defaultValue = "0")
     int maxConcurrentPieceVerifications;
 
+    /** The watch-folder auto-add directory (design_docs/0056) - deploy-time config, same
+     * category as download-directory above, independently mountable. Whether it's actually
+     * scanned at all is governed live by Settings.watchFolderEnabled, not by this property -
+     * this just says where to look if/when that's turned on. */
+    @ConfigProperty(name = "grimtorrenter.watch-directory", defaultValue = "watch")
+    String watchDirectory;
+
     @Inject
     TorrentEventListener eventListener;
 
@@ -75,6 +82,6 @@ public class TorrentEngineProducer {
                 : Runtime.getRuntime().availableProcessors();
         return new TorrentEngine(Path.of(downloadDirectory), listenPort, eventListener,
                 settings.dhtEnabled(), settings.acceptIncomingConnections(), settingsStore,
-                new FileHandlePool(maxOpenFiles), verificationPermits, eventStore);
+                new FileHandlePool(maxOpenFiles), verificationPermits, eventStore, Path.of(watchDirectory));
     }
 }

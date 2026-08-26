@@ -1,0 +1,35 @@
+<fieldset [formGroup]="form()">
+  <legend class="heading-font">Watch folder</legend>
+  <p class="group-hint">
+    Drop a .torrent file into the watch directory to add it automatically. Successes and
+    failures move into its own added/failed subfolders.
+  </p>
+
+  <div class="setting-row">
+    <div class="setting-label">
+      <label for="watchFolderEnabled">Enabled</label>
+      <p class="setting-description">Applies to new files immediately - no restart needed.</p>
+    </div>
+    <p-toggleswitch inputId="watchFolderEnabled" formControlName="enabled" />
+  </div>
+
+  <div class="setting-row">
+    <div class="setting-label">
+      <label for="watchFolderRetentionDays">Keep resolved files for</label>
+      <p class="setting-description">
+        How many days a file stays in the added/failed subfolders before being deleted. Takes
+        effect on the next scan, not instantly.
+      </p>
+    </div>
+    <div class="retention-control">
+      <p-inputnumber
+        inputId="watchFolderRetentionDays"
+        formControlName="retentionDays"
+        [min]="1"
+        [showButtons]="false"
+        inputStyleClass="retention-input-field"
+      />
+      <span>days</span>
+    </div>
+  </div>
+</fieldset>

@@ -38,15 +38,22 @@ EXPOSE 8080
 EXPOSE 6881/tcp
 EXPOSE 6881/udp
 
-# Two independently mountable directories, both created automatically if missing:
+# Three independently mountable directories, all created automatically if missing:
 #   grimtorrenter.download-directory (default ./downloads, relative to /app) - torrent data.
 #   grimtorrenter.config-directory   (default ./config, relative to /app)    - settings.json,
 #                                     the library event log (config-directory/events/, rolling
 #                                     daily files - see design_docs/0055), and other small
 #                                     persisted state (see design_docs/0041).
+#   grimtorrenter.watch-directory    (default ./watch, relative to /app)     - the watch-folder
+#                                     auto-add feature (design_docs/0056, off by default -
+#                                     Settings.watchFolderEnabled). Drop a .torrent file here to
+#                                     have it auto-added; watch-directory/added and
+#                                     watch-directory/failed record the outcome, both pruned on
+#                                     a configurable retention window.
 # Bind-mount each to a separate host path (e.g. -v host/downloads:/app/downloads
-# -v host/config:/app/config) to keep configuration and downloaded data on separate volumes,
-# matching how other self-hosted tools are typically deployed. Without a config-directory
-# mount, the event log (like settings.json) is lost on every container recreate, not just a
-# plain restart of the same container.
+# -v host/config:/app/config -v host/watch:/app/watch) to keep configuration, downloaded data,
+# and watched files on separate volumes, matching how other self-hosted tools are typically
+# deployed. Without a config-directory mount, the event log (like settings.json) is lost on
+# every container recreate, not just a plain restart of the same container; without a
+# watch-directory mount, there's nowhere outside the container to actually drop files into.
 ENTRYPOINT ["java", "-jar", "quarkus-run.jar"]

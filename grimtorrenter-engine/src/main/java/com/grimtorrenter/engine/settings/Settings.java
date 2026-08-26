@@ -76,6 +76,18 @@ import com.grimtorrenter.engine.mse.EncryptionMode;
  * silent normalization, not a validation error - unlike rateLimitScheduleStart/End, there is no
  * corresponding SettingsResource-level rejection for this field, since by the time that layer
  * sees a deserialized Settings there is no longer an invalid value left to reject.
+ *
+ * <p>watchFolderEnabled/watchFolderRetentionDays govern the watch-folder auto-add feature
+ * (design_docs/0056) - both genuinely live, checked fresh on every scan tick, not just at
+ * construction (unlike dhtEnabled/acceptIncomingConnections, there's no socket/resource to
+ * tear down or recreate here, just "do nothing this tick" vs. "scan"). Defaults disabled -
+ * an opt-in feature that moves/deletes files a user drops somewhere is a bigger surprise to
+ * default on than DHT/incoming-connections ever were, matching the rate-limit/seeding-limit
+ * precedent of defaulting a potentially-surprising behavior off. watchFolderRetentionDays
+ * (default 7) bounds how long a resolved file sits in the watch directory's added/failed
+ * subfolders before being deleted - same **no** "0/negative means unlimited" treatment as
+ * eventLogRetentionDays, and for the same reason: silently normalized to the default by the
+ * compact constructor below, not rejected at the REST boundary.
  */
 public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
                         long uploadRateLimitBytesPerSec, long downloadRateLimitBytesPerSec,
@@ -84,9 +96,11 @@ public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
                         EncryptionMode encryptionMode, long rateLimitBurstSeconds,
                         boolean seedRatioLimitEnabled, double seedRatioLimit,
                         boolean seedTimeLimitEnabled, long seedTimeLimitMinutes,
-                        int eventLogRetentionDays) {
+                        int eventLogRetentionDays,
+                        boolean watchFolderEnabled, int watchFolderRetentionDays) {
 
     private static final int DEFAULT_EVENT_LOG_RETENTION_DAYS = 30;
+    private static final int DEFAULT_WATCH_FOLDER_RETENTION_DAYS = 7;
     private static final String DEFAULT_SCHEDULE_START = "23:00";
     private static final String DEFAULT_SCHEDULE_END = "07:00";
     /** Starting values shown once a user enables a disabled seeding limit - meaningless while
@@ -108,14 +122,39 @@ public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
         if (eventLogRetentionDays <= 0) {
             eventLogRetentionDays = DEFAULT_EVENT_LOG_RETENTION_DAYS;
         }
+        if (watchFolderRetentionDays <= 0) {
+            watchFolderRetentionDays = DEFAULT_WATCH_FOLDER_RETENTION_DAYS;
+        }
     }
 
-    /** Same as the canonical constructor above but without eventLogRetentionDays - for every
-     * caller that predates library events' addition (every secondary constructor below, plus
-     * the two tests that construct the previously-canonical fifteen-arg form directly),
-     * defaulting to DEFAULT_EVENT_LOG_RETENTION_DAYS. Same "add a sibling overload, touch zero
+    /** Same as the canonical constructor above but without watchFolderEnabled/
+     * watchFolderRetentionDays - for every caller that predates the watch folder's addition
+     * (every secondary constructor below, plus any direct sixteen-arg caller), defaulting to
+     * disabled/DEFAULT_WATCH_FOLDER_RETENTION_DAYS. Same "add a sibling overload, touch zero
      * existing call sites" pattern used for every prior field addition to this record. See
-     * design_docs/0055. */
+     * design_docs/0056. */
+    public Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
+                     long uploadRateLimitBytesPerSec, long downloadRateLimitBytesPerSec,
+                     boolean rateLimitScheduleEnabled, String rateLimitScheduleStart, String rateLimitScheduleEnd,
+                     long scheduledUploadRateLimitBytesPerSec, long scheduledDownloadRateLimitBytesPerSec,
+                     EncryptionMode encryptionMode, long rateLimitBurstSeconds,
+                     boolean seedRatioLimitEnabled, double seedRatioLimit,
+                     boolean seedTimeLimitEnabled, long seedTimeLimitMinutes,
+                     int eventLogRetentionDays) {
+        this(dhtEnabled, acceptIncomingConnections, uploadRateLimitBytesPerSec, downloadRateLimitBytesPerSec,
+                rateLimitScheduleEnabled, rateLimitScheduleStart, rateLimitScheduleEnd,
+                scheduledUploadRateLimitBytesPerSec, scheduledDownloadRateLimitBytesPerSec, encryptionMode,
+                rateLimitBurstSeconds, seedRatioLimitEnabled, seedRatioLimit, seedTimeLimitEnabled,
+                seedTimeLimitMinutes, eventLogRetentionDays, false, DEFAULT_WATCH_FOLDER_RETENTION_DAYS);
+    }
+
+    /** Same as the canonical constructor above but without eventLogRetentionDays or
+     * watchFolderEnabled/watchFolderRetentionDays - for every caller that predates library
+     * events' addition (every secondary constructor below, plus the two tests that construct
+     * the previously-canonical fifteen-arg form directly), defaulting to
+     * DEFAULT_EVENT_LOG_RETENTION_DAYS/disabled/DEFAULT_WATCH_FOLDER_RETENTION_DAYS. Same "add
+     * a sibling overload, touch zero existing call sites" pattern used for every prior field
+     * addition to this record. See design_docs/0055. */
     public Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
                      long uploadRateLimitBytesPerSec, long downloadRateLimitBytesPerSec,
                      boolean rateLimitScheduleEnabled, String rateLimitScheduleStart, String rateLimitScheduleEnd,

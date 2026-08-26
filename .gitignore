@@ -4,6 +4,13 @@ target/
 # Runtime downloaded torrent data (grimtorrenter.download-directory default)
 grimtorrenter-app/downloads/
 
+# Runtime config/state (grimtorrenter.config-directory default) - settings.json, the library
+# event log (config/events/, design_docs/0055), and any other locally-persisted state
+grimtorrenter-app/config/
+
+# Runtime watch-folder directory (grimtorrenter.watch-directory default, design_docs/0056)
+grimtorrenter-app/watch/
+
 # Quarkus
 .quarkus/
 

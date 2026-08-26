@@ -160,6 +160,24 @@ complete**, per the phased scope in [[0009-phased-scope]]:
     `oldState`/`newState` → `EventType` mapping added to `onStateChanged`) has no dedicated
     test — no cheap, deterministic way to drive a real `TorrentSession` into `ERROR` the way
     seeding limits' degenerate-zero trick covers `SEEDING`/`STOPPED`.
+- **Watch folder** (picked as the explicit next thing to build, 2026-08-26, ahead of everything
+  else on the list at the time) — drop a `.torrent` file into a new configurable
+  `grimtorrenter.watch-directory` and it's auto-added, no manual upload needed. Polled every 30
+  seconds (not `WatchService`/native filesystem events — unreliable through Docker bind mounts
+  on macOS/Windows) on the same shared daemon thread `checkSeedingLimits()` already used,
+  generalized from `seedingLimitScheduler` into a `maintenanceScheduler` both now run on. A file
+  is only ever read once its size/mtime is unchanged across two consecutive ticks (a partial-
+  write guard). Successes move to `watch-directory/added/`, failures to `watch-directory/failed/`
+  (both cleaned up on a new live, **never-unlimited** `Settings.watchFolderRetentionDays`,
+  default 7 days — same silent-normalize-anything-below-1 treatment as `eventLogRetentionDays`),
+  with each move guarded by recreating the destination directory immediately beforehand in case
+  either was deleted since the last tick. `addTorrent()` gained an internal, engine-only *source*
+  concept so a watch-folder-triggered `ADDED` event's message reads "Added via watch folder,"
+  distinguishing it from a direct upload; a failed add records a new `ERROR` event naming the
+  file and reason. A new **Watch folder** settings group (enable toggle + retention field).
+  ([[0056-watch-folder]])
+  - **Deferred**: magnet-link files (e.g. a `.magnet` text-file convention) and a configurable
+    poll interval — `.torrent` files only and a fixed 30-second cadence for this first pass.
 
 **Not yet built** (the rest of Phase 3):
 
@@ -252,7 +270,7 @@ torrent's files were opened once and held open for its whole lifetime, even whil
 Phase 2 is fully complete; Phase 3 has Peer Exchange, rate limiting (with a daily off-hours
 schedule and a burst allowance), a real settings page, and MSE done — every item from the
 original Phase 3 list is now built; the engine stability/scale audit is fully closed out;
-seeding limits and library events (both picked from `TODO.md`) are done:
+seeding limits, library events, and the watch folder (all picked from `TODO.md`) are done:
 
 1. The pending-action-vs-2s-snapshot-lag gap noted above, if it proves to
    matter in practice.
@@ -260,6 +278,8 @@ seeding limits and library events (both picked from `TODO.md`) are done:
 3. Library events' two deferred event types ([[0055-library-events]]'s own "Deferred from this
    pass" section) — tracker unreachable/recovered, and a distinctly-labeled magnet-resolved —
    if they prove to matter in practice.
-4. The rate-limiting settings group's remaining natural additions (per-torrent overrides,
+4. The watch folder's two deferred items ([[0056-watch-folder]]'s own "Alternatives considered"
+   section) — magnet-link files and a configurable poll interval — if either proves to matter.
+5. The rate-limiting settings group's remaining natural additions (per-torrent overrides,
    multi-rule schedule) — pushed to the back of the backlog (2026-08-25), marginal real-world
    value relative to the items above.

@@ -31,12 +31,19 @@ import {
   buildSeedingSettingsForm,
   seedingSettingsPatch,
 } from './seeding-settings/seeding-settings';
+import {
+  WatchFolderSettings,
+  WatchFolderSettingsForm,
+  buildWatchFolderSettingsForm,
+  watchFolderSettingsPatch,
+} from './watch-folder-settings/watch-folder-settings';
 
 type SettingsFormGroup = FormGroup<{
   network: NetworkSettingsForm;
   rateLimiting: RateLimitSettingsForm;
   seeding: SeedingSettingsForm;
   eventLog: EventLogSettingsForm;
+  watchFolder: WatchFolderSettingsForm;
 }>;
 
 /**
@@ -49,7 +56,15 @@ type SettingsFormGroup = FormGroup<{
  */
 @Component({
   selector: 'app-settings-page',
-  imports: [ButtonModule, EventLogSettings, NetworkSettings, RateLimitSettings, SeedingSettings, ToastModule],
+  imports: [
+    ButtonModule,
+    EventLogSettings,
+    NetworkSettings,
+    RateLimitSettings,
+    SeedingSettings,
+    ToastModule,
+    WatchFolderSettings,
+  ],
   templateUrl: './settings-page.html',
   styleUrl: './settings-page.scss',
   providers: [MessageService],
@@ -82,6 +97,7 @@ export class SettingsPage {
             rateLimiting: buildRateLimitSettingsForm(settings),
             seeding: buildSeedingSettingsForm(settings),
             eventLog: buildEventLogSettingsForm(settings),
+            watchFolder: buildWatchFolderSettingsForm(settings),
           }),
         );
       }
@@ -100,6 +116,7 @@ export class SettingsPage {
       ...rateLimitSettingsPatch(value.rateLimiting),
       ...seedingSettingsPatch(value.seeding),
       ...eventLogSettingsPatch(value.eventLog),
+      ...watchFolderSettingsPatch(value.watchFolder),
     };
 
     this.saving.set(true);

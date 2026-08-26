@@ -42,6 +42,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -574,6 +575,24 @@ class TorrentEngineTest {
 
         List<LibraryEvent> events = eventStore.forTorrent(session.metadata().infoHash().hex());
         assertEquals(1, events.stream().filter(e -> e.type() == EventType.ADDED).count());
+    }
+
+    /** A direct upload via the public single-arg addTorrent(byte[]) still records message:
+     * null, confirming the new package-private source-aware overload the watch folder uses
+     * (design_docs/0056) didn't change this existing, unrelated call path's behavior. */
+    @Test
+    void addTorrentWithoutASourceRecordsAnAddedEventWithNoMessage(@TempDir Path tempDir) throws Exception {
+        String announceUrl = startFakeTrackerServer();
+        InMemoryEventStore eventStore = new InMemoryEventStore();
+        TorrentEngine engine = new TorrentEngine(tempDir, 6881, new NoOpListener(), false, false,
+                new InMemorySettingsStore(), FileHandlePool.unbounded(), Integer.MAX_VALUE, eventStore);
+        byte[] torrentBytes = torrentBytes("no-source-event.bin", fill(20, 15), announceUrl);
+
+        TorrentSession session = engine.addTorrent(torrentBytes).session();
+
+        List<LibraryEvent> events = eventStore.forTorrent(session.metadata().infoHash().hex());
+        LibraryEvent added = events.stream().filter(e -> e.type() == EventType.ADDED).findFirst().orElseThrow();
+        assertNull(added.message());
     }
 
     @Test
