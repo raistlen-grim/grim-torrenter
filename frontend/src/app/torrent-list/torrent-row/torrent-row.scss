@@ -1,30 +1,154 @@
-// Deliberately minimal - real visual design is pending the reference app.
+/* Row anatomy per the style guide's redesign (STYLE_GUIDE_NOTES.md / README.md "Row
+ * anatomy") - see design_docs/0032's second-pass correction for the token/preset side of
+ * this. The row itself is the click target (cursor stays "default", never "pointer" - a
+ * data row, not a hyperlink) and the containing block for the full-row progress underlay
+ * below, so :host needs position: relative. */
+:host {
+  position: relative;
+  cursor: default;
+}
+
+:host(:hover) {
+  background: color-mix(in srgb, var(--color-text) 4%, transparent);
+}
 
 :host(.row-pending) {
   opacity: 0.6;
   transition: opacity 0.15s ease;
 }
 
-/* display:flex was previously set directly on the <td> itself - overriding a table-cell's
- * own display takes it out of normal table box generation (the browser has to invent an
- * anonymous table-cell wrapper around it instead), and its computed content height can then
- * differ from sibling <td>s by a pixel or two, visibly misaligning this column's top/bottom
- * border. Flex now lives on an inner <div> instead, so the <td> itself stays a plain
- * table-cell like every other column. The invisible <p-contextMenu> (see torrent-row.html)
- * is a sibling of that div, not one of its flex items, for the same reason. */
-.actions-inner {
+/* Every <td> except .state-icon-cell gets position: relative purely so its content paints
+ * in the "positioned" layer, above the progress underlay (also position: absolute) -
+ * per-spec CSS painting order otherwise puts positioned content above non-positioned
+ * content regardless of DOM order, which would bury this text under the underlay. Deliberately
+ * NOT applied to .state-icon-cell itself: that's what the underlay's own left:0/top:0 is
+ * relative to, and it needs to resolve against :host (the whole row), not just that one cell -
+ * giving the cell its own position: relative would make it the underlay's containing block
+ * instead and clip it to that cell's width. */
+td:not(.state-icon-cell) {
+  position: relative;
+}
+
+/* The underlay lives inside .state-icon-cell in the markup (the first cell), but is
+ * positioned against :host (the row) per the comment above - it visually spans every column,
+ * not just its own containing cell. pointer-events: none so it never intercepts row clicks. */
+.progress-underlay {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+  background-color: color-mix(in srgb, var(--color-accent) 11%, transparent);
+}
+
+/* Never mistakable for download progress - a striped fill instead of a solid one while the
+ * backend re-verifies already-downloaded pieces (see design_docs/0026). */
+.progress-underlay.verifying {
+  background-color: color-mix(in srgb, var(--color-accent) 30%, transparent);
+  background-image: repeating-linear-gradient(115deg, var(--color-accent) 0 5px, transparent 5px 10px);
+}
+
+.state-icon-cell {
+  text-align: center;
+}
+
+.state-icon {
+  position: relative;
+  font-size: 0.85rem;
+}
+
+.tone-active {
+  color: var(--color-accent);
+}
+
+.tone-dim {
+  opacity: 0.55;
+}
+
+.tone-alarm {
+  color: var(--alarm);
+}
+
+/* The stem truncates with an ellipsis; the extension never does, so a long filename never
+ * loses the part that tells you what it actually is (style guide: "the extension is
+ * preserved"). display:flex lives on .name-inner rather than the <td> itself - see the
+ * same reasoning documented on .row-actions below (overriding a table-cell's own display
+ * misaligns its border against sibling cells). */
+.name-inner {
   display: flex;
-  gap: var(--space-1);
+  min-width: 0;
+}
+
+.name-stem {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.name-extension {
+  flex: none;
+  white-space: nowrap;
+}
+
+.size-cell {
+  text-align: right;
+  opacity: 0.7;
+}
+
+.done-cell {
+  text-align: right;
+  opacity: 0.75;
+}
+
+.down-cell,
+.up-cell {
+  text-align: right;
+}
+
+.rate-active {
+  opacity: 0.9;
+}
+
+/* An idle rate is a number the eye has to read and then discard - an em dash at reduced
+ * opacity instead of "0 B/s" (style guide's empty-value rule). */
+.rate-idle {
+  opacity: 0.35;
+}
+
+.eta-cell {
+  text-align: right;
+  opacity: 0.6;
 }
 
 .error-detail {
   margin-top: var(--space-1);
   font-size: 0.8rem;
-  color: var(--p-red-500, #dc2626);
+  color: var(--alarm);
 }
 
-.byte-progress {
-  margin-top: var(--space-1);
-  font-size: 0.8rem;
-  color: var(--p-text-muted-color, #6b7280);
+.actions-cell {
+  text-align: right;
+}
+
+/* Invisible at rest, revealed on hover or on keyboard focus anywhere in the row (not hover
+ * alone - style guide's own accessibility rule for row-level controls). display:flex lives
+ * on this inner wrapper rather than the <td> itself, since overriding a table-cell's own
+ * display takes it out of normal table box generation (the browser has to invent an
+ * anonymous table-cell wrapper instead), and its computed content height can then differ
+ * from sibling <td>s by a pixel or two, visibly misaligning this column's border. The
+ * invisible <p-contextMenu> (see torrent-row.html) is a sibling of this div, not one of its
+ * flex items, for the same reason. Its own (click) stops propagation so clicking a row
+ * action doesn't also fire the row's navigate-on-click. */
+.row-actions {
+  display: inline-flex;
+  gap: var(--space-1);
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+
+:host(:hover) .row-actions,
+:host(:focus-within) .row-actions {
+  opacity: 1;
 }

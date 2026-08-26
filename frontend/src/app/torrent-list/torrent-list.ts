@@ -11,6 +11,7 @@ import { InputIconModule } from 'primeng/inputicon';
 import { InputTextModule } from 'primeng/inputtext';
 import { TableModule } from 'primeng/table';
 import { ToastModule } from 'primeng/toast';
+import { TooltipModule } from 'primeng/tooltip';
 import { filter, map } from 'rxjs';
 
 import { TorrentWithRate } from '../models/torrent.model';
@@ -48,6 +49,7 @@ type SortDirection = 'asc' | 'desc';
     StatusIndicator,
     TableModule,
     ToastModule,
+    TooltipModule,
     TorrentRow,
   ],
   providers: [ConfirmationService, MessageService],
@@ -117,7 +119,7 @@ export class TorrentList {
    * unrelated to dataKey, which only drives selection/expansion. torrents() rebuilds every
    * torrent as a new object on every 2s snapshot even when nothing changed (see
    * torrent-events.service.ts), so without this every row - and everything inside it,
-   * including an open p-splitButton overlay - gets destroyed and recreated on every tick
+   * including an open p-contextMenu overlay - gets destroyed and recreated on every tick
    * instead of having its bindings updated in place. See design_docs/0027. */
   trackByRow(_index: number, row: TableRow): string {
     return row.kind === 'pending' ? `pending-${row.upload.id}` : row.torrent.infoHash;
@@ -136,12 +138,17 @@ export class TorrentList {
     }
   }
 
-  /** pi-sort-alt when this column isn't the active sort, else an up/down arrow matching
-   * the current direction - the guide's own rule that "the sorted column header takes the
-   * accent" is applied via the [class.active] binding in the template instead. */
+  /** An inactive column always previews `pi-sort-amount-up` - toggleSort() below always
+   * resets a freshly-clicked column to ascending, so the hover-revealed hint icon (see
+   * .sort-header CSS) shows exactly what clicking would do, rather than a neutral
+   * bidirectional glyph. The style guide is explicit that this glyph must NOT be shown at
+   * rest on every header ("six identical arrow pairs tell the user nothing about which
+   * column is actually sorted") - only the active column's icon is meant to be visible by
+   * default; everything else appears on hover only, via CSS. The active column's own icon
+   * still uses this same function, now showing its real current direction. */
   sortIcon(field: SortField): string {
     if (this.sortField() !== field) {
-      return 'pi-sort-alt';
+      return 'pi-sort-amount-up';
     }
     return this.sortDirection() === 'asc' ? 'pi-sort-amount-up' : 'pi-sort-amount-down';
   }

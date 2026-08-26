@@ -1,10 +1,8 @@
 import { ChangeDetectionStrategy, Component, computed, inject, input, signal, viewChild } from '@angular/core';
-import { RouterLink } from '@angular/router';
+import { Router } from '@angular/router';
 import { ConfirmationService, MenuItem, MessageService } from 'primeng/api';
 import { ButtonModule } from 'primeng/button';
 import { ContextMenu, ContextMenuModule } from 'primeng/contextmenu';
-import { ProgressBarModule } from 'primeng/progressbar';
-import { SplitButtonModule } from 'primeng/splitbutton';
 import { TooltipModule } from 'primeng/tooltip';
 import { finalize } from 'rxjs';
 
@@ -16,7 +14,6 @@ import { FormatEtaPipe } from '../../shared/format-eta.pipe';
 import { FormatRateWindowsPipe } from '../../shared/format-rate-windows.pipe';
 import { FormatRatePipe } from '../../shared/format-rate.pipe';
 import { ActiveContextMenuRegistry } from '../../shared/active-context-menu-registry';
-import { StatusIndicator } from '../../shared/status-indicator/status-indicator';
 import { torrentStateDisplay } from '../../shared/status-display';
 import { SeedingLimitsDialog } from './seeding-limits-dialog/seeding-limits-dialog';
 
@@ -32,6 +29,12 @@ import { SeedingLimitsDialog } from './seeding-limits-dialog/seeding-limits-dial
  * notifies its consumers when its own value actually differs, so unrelated fields ticking
  * (e.g. upload rate while state/progress are steady) no longer touches bindings that don't
  * depend on them.
+ *
+ * <p>The row itself is the click target (style guide's row-anatomy redesign, see
+ * design_docs/0032's second pass) - not the name, which is plain text now, never a link.
+ * `tabindex="0"` plus `(keydown.enter)` make that keyboard-operable in place of the
+ * `<a routerLink>` this replaced; `(click)` on the actions wrapper stops propagation so
+ * clicking a row action doesn't also navigate.
  */
 @Component({
   selector: 'tr[app-torrent-row]',
@@ -42,19 +45,18 @@ import { SeedingLimitsDialog } from './seeding-limits-dialog/seeding-limits-dial
     FormatEtaPipe,
     FormatRateWindowsPipe,
     FormatRatePipe,
-    ProgressBarModule,
-    RouterLink,
     SeedingLimitsDialog,
-    SplitButtonModule,
-    StatusIndicator,
     TooltipModule,
   ],
   templateUrl: './torrent-row.html',
   styleUrl: './torrent-row.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: {
+    tabindex: '0',
     '[class.row-pending]': 'pendingAction() !== null',
     '(contextmenu)': 'onContextMenu($event)',
+    '(click)': 'navigateToDetail()',
+    '(keydown.enter)': 'navigateToDetail()',
   },
 })
 export class TorrentRow {
@@ -63,6 +65,7 @@ export class TorrentRow {
   private readonly confirmationService = inject(ConfirmationService);
   private readonly messageService = inject(MessageService);
   private readonly activeContextMenus = inject(ActiveContextMenuRegistry);
+  private readonly router = inject(Router);
 
   readonly torrent = input.required<TorrentWithRate>();
 
@@ -80,30 +83,36 @@ export class TorrentRow {
 
   readonly infoHash = computed(() => this.torrent().infoHash);
   readonly name = computed(() => this.torrent().name);
+  /** Split so the template can truncate the stem with an ellipsis while always keeping the
+   * extension visible (style guide row anatomy: "the extension is preserved"). A plain
+   * `lastIndexOf('.')` would cut `archive.tar.xz` down to `.xz` - COMPOUND_EXTENSIONS keeps
+   * the handful of common two-part extensions whole instead. */
+  private readonly nameSplit = computed(() => TorrentRow.splitFileName(this.name()));
+  readonly nameStem = computed(() => this.nameSplit().stem);
+  readonly nameExtension = computed(() => this.nameSplit().extension);
   readonly state = computed(() => this.torrent().state);
   readonly lastError = computed(() => this.torrent().lastError);
-  readonly bytesDownloaded = computed(() => this.torrent().bytesDownloaded);
   readonly totalLength = computed(() => this.torrent().totalLength);
   /** Based on bytesDownloaded (verified-complete), not bytesReceived - ETA should reflect
    * how much legitimately-verified work remains, same basis as the progress bar/%, even
    * though the rate it's divided by is derived from the continuously-moving bytesReceived
-   * (see TorrentEventsService). */
+   * (see TorrentEventsService). Byte totals themselves (bytesDownloaded/bytesUploaded) and
+   * connectedPeers are no longer shown in the row - the style guide's row anatomy drops them
+   * in favor of just a rate/percentage per column, moving totals to the details panel. */
   readonly bytesRemaining = computed(() => this.torrent().totalLength - this.torrent().bytesDownloaded);
   readonly downloadRateBytesPerSec = computed(() => this.torrent().downloadRateBytesPerSec);
   readonly downloadRateWindows = computed(() => this.torrent().downloadRateWindows);
-  readonly bytesUploaded = computed(() => this.torrent().bytesUploaded);
   readonly uploadRateBytesPerSec = computed(() => this.torrent().uploadRateBytesPerSec);
   readonly uploadRateWindows = computed(() => this.torrent().uploadRateWindows);
-  readonly connectedPeers = computed(() => this.torrent().connectedPeers);
 
   /** VERIFYING means the backend hasn't yet re-established which pieces are actually
    * complete after a restart (see design_docs/0026) - pause/resume/remove are disabled
    * until that settles, rather than acting on a torrent whose real state isn't known yet. */
   readonly isVerifying = computed(() => this.state() === 'VERIFYING');
 
-  /** Rounds any genuinely nonzero progress up to at least 1 - p-progressBar hides its
-   * value display entirely at exactly 0, and Math.round alone would sit at 0 for a long
-   * time on a large file, looking indistinguishable from "hasn't started". */
+  /** Rounds any genuinely nonzero progress up to at least 1 - Math.round alone would sit at
+   * 0 for a long time on a large file (both in the Done% cell and the underlay's width),
+   * looking indistinguishable from "hasn't started" even once real data has arrived. */
   readonly progressPercent = computed(() => {
     const progress = this.torrent().progress;
     if (progress <= 0) {
@@ -115,17 +124,6 @@ export class TorrentRow {
   /** Ink-weight + icon, not a colored severity badge - see design_docs/0033's style-guide
    * reconciliation ("one hue, one alarm," never a five-color state legend). */
   readonly stateDisplay = computed(() => torrentStateDisplay(this.state()));
-
-  /** Built once, not cached in a Map keyed by infoHash like before this component existed -
-   * this instance is already scoped to exactly one torrent for its whole lifetime (see
-   * trackByInfoHash in torrent-list.ts), so the instance itself is the cache key. */
-  readonly removeMenuItems: MenuItem[] = [
-    {
-      label: 'Remove and delete files',
-      icon: 'pi pi-exclamation-triangle',
-      command: () => this.confirmRemoveWithData(),
-    },
-  ];
 
   private readonly rowContextMenu = viewChild.required<ContextMenu>('rowMenu');
 
@@ -155,9 +153,38 @@ export class TorrentRow {
     ];
   });
 
+  navigateToDetail(): void {
+    this.router.navigate(['/torrents', this.infoHash()]);
+  }
+
   onContextMenu(event: MouseEvent): void {
     event.preventDefault();
     this.activeContextMenus.show(this.rowContextMenu(), event);
+  }
+
+  /** The row's `ellipsis` action button opens the identical menu as right-click (style
+   * guide: "⋯ opens the same context menu as right-click") - `stopPropagation` here (rather
+   * than on every button individually) is why the actions wrapper's own `(click)` handler in
+   * the template exists, so this click doesn't also fire the row's own navigate-on-click. */
+  onEllipsisClick(event: MouseEvent): void {
+    this.activeContextMenus.show(this.rowContextMenu(), event);
+  }
+
+  /** `archive.tar.xz` keeps its whole compound extension; anything else just splits on the
+   * final dot. A leading dot (`.gitignore`) or no dot at all has no extension to split off. */
+  private static splitFileName(name: string): { stem: string; extension: string } {
+    const lastDot = name.lastIndexOf('.');
+    if (lastDot <= 0) {
+      return { stem: name, extension: '' };
+    }
+    const secondLastDot = name.lastIndexOf('.', lastDot - 1);
+    if (secondLastDot > 0) {
+      const compound = name.slice(secondLastDot + 1).toLowerCase();
+      if (compound === 'tar.gz' || compound === 'tar.bz2' || compound === 'tar.xz') {
+        return { stem: name.slice(0, secondLastDot), extension: name.slice(secondLastDot) };
+      }
+    }
+    return { stem: name.slice(0, lastDot), extension: name.slice(lastDot) };
   }
 
   /** A magnet URI needs nothing beyond the info hash to be valid - dn is a display-name

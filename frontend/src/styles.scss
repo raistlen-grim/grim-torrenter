@@ -17,16 +17,78 @@
 }
 
 /* Style guide type scale - see grimtorrenter-preset.ts for the matching PrimeNG color/radius
-   tokens. Headings use Barlow Condensed via an explicit class rather than a blanket h1-h6
-   selector, since PrimeNG components render their own heading-like text (card titles,
-   dialog headers) that should stay on the body font unless a screen's own markup opts in. */
+   tokens. Three distinct roles per STYLE_GUIDE_NOTES.md, not two: --font-display (Cinzel -
+   the app's own voice only, wordmark and page/section headings - "never a filename"),
+   --font-heading (Barlow Condensed - sub-headings and control labels), --font-body (Barlow -
+   everything else, including all data). Exposed as custom properties, not just utility
+   classes, so later component styles can reach for var(--font-heading) etc. directly.
+   Applied via explicit classes rather than a blanket h1-h6 selector, since PrimeNG
+   components render their own heading-like text (card titles, dialog headers) that should
+   stay on the body font unless a screen's own markup opts in. */
+:root {
+  --font-display: 'Cinzel', 'Barlow Condensed', serif;
+  --font-heading: 'Barlow Condensed', system-ui, sans-serif;
+  --font-body: 'Barlow', system-ui, sans-serif;
+
+  /* Aliases for the style guide's own token names, so component styles can match its
+     literal vocabulary instead of re-deriving which PrimeNG semantic var backs each role.
+     --color-accent/-900 and --color-surface/--color-text track the active color scheme via
+     the already scheme-aware PrimeNG vars they alias (see grimtorrenter-preset.ts);
+     --color-accent-600/-700 are dark-mode-only steps per the guide (light shows "--") but
+     are harmless fixed values when unused in light mode. --color-bg and --field-ink have no
+     PrimeNG semantic equivalent (there's no built-in "page ground distinct from raised
+     surface" role), so they're set directly per scheme below. */
+  --color-accent: var(--p-primary-color);
+  /* Dark-mode-only steps per the guide's own token table (light shows "--" for both) - a
+     "hover/pressed" or "paragraph-safe accent text" role distinct from the base accent only
+     exists in dark mode, where the base accent alone doesn't have enough contrast against a
+     dark ground. Falling back to the base accent in light mode (rather than the literal
+     #94bce3/#b5d9fd hex, which are themselves dark-mode-tuned and would be a low-contrast,
+     near-illegible pale blue against a light background) keeps these usable unconditionally;
+     the dark-mode override below swaps in the real, distinct steps. */
+  --color-accent-600: var(--p-primary-color);
+  --color-accent-700: var(--p-primary-color);
+  --color-accent-900: var(--p-primary-900);
+  --color-surface: var(--p-content-background);
+  --color-text: var(--p-text-color);
+  --color-bg: #f2f2f3;
+  --field-ink: #f2f2f3;
+
+  /* Row/structural hairlines - 9% and 18% ink respectively, per STYLE_GUIDE_NOTES.md.
+     color-mix against --color-text so both stay theme-aware without a separate dark override. */
+  --rule: color-mix(in srgb, var(--color-text) 9%, transparent);
+  --color-divider: color-mix(in srgb, var(--color-text) 18%, transparent);
+
+  /* Destructive/error only - "one hue, one alarm" (see design_docs/0034). Literal oklch()
+     from the guide rather than a converted hex, since browsers take oklch() natively and
+     the guide's own color-mix() recipes (e.g. blocking-error tints) are written against it
+     directly. */
+  --alarm: oklch(0.58 0.13 27);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #171a1c;
+    --field-ink: #e6e8ea;
+    --color-accent-600: var(--p-primary-300);
+    --color-accent-700: var(--p-primary-200);
+  }
+}
+
 body {
-  font-family: 'Barlow', system-ui, sans-serif;
+  font-family: var(--font-body);
 }
 
 .heading-font {
-  font-family: 'Barlow Condensed', system-ui, sans-serif;
+  font-family: var(--font-heading);
   font-weight: 600;
+}
+
+/* The app's own voice only - wordmark, page/section headings. Never a filename or other
+   data value (STYLE_GUIDE_NOTES.md: "Filenames are data, never display type... never
+   Cinzel"). */
+.display-font {
+  font-family: var(--font-display);
 }
 
 /* Every rate, size, and count - anything that ticks - uses this so columns don't jitter. */

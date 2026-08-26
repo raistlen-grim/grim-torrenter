@@ -1,30 +1,55 @@
-<td><a [routerLink]="['/torrents', infoHash()]">{{ name() }}</a></td>
-<td class="tabular-nums">{{ totalLength() | formatBytes }}</td>
-<td>
-  <app-status-indicator [icon]="stateDisplay().icon" [label]="stateDisplay().label" [tone]="stateDisplay().tone" />
+<td class="state-icon-cell">
+  <div class="progress-underlay" [class.verifying]="isVerifying()" [style.width.%]="progressPercent()"></div>
+  <i
+    class="pi state-icon"
+    [class]="stateDisplay().icon"
+    [class.tone-active]="stateDisplay().tone === 'active'"
+    [class.tone-dim]="stateDisplay().tone === 'dim'"
+    [class.tone-alarm]="stateDisplay().tone === 'alarm'"
+    [title]="stateDisplay().label"
+    aria-hidden="true"
+  ></i>
+</td>
+<td class="name-cell" [title]="name()">
+  <div class="name-inner">
+    <span class="name-stem">{{ nameStem() }}</span><span class="name-extension">{{ nameExtension() }}</span>
+  </div>
+</td>
+<td class="size-cell tabular-nums">{{ totalLength() | formatBytes }}</td>
+<td
+  class="state-text-cell"
+  [class.tone-active]="stateDisplay().tone === 'active'"
+  [class.tone-dim]="stateDisplay().tone === 'dim'"
+  [class.tone-alarm]="stateDisplay().tone === 'alarm'"
+>
+  {{ stateDisplay().label }}
   @if (lastError()) {
     <div class="error-detail">{{ lastError() }}</div>
   }
 </td>
-<td>
-  <p-progressBar [value]="progressPercent()" />
-  <div class="byte-progress" [pTooltip]="downloadRateWindows() | formatRateWindows" tooltipPosition="top">
-    {{ bytesDownloaded() | formatBytes }} / {{ totalLength() | formatBytes }}
-    &mdash; {{ downloadRateBytesPerSec() | formatRate }}
-  </div>
+<td class="done-cell tabular-nums">{{ progressPercent() }}%</td>
+<td class="down-cell tabular-nums" [pTooltip]="downloadRateWindows() | formatRateWindows" tooltipPosition="top">
+  @if (downloadRateBytesPerSec() > 0) {
+    <span class="rate-active">{{ downloadRateBytesPerSec() | formatRate }}</span>
+  } @else {
+    <span class="rate-idle">&mdash;</span>
+  }
 </td>
-<td [pTooltip]="uploadRateWindows() | formatRateWindows" tooltipPosition="top">
-  {{ bytesUploaded() | formatBytes }}
-  &mdash; {{ uploadRateBytesPerSec() | formatRate }}
+<td class="up-cell tabular-nums" [pTooltip]="uploadRateWindows() | formatRateWindows" tooltipPosition="top">
+  @if (uploadRateBytesPerSec() > 0) {
+    <span class="rate-active">{{ uploadRateBytesPerSec() | formatRate }}</span>
+  } @else {
+    <span class="rate-idle">&mdash;</span>
+  }
 </td>
-<td>{{ connectedPeers() }}</td>
-<td class="tabular-nums">{{ bytesRemaining() | formatEta : downloadRateBytesPerSec() }}</td>
-<td class="actions">
-  <div class="actions-inner">
+<td class="eta-cell tabular-nums">{{ bytesRemaining() | formatEta : downloadRateBytesPerSec() }}</td>
+<td class="actions-cell">
+  <div class="row-actions" (click)="$event.stopPropagation()">
     @if (state() === 'STOPPED') {
       <p-button
         icon="pi pi-play"
         [text]="true"
+        size="small"
         [disabled]="isVerifying() || pendingAction() !== null"
         [loading]="pendingAction() === 'resume'"
         [ariaLabel]="'Resume ' + name()"
@@ -34,20 +59,19 @@
       <p-button
         icon="pi pi-pause"
         [text]="true"
+        size="small"
         [disabled]="isVerifying() || pendingAction() !== null"
         [loading]="pendingAction() === 'pause'"
         [ariaLabel]="'Pause ' + name()"
         (onClick)="onPause()"
       />
     }
-    <p-splitButton
-      [icon]="pendingAction() === 'remove' ? 'pi pi-spin pi-spinner' : 'pi pi-trash'"
-      severity="danger"
+    <p-button
+      icon="pi pi-ellipsis-h"
       [text]="true"
-      [disabled]="isVerifying() || pendingAction() !== null"
-      [model]="removeMenuItems"
-      [ariaLabel]="'Remove ' + name()"
-      (onClick)="onRemove()"
+      size="small"
+      [ariaLabel]="'More actions for ' + name()"
+      (onClick)="onEllipsisClick($event)"
     />
   </div>
   <p-contextMenu #rowMenu [model]="contextMenuItems()" [appendTo]="'body'" />

@@ -2,24 +2,29 @@
 <p-confirmDialog />
 
 <div class="toolbar">
-  <p-fileUpload
-    #fileUpload
-    mode="basic"
-    chooseLabel="Add Torrent"
-    accept=".torrent"
-    [auto]="true"
-    [customUpload]="true"
-    (uploadHandler)="onUpload($event, fileUpload)"
-  />
-  <div class="magnet-input">
-    <input
-      pInputText
-      [formControl]="magnetUriControl"
-      placeholder="Paste magnet link"
-      aria-label="Magnet link"
-      (keydown.enter)="onAddMagnet()"
+  <div class="add-controls">
+    <p-fileUpload
+      #fileUpload
+      mode="basic"
+      chooseLabel="Add Torrent"
+      accept=".torrent"
+      [auto]="true"
+      [customUpload]="true"
+      (uploadHandler)="onUpload($event, fileUpload)"
     />
-    <p-button label="Add Magnet" (onClick)="onAddMagnet()" />
+    <div class="magnet-input">
+      <p-iconField iconPosition="left">
+        <p-inputIcon class="pi pi-link" />
+        <input
+          pInputText
+          [formControl]="magnetUriControl"
+          placeholder="Paste magnet link"
+          aria-label="Magnet link"
+          (keydown.enter)="onAddMagnet()"
+        />
+      </p-iconField>
+      <p-button label="Add Magnet" [outlined]="true" (onClick)="onAddMagnet()" />
+    </div>
   </div>
 
   <p-iconField class="search-field" iconPosition="left">
@@ -34,13 +39,29 @@
     />
   </p-iconField>
 
-  <p-button label="Pause all" icon="pi pi-pause" [text]="true" (onClick)="pauseAll()" />
-  <p-button label="Resume all" icon="pi pi-play" [text]="true" (onClick)="resumeAll()" />
+  <div class="toolbar-trailing">
+    <p-button icon="pi pi-pause" [text]="true" ariaLabel="Pause all" pTooltip="Pause all" tooltipPosition="top" (onClick)="pauseAll()" />
+    <p-button icon="pi pi-play" [text]="true" ariaLabel="Resume all" pTooltip="Resume all" tooltipPosition="top" (onClick)="resumeAll()" />
+  </div>
 </div>
 
-<p-table [value]="rows()" [rowTrackBy]="trackByRow" [rowHover]="true" size="small">
+<p-table [value]="rows()" [rowTrackBy]="trackByRow" [rowHover]="true" size="small" [tableStyle]="{ 'table-layout': 'fixed' }">
+  <ng-template pTemplate="colgroup">
+    <colgroup>
+      <col style="width: 28px" />
+      <col />
+      <col style="width: 72px" />
+      <col style="width: 92px" />
+      <col style="width: 56px" />
+      <col style="width: 80px" />
+      <col style="width: 80px" />
+      <col style="width: 72px" />
+      <col style="width: 68px" />
+    </colgroup>
+  </ng-template>
   <ng-template pTemplate="header">
     <tr>
+      <th scope="col"></th>
       <th scope="col">
         <button type="button" class="sort-header" [class.active]="sortField() === 'name'" (click)="toggleSort('name')">
           Name <i [class]="'pi ' + sortIcon('name')" aria-hidden="true"></i>
@@ -63,18 +84,19 @@
           [class.active]="sortField() === 'progress'"
           (click)="toggleSort('progress')"
         >
-          Progress <i [class]="'pi ' + sortIcon('progress')" aria-hidden="true"></i>
+          Done <i [class]="'pi ' + sortIcon('progress')" aria-hidden="true"></i>
         </button>
       </th>
-      <th scope="col">Uploaded</th>
-      <th scope="col">Peers</th>
-      <th scope="col">ETA</th>
-      <th scope="col">Actions</th>
+      <th scope="col" class="header-label">Down</th>
+      <th scope="col" class="header-label">Up</th>
+      <th scope="col" class="header-label">ETA</th>
+      <th scope="col"></th>
     </tr>
   </ng-template>
   <ng-template pTemplate="body" let-row>
     @if (row.kind === 'pending') {
       <tr>
+        <td></td>
         <td>{{ row.upload.fileName }}</td>
         <td></td>
         <td><app-status-indicator icon="pi-spin pi-spinner" label="Processing" tone="dim" /></td>
@@ -86,7 +108,7 @@
   </ng-template>
   <ng-template pTemplate="emptymessage">
     <tr>
-      <td colspan="8">
+      <td colspan="9">
         <div class="empty-state">
           <i class="pi pi-inbox" aria-hidden="true"></i>
           @if (hasActiveFilter()) {

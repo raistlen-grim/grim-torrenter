@@ -8,15 +8,53 @@
   margin-bottom: var(--space-4);
 }
 
-.magnet-input {
+/* Groups the two add controls (file upload, magnet paste) so they read as one leading
+ * cluster - style guide toolbar order: add controls, then the filter, at the leading edge
+ * (per the user's explicit choice to keep both permanently visible rather than the guide's
+ * own single-split-button consolidation - see ADD_CONTROL.md's addendum discussion). */
+.add-controls {
   display: flex;
+  align-items: center;
   gap: var(--space-2);
 }
 
-/* Groups the search box and the pause-all/resume-all buttons at the trailing edge,
- * leaving the add-torrent controls at the leading edge. */
+.magnet-input {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
 .search-field {
+  width: 220px;
+}
+
+/* Pushes the pause-all/resume-all cluster to the trailing edge, leaving the add controls
+ * and filter field grouped together at the leading edge. */
+.toolbar-trailing {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
   margin-left: auto;
+}
+
+/* Column headers: 10.5px uppercase, .08em tracking - applied to every header cell
+ * (including the two label-less state-icon/actions columns, harmless since they're empty),
+ * not just the sortable ones, since the guide's typography rule covers the whole header
+ * row. A plain `th` selector reaches these without `::ng-deep`: they're declared inside
+ * this component's own `pTemplate="header"` block in torrent-list.html, so Angular's
+ * emulated encapsulation scopes them to TorrentList regardless of where PrimeNG's Table
+ * physically attaches that embedded view in the DOM - same reason .sort-header/.empty-state
+ * below already work unscoped. Opacity is deliberately NOT set here (it would compound with
+ * .sort-header's own opacity below, since CSS opacity multiplies through nested elements) -
+ * each text-bearing element (.sort-header, .header-label) sets its own instead. */
+th {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.header-label {
+  opacity: 0.55;
 }
 
 .sort-header {
@@ -29,19 +67,30 @@
   font: inherit;
   color: inherit;
   cursor: pointer;
+  opacity: 0.55;
 }
 
 .sort-header .pi {
   font-size: 0.7rem;
-  opacity: 0.6;
+}
+
+/* Removed from six identical always-on arrow glyphs (style guide: "tell the user nothing
+ * about which column is actually sorted") to hidden-until-hover - still constrained to the
+ * button's own 55% resting opacity once revealed (1 x 0.55 = 0.55), matching the guide's
+ * "an 11px arrow at 55% opacity on hover only" exactly, since opacity multiplies through
+ * nesting. The active column's icon is untouched by this rule and stays fully visible,
+ * governed only by .sort-header.active's opacity: 1 below. */
+.sort-header:not(.active) .pi {
+  opacity: 0;
+}
+
+.sort-header:not(.active):hover .pi {
+  opacity: 1;
 }
 
 /* The sorted column header takes the accent - style guide §06's own rule. */
 .sort-header.active {
-  color: var(--p-primary-color);
-}
-
-.sort-header.active .pi {
+  color: var(--color-accent-700);
   opacity: 1;
 }
 
