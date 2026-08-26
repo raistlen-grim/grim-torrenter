@@ -63,6 +63,12 @@ body {
   width: 6rem;
 }
 
+/* Same reason again - [inputStyleClass] on the Event log settings group's retention-days
+ * field (design_docs/0055). */
+.retention-input-field {
+  width: 5rem;
+}
+
 /* p-dialog renders its panel via Angular CDK overlay, detached from the consuming
  * component's own DOM position entirely - not just a narrower version of the same
  * encapsulation issue above, [styleClass] is the only way to reach it regardless. Used by the

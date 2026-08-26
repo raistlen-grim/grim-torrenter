@@ -140,4 +140,30 @@ class SettingsResourceTest {
                 .when().put("/api/settings")
                 .then().statusCode(400);
     }
+
+    /** Settings' own compact constructor - not this resource - is what actually enforces "no
+     * value that would defeat the event log's bounded-growth purpose" (design_docs/0055): 0 or
+     * negative is silently normalized to the default of 30, the same mechanism (and the same
+     * call site) that backfills a pre-0055 settings.json missing this field entirely, since a
+     * primitive int can't otherwise tell "explicitly 0" apart from "absent." This confirms
+     * that normalization is reachable through the real REST layer, not just Settings' own
+     * constructor tests. */
+    @Test
+    void updateNormalizesAZeroEventLogRetentionToTheDefault() {
+        String body = """
+                {
+                  "dhtEnabled": false,
+                  "acceptIncomingConnections": false,
+                  "uploadRateLimitBytesPerSec": 0,
+                  "downloadRateLimitBytesPerSec": 0,
+                  "eventLogRetentionDays": 0
+                }""";
+
+        given()
+                .contentType(ContentType.JSON)
+                .body(body)
+                .when().put("/api/settings")
+                .then().statusCode(200)
+                .body("eventLogRetentionDays", equalTo(30));
+    }
 }

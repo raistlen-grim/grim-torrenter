@@ -16,7 +16,13 @@ export type EncryptionMode = 'DISABLED' | 'PREFERRED' | 'REQUIRED';
  * for why). seedRatioLimit/seedTimeLimitMinutes are the global seeding-limit defaults - a
  * per-torrent SeedingLimitOverride (see torrent.model.ts) can override either independently;
  * neither survives a process restart (computed from byte counters that already reset on
- * restart today - see Settings.java's own Javadoc). */
+ * restart today - see Settings.java's own Javadoc). eventLogRetentionDays bounds how many days
+ * of library events (see events.model.ts) are kept - live, but only takes effect on the
+ * backend's next hourly prune tick, not synchronously; unlike the rate limits, this has no
+ * "unlimited" value - the backend silently normalizes anything below 1 to a default of 30
+ * rather than rejecting it, since an unbounded event log is exactly what this field exists to
+ * prevent. The settings form still enforces a minimum of 1 in its own input so a user never
+ * sees that silent substitution happen. See design_docs/0055. */
 export interface Settings {
   dhtEnabled: boolean;
   acceptIncomingConnections: boolean;
@@ -33,4 +39,5 @@ export interface Settings {
   seedRatioLimit: number;
   seedTimeLimitEnabled: boolean;
   seedTimeLimitMinutes: number;
+  eventLogRetentionDays: number;
 }

@@ -1,3 +1,4 @@
+import { EventType } from '../models/events.model';
 import { TorrentState, TrackerState } from '../models/torrent.model';
 import { StatusTone } from './status-indicator/status-indicator';
 
@@ -30,4 +31,19 @@ const TRACKER_STATE_DISPLAY: Record<TrackerState, StatusDisplay> = {
 
 export function trackerStateDisplay(state: TrackerState): StatusDisplay {
   return TRACKER_STATE_DISPLAY[state];
+}
+
+/** See design_docs/0055. ERROR reuses the same alarm tone as a torrent/tracker error;
+ * SEEDING_LIMIT_REACHED is 'dim' rather than 'alarm' - it's an expected, user-configured
+ * outcome (a limit doing exactly what it was set to do), not a problem. */
+const EVENT_TYPE_DISPLAY: Record<EventType, StatusDisplay> = {
+  ADDED: { icon: 'pi-plus-circle', label: 'Added', tone: 'active' },
+  COMPLETED: { icon: 'pi-check-circle', label: 'Completed', tone: 'active' },
+  ERROR: { icon: 'pi-exclamation-triangle', label: 'Error', tone: 'alarm' },
+  REMOVED: { icon: 'pi-trash', label: 'Removed', tone: 'dim' },
+  SEEDING_LIMIT_REACHED: { icon: 'pi-pause', label: 'Seeding limit reached', tone: 'dim' },
+};
+
+export function eventTypeDisplay(type: EventType): StatusDisplay {
+  return EVENT_TYPE_DISPLAY[type];
 }

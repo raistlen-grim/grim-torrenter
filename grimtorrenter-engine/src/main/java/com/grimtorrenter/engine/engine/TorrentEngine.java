@@ -8,6 +8,10 @@ import com.grimtorrenter.engine.bencode.BencodeDecoder;
 import com.grimtorrenter.engine.bencode.BencodeEncoder;
 import com.grimtorrenter.engine.dht.DhtNode;
 import com.grimtorrenter.engine.dht.NodeId;
+import com.grimtorrenter.engine.events.EventStore;
+import com.grimtorrenter.engine.events.EventType;
+import com.grimtorrenter.engine.events.InMemoryEventStore;
+import com.grimtorrenter.engine.events.LibraryEvent;
 import com.grimtorrenter.engine.magnet.MagnetLink;
 import com.grimtorrenter.engine.metadata.MetadataFetcher;
 import com.grimtorrenter.engine.metainfo.InfoHash;
@@ -42,6 +46,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
@@ -142,6 +147,11 @@ public final class TorrentEngine {
      * reads it fresh on every scheduled tick, not from a single lambda built once at
      * construction. See design_docs/0054. */
     private final SettingsStore settingsStore;
+    /** Records library-management events (torrent added/completed/errored/removed, an
+     * auto-pause from a reached seeding limit) - see design_docs/0055. Never null; the
+     * lower-arity constructors default to a private, unpersisted InMemoryEventStore so every
+     * pre-existing caller/test is unaffected. */
+    private final EventStore eventStore;
     /** Ticks every SEEDING_LIMIT_CHECK_INTERVAL_SECONDS, checking every currently-SEEDING
      * session against its effective seeding limit and reusing pauseTorrent() outright for the
      * actual stop - see checkSeedingLimits()'s own Javadoc for why reusing that method, not
@@ -219,6 +229,17 @@ public final class TorrentEngine {
                 fileHandlePool, Integer.MAX_VALUE);
     }
 
+    /** Same as the nine-arg overload below but with a private, unpersisted InMemoryEventStore -
+     * see design_docs/0055. Kept so every pre-existing caller/test is unaffected by this
+     * addition; production wiring (grimtorrenter-app's TorrentEngineProducer) passes a real
+     * persisted store instead. */
+    public TorrentEngine(Path baseDownloadDirectory, int ourListenPort, TorrentSessionListener listener,
+                          boolean enableDht, boolean acceptIncomingConnections, SettingsStore settingsStore,
+                          FileHandlePool fileHandlePool, int maxConcurrentPieceVerifications) {
+        this(baseDownloadDirectory, ourListenPort, listener, enableDht, acceptIncomingConnections, settingsStore,
+                fileHandlePool, maxConcurrentPieceVerifications, new InMemoryEventStore());
+    }
+
     /**
      * fileHandlePool bounds this engine's total open torrent-data file handles across every
      * TorrentSession it creates or restores - see design_docs/0047. maxConcurrentPieceVerifications
@@ -226,11 +247,12 @@ public final class TorrentEngine {
      * design_docs/0048. Both unbounded by default (the seven-arg overload above) so every
      * pre-existing caller/test is unaffected; production wiring (grimtorrenter-app's
      * TorrentEngineProducer) passes real bounded values, both sized from configurable
-     * properties.
+     * properties. eventStore records library-management events (design_docs/0055) - see this
+     * class's own eventStore field Javadoc.
      */
     public TorrentEngine(Path baseDownloadDirectory, int ourListenPort, TorrentSessionListener listener,
                           boolean enableDht, boolean acceptIncomingConnections, SettingsStore settingsStore,
-                          FileHandlePool fileHandlePool, int maxConcurrentPieceVerifications) {
+                          FileHandlePool fileHandlePool, int maxConcurrentPieceVerifications, EventStore eventStore) {
         this.baseDownloadDirectory = baseDownloadDirectory;
         this.ourListenPort = ourListenPort;
         this.listener = listener;
@@ -242,6 +264,7 @@ public final class TorrentEngine {
         this.fileHandlePool = fileHandlePool;
         this.pieceVerificationLimiter = new Semaphore(maxConcurrentPieceVerifications);
         this.settingsStore = settingsStore;
+        this.eventStore = eventStore;
         this.seedingLimitScheduler.scheduleWithFixedDelay(this::checkSeedingLimits,
                 SEEDING_LIMIT_CHECK_INTERVAL_SECONDS, SEEDING_LIMIT_CHECK_INTERVAL_SECONDS, TimeUnit.SECONDS);
     }
@@ -261,20 +284,29 @@ public final class TorrentEngine {
         Settings settings = settingsStore.current();
         long now = System.currentTimeMillis();
         for (TorrentSession session : sessions.values()) {
-            if (session.state() == TorrentState.SEEDING && hasReachedSeedingLimit(session, settings, now)) {
-                pauseTorrent(session.metadata().infoHash());
+            if (session.state() != TorrentState.SEEDING) {
+                continue;
             }
+            reachedSeedingLimitReason(session, settings, now).ifPresent(reason -> {
+                InfoHash infoHash = session.metadata().infoHash();
+                eventStore.record(new LibraryEvent(Instant.now(), EventType.SEEDING_LIMIT_REACHED,
+                        infoHash.hex(), session.metadata().name(), reason));
+                pauseTorrent(infoHash);
+            });
         }
     }
 
-    private static boolean hasReachedSeedingLimit(TorrentSession session, Settings settings, long now) {
+    /** Empty when neither limit is reached. Ratio is checked before time, so a torrent that
+     * happens to cross both in the same tick is reported for whichever is checked first - the
+     * event only needs to explain one true reason, not enumerate every one that applied. */
+    private static Optional<String> reachedSeedingLimitReason(TorrentSession session, Settings settings, long now) {
         SeedingLimitOverride override = session.seedingLimitOverride();
 
         OptionalDouble ratioLimit = SeedingLimits.effectiveRatioLimit(settings, override);
         if (ratioLimit.isPresent()) {
             long downloaded = session.bytesDownloaded();
             if (downloaded > 0 && (double) session.bytesUploaded() / downloaded >= ratioLimit.getAsDouble()) {
-                return true;
+                return Optional.of("Reached seed ratio limit of " + ratioLimit.getAsDouble());
             }
         }
 
@@ -282,11 +314,11 @@ public final class TorrentEngine {
         if (timeLimit.isPresent() && session.completedAtEpochMillis() > 0) {
             long minutesSeeding = (now - session.completedAtEpochMillis()) / 60_000;
             if (minutesSeeding >= timeLimit.getAsLong()) {
-                return true;
+                return Optional.of("Reached seed time limit of " + timeLimit.getAsLong() + " minute(s)");
             }
         }
 
-        return false;
+        return Optional.empty();
     }
 
     private PeerServer createPeerServer(int port) {
@@ -416,6 +448,10 @@ public final class TorrentEngine {
         });
         if (creationFailure.get() != null) {
             throw creationFailure.get();
+        }
+        if (wasNewlyCreated.get()) {
+            eventStore.record(new LibraryEvent(
+                    Instant.now(), EventType.ADDED, infoHash.hex(), metadata.name(), null));
         }
         return new AddTorrentResult(session, !wasNewlyCreated.get());
     }
@@ -600,6 +636,8 @@ public final class TorrentEngine {
         TorrentSession session = sessions.remove(infoHash);
         if (session != null) {
             session.close();
+            eventStore.record(new LibraryEvent(
+                    Instant.now(), EventType.REMOVED, infoHash.hex(), session.metadata().name(), null));
         }
         Path directory = directories.remove(infoHash);
         if (directory == null) {

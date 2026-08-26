@@ -11,7 +11,11 @@
       <span class="nav-count tabular-nums">{{ counts()[option.value] }}</span>
     </a>
   }
-  <a routerLink="/settings" routerLinkActive="active" class="nav-item settings-item">
+  <a routerLink="/events" routerLinkActive="active" class="nav-item below-filters">
+    <i class="pi pi-history" aria-hidden="true"></i>
+    <span class="nav-label">Events</span>
+  </a>
+  <a routerLink="/settings" routerLinkActive="active" class="nav-item">
     <i class="pi pi-cog" aria-hidden="true"></i>
     <span class="nav-label">Settings</span>
   </a>

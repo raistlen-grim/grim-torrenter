@@ -46,7 +46,9 @@
   font-size: 0.75rem;
 }
 
-.settings-item {
+/* Separates the status-filter nav above from Events/Settings below - applied to the first
+ * item in that second group (Events), not every item in it. */
+.below-filters {
   margin-top: var(--space-6);
   padding-top: var(--space-4);
   border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent);

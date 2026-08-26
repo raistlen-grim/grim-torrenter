@@ -8,6 +8,12 @@ import { ToastModule } from 'primeng/toast';
 import { Settings } from '../models/settings.model';
 import { SettingsService } from '../services/settings.service';
 import {
+  EventLogSettings,
+  EventLogSettingsForm,
+  buildEventLogSettingsForm,
+  eventLogSettingsPatch,
+} from './event-log-settings/event-log-settings';
+import {
   NetworkSettings,
   NetworkSettingsForm,
   buildNetworkSettingsForm,
@@ -30,6 +36,7 @@ type SettingsFormGroup = FormGroup<{
   network: NetworkSettingsForm;
   rateLimiting: RateLimitSettingsForm;
   seeding: SeedingSettingsForm;
+  eventLog: EventLogSettingsForm;
 }>;
 
 /**
@@ -42,7 +49,7 @@ type SettingsFormGroup = FormGroup<{
  */
 @Component({
   selector: 'app-settings-page',
-  imports: [ButtonModule, NetworkSettings, RateLimitSettings, SeedingSettings, ToastModule],
+  imports: [ButtonModule, EventLogSettings, NetworkSettings, RateLimitSettings, SeedingSettings, ToastModule],
   templateUrl: './settings-page.html',
   styleUrl: './settings-page.scss',
   providers: [MessageService],
@@ -74,6 +81,7 @@ export class SettingsPage {
             network: buildNetworkSettingsForm(settings),
             rateLimiting: buildRateLimitSettingsForm(settings),
             seeding: buildSeedingSettingsForm(settings),
+            eventLog: buildEventLogSettingsForm(settings),
           }),
         );
       }
@@ -91,6 +99,7 @@ export class SettingsPage {
       ...networkSettingsPatch(value.network),
       ...rateLimitSettingsPatch(value.rateLimiting),
       ...seedingSettingsPatch(value.seeding),
+      ...eventLogSettingsPatch(value.eventLog),
     };
 
     this.saving.set(true);

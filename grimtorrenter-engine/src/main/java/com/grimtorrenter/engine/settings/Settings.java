@@ -62,6 +62,20 @@ import com.grimtorrenter.engine.mse.EncryptionMode;
  * those counters already resetting on every restart today (not a new limitation this feature
  * introduces). A per-torrent SeedingLimitOverride can override either default independently -
  * see that class's own Javadoc for its sentinel convention. See design_docs/0054.
+ *
+ * <p>eventLogRetentionDays bounds how many days of library events (design_docs/0055) are kept
+ * on disk as rolling daily files - live, like the rest of this record, but only takes effect on
+ * the next hourly prune tick, not synchronously. Deliberately has **no** "0/negative means
+ * unlimited" sentinel despite that being this record's own established idiom elsewhere
+ * (uploadRateLimitBytesPerSec, seedRatioLimit, ...) - an event log is exactly the kind of thing
+ * that grows without bound if "unlimited" is ever selectable, so 0/negative is instead
+ * silently normalized to the default of 30 by the compact constructor below, the same
+ * mechanism (and the same call site) that backfills a missing (pre-0055) encryptionMode - both
+ * a missing-field-in-old-settings.json case and a defensive minimum in one place. A primitive
+ * int can't distinguish "the field was absent" from "the field was explicitly 0," so this is a
+ * silent normalization, not a validation error - unlike rateLimitScheduleStart/End, there is no
+ * corresponding SettingsResource-level rejection for this field, since by the time that layer
+ * sees a deserialized Settings there is no longer an invalid value left to reject.
  */
 public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
                         long uploadRateLimitBytesPerSec, long downloadRateLimitBytesPerSec,
@@ -69,8 +83,10 @@ public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
                         long scheduledUploadRateLimitBytesPerSec, long scheduledDownloadRateLimitBytesPerSec,
                         EncryptionMode encryptionMode, long rateLimitBurstSeconds,
                         boolean seedRatioLimitEnabled, double seedRatioLimit,
-                        boolean seedTimeLimitEnabled, long seedTimeLimitMinutes) {
+                        boolean seedTimeLimitEnabled, long seedTimeLimitMinutes,
+                        int eventLogRetentionDays) {
 
+    private static final int DEFAULT_EVENT_LOG_RETENTION_DAYS = 30;
     private static final String DEFAULT_SCHEDULE_START = "23:00";
     private static final String DEFAULT_SCHEDULE_END = "07:00";
     /** Starting values shown once a user enables a disabled seeding limit - meaningless while
@@ -89,6 +105,29 @@ public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
         if (encryptionMode == null) {
             encryptionMode = EncryptionMode.PREFERRED;
         }
+        if (eventLogRetentionDays <= 0) {
+            eventLogRetentionDays = DEFAULT_EVENT_LOG_RETENTION_DAYS;
+        }
+    }
+
+    /** Same as the canonical constructor above but without eventLogRetentionDays - for every
+     * caller that predates library events' addition (every secondary constructor below, plus
+     * the two tests that construct the previously-canonical fifteen-arg form directly),
+     * defaulting to DEFAULT_EVENT_LOG_RETENTION_DAYS. Same "add a sibling overload, touch zero
+     * existing call sites" pattern used for every prior field addition to this record. See
+     * design_docs/0055. */
+    public Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
+                     long uploadRateLimitBytesPerSec, long downloadRateLimitBytesPerSec,
+                     boolean rateLimitScheduleEnabled, String rateLimitScheduleStart, String rateLimitScheduleEnd,
+                     long scheduledUploadRateLimitBytesPerSec, long scheduledDownloadRateLimitBytesPerSec,
+                     EncryptionMode encryptionMode, long rateLimitBurstSeconds,
+                     boolean seedRatioLimitEnabled, double seedRatioLimit,
+                     boolean seedTimeLimitEnabled, long seedTimeLimitMinutes) {
+        this(dhtEnabled, acceptIncomingConnections, uploadRateLimitBytesPerSec, downloadRateLimitBytesPerSec,
+                rateLimitScheduleEnabled, rateLimitScheduleStart, rateLimitScheduleEnd,
+                scheduledUploadRateLimitBytesPerSec, scheduledDownloadRateLimitBytesPerSec, encryptionMode,
+                rateLimitBurstSeconds, seedRatioLimitEnabled, seedRatioLimit, seedTimeLimitEnabled,
+                seedTimeLimitMinutes, DEFAULT_EVENT_LOG_RETENTION_DAYS);
     }
 
     /** Convenience constructor for every caller that doesn't care about the rate-limit

@@ -1,0 +1,32 @@
+<h1 class="heading-font">Events</h1>
+
+@if (events().length === 0) {
+  <p class="empty-message">No events yet.</p>
+} @else {
+  <ul class="event-list">
+    @for (event of events(); track event.timestamp + event.infoHash + event.type) {
+      <li class="event-card">
+        <app-status-indicator
+          [icon]="statusDisplay(event.type).icon"
+          [label]="statusDisplay(event.type).label"
+          [tone]="statusDisplay(event.type).tone"
+        />
+        <div class="event-body">
+          @if (event.torrentName) {
+            <span class="event-torrent">
+              @if (event.infoHash) {
+                <a [routerLink]="['/torrents', event.infoHash]">{{ event.torrentName }}</a>
+              } @else {
+                {{ event.torrentName }}
+              }
+            </span>
+          }
+          @if (event.message) {
+            <span class="event-message">{{ event.message }}</span>
+          }
+        </div>
+        <span class="event-time tabular-nums">{{ event.timestamp | date: 'short' }}</span>
+      </li>
+    }
+  </ul>
+}

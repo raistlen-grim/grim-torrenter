@@ -17,6 +17,10 @@ export const routes: Routes = [
     ],
   },
   {
+    path: 'events',
+    loadComponent: () => import('./events-page/events-page').then((m) => m.EventsPage),
+  },
+  {
     path: 'settings',
     loadComponent: () => import('./settings-page/settings-page').then((m) => m.SettingsPage),
   },

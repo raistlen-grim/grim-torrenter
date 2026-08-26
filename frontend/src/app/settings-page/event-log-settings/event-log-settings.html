@@ -1,0 +1,24 @@
+<fieldset [formGroup]="form()">
+  <legend class="heading-font">Event log</legend>
+
+  <div class="setting-row">
+    <div class="setting-label">
+      <label for="retentionDays">Keep events for</label>
+      <p class="setting-description">
+        How many days of library events (torrent added, completed, errored, removed, or
+        auto-paused by a seeding limit) to keep before they're deleted. Takes effect on the
+        backend's next hourly cleanup, not instantly.
+      </p>
+    </div>
+    <div class="retention-control">
+      <p-inputnumber
+        inputId="retentionDays"
+        formControlName="retentionDays"
+        [min]="1"
+        [showButtons]="false"
+        inputStyleClass="retention-input-field"
+      />
+      <span>days</span>
+    </div>
+  </div>
+</fieldset>

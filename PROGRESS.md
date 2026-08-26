@@ -137,6 +137,29 @@ complete**, per the phased scope in [[0009-phased-scope]]:
   different row was right-clicked (a right-click fires no `click` event, so PrimeNG's own
   "click outside closes it" logic never saw it). Both surfaced while testing the seeding-limits
   context-menu item, fixed alongside it ([[0054-seeding-limits]]).
+- **Library events** (picked from `TODO.md`, 2026-08-26) — a curated feed for managing the
+  library (torrent added/completed/errored/removed, auto-paused by a reached seeding limit),
+  deliberately not a raw debug log. New engine-side `EventStore`/`LibraryEvent`/`EventType`
+  (`grimtorrenter-engine`, `events` package), backed by `JsonLinesEventStore`
+  (`grimtorrenter-app`) — one JSON-Lines file per calendar day under
+  `{config-directory}/events/`, pruned hourly (and once at startup) against a new live, **never
+  unlimited** `Settings.eventLogRetentionDays` (default 30; 0/negative is silently normalized
+  to 30 by `Settings`' own compact constructor, not rejected — an unbounded event log is exactly
+  what this field exists to prevent). Delivered over the existing `/ws/torrents` WebSocket (a
+  new `"event"` message type) for live push, plus `GET /api/events` (optional `?infoHash=`
+  filter) for scrollback. A new **Events** sidebar page (not a torrent-detail-drawer tab, since
+  most of these are things a user wasn't watching when they happened) and a new **Event log**
+  settings group. ([[0055-library-events]])
+  - **Deferred from this pass**: `TRACKER_UNREACHABLE`/`TRACKER_RECOVERED` (no
+    listener/callback seam exists yet on `TrackedTrackerClient`/`TrackerStatus` — only a
+    poll-on-demand REST read — designing that seam is a real decision, not just plumbing) and a
+    distinctly-labeled `MAGNET_RESOLVED` (a resolved magnet already produces an `ADDED` event
+    via the shared `addTorrent()` pipeline, just not one that says "via magnet"). See
+    [[0055-library-events]]'s own "Deferred from this pass" section.
+  - **Known test gap**: `TorrentEventListener`'s `ERROR`/`COMPLETED` recording (the
+    `oldState`/`newState` → `EventType` mapping added to `onStateChanged`) has no dedicated
+    test — no cheap, deterministic way to drive a real `TorrentSession` into `ERROR` the way
+    seeding limits' degenerate-zero trick covers `SEEDING`/`STOPPED`.
 
 **Not yet built** (the rest of Phase 3):
 
@@ -229,11 +252,14 @@ torrent's files were opened once and held open for its whole lifetime, even whil
 Phase 2 is fully complete; Phase 3 has Peer Exchange, rate limiting (with a daily off-hours
 schedule and a burst allowance), a real settings page, and MSE done — every item from the
 original Phase 3 list is now built; the engine stability/scale audit is fully closed out;
-seeding limits (picked from `TODO.md`) are done:
+seeding limits and library events (both picked from `TODO.md`) are done:
 
 1. The pending-action-vs-2s-snapshot-lag gap noted above, if it proves to
    matter in practice.
-2. The rest of `TODO.md` (events viewer, a notification service), whenever picked up.
-3. The rate-limiting settings group's remaining natural additions (per-torrent overrides,
+2. The remaining item on `TODO.md` (a notification service), whenever picked up.
+3. Library events' two deferred event types ([[0055-library-events]]'s own "Deferred from this
+   pass" section) — tracker unreachable/recovered, and a distinctly-labeled magnet-resolved —
+   if they prove to matter in practice.
+4. The rate-limiting settings group's remaining natural additions (per-torrent overrides,
    multi-rule schedule) — pushed to the back of the backlog (2026-08-25), marginal real-world
    value relative to the items above.

@@ -43,6 +43,10 @@ public class SettingsResource {
             requireParsableTime(settings.rateLimitScheduleStart(), "rateLimitScheduleStart");
             requireParsableTime(settings.rateLimitScheduleEnd(), "rateLimitScheduleEnd");
         }
+        // No eventLogRetentionDays check here, unlike the schedule times above - Settings'
+        // own compact constructor already normalizes 0/negative to a safe default (see its
+        // Javadoc), so by the time this method sees `settings` there is no invalid value left
+        // to reject. See design_docs/0055.
         settingsStore.update(settings);
         return settingsStore.current();
     }

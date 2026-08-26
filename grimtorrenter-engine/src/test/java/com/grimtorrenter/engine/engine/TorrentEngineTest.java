@@ -4,6 +4,9 @@ import com.grimtorrenter.engine.bencode.BDictionary;
 import com.grimtorrenter.engine.bencode.BInteger;
 import com.grimtorrenter.engine.bencode.BString;
 import com.grimtorrenter.engine.bencode.BencodeEncoder;
+import com.grimtorrenter.engine.events.EventType;
+import com.grimtorrenter.engine.events.InMemoryEventStore;
+import com.grimtorrenter.engine.events.LibraryEvent;
 import com.grimtorrenter.engine.metainfo.InfoHash;
 import com.grimtorrenter.engine.metainfo.MetainfoParser;
 import com.grimtorrenter.engine.metainfo.PieceHashes;
@@ -14,6 +17,7 @@ import com.grimtorrenter.engine.peerwire.Handshake;
 import com.grimtorrenter.engine.peerwire.PeerWireCodec;
 import com.grimtorrenter.engine.settings.InMemorySettingsStore;
 import com.grimtorrenter.engine.settings.Settings;
+import com.grimtorrenter.engine.storage.FileHandlePool;
 import com.grimtorrenter.engine.torrent.SeedingLimitOverride;
 import com.grimtorrenter.engine.torrent.TorrentSession;
 import com.grimtorrenter.engine.torrent.TorrentSessionListener;
@@ -514,6 +518,78 @@ class TorrentEngineTest {
         engine.checkSeedingLimits();
 
         awaitState(session, TorrentState.STOPPED);
+    }
+
+    /** checkSeedingLimits() records the SEEDING_LIMIT_REACHED event itself, with the actual
+     * reason (ratio vs. time), before ever calling pauseTorrent() - this is what lets a later
+     * library-event reader tell an auto-pause apart from a manual one, which produces the same
+     * generic state-changed transition but no event. See design_docs/0055. */
+    @Test
+    void checkSeedingLimitsRecordsALibraryEventWithTheReachedReason(@TempDir Path tempDir) throws Exception {
+        String announceUrl = startFakeTrackerServer();
+        InMemorySettingsStore settingsStore = new InMemorySettingsStore(settingsWithSeedingLimits(true, 0.0, false, 0));
+        InMemoryEventStore eventStore = new InMemoryEventStore();
+        TorrentEngine engine = new TorrentEngine(tempDir, 6881, new NoOpListener(), false, false, settingsStore,
+                FileHandlePool.unbounded(), Integer.MAX_VALUE, eventStore);
+
+        TorrentSession session = addAlreadySeededTorrent(engine, tempDir, "ratio-event.bin", fill(20, 11), announceUrl);
+
+        engine.checkSeedingLimits();
+        awaitState(session, TorrentState.STOPPED);
+
+        List<LibraryEvent> events = eventStore.forTorrent(session.metadata().infoHash().hex());
+        assertEquals(1, events.stream().filter(e -> e.type() == EventType.SEEDING_LIMIT_REACHED).count());
+        assertTrue(events.get(0).message().contains("ratio"));
+    }
+
+    /** A manual pause of a seeding torrent - as opposed to checkSeedingLimits()'s own
+     * auto-pause above - produces the same STOPPED transition but is not itself an event a user
+     * needs reviewing (they just did it), so nothing should be recorded for it. */
+    @Test
+    void manualPauseDoesNotRecordASeedingLimitEvent(@TempDir Path tempDir) throws Exception {
+        String announceUrl = startFakeTrackerServer();
+        InMemoryEventStore eventStore = new InMemoryEventStore();
+        TorrentEngine engine = new TorrentEngine(tempDir, 6881, new NoOpListener(), false, false,
+                new InMemorySettingsStore(), FileHandlePool.unbounded(), Integer.MAX_VALUE, eventStore);
+
+        TorrentSession session = addAlreadySeededTorrent(engine, tempDir, "manual-pause.bin", fill(20, 12), announceUrl);
+        engine.pauseTorrent(session.metadata().infoHash());
+
+        assertTrue(eventStore.forTorrent(session.metadata().infoHash().hex()).stream()
+                .noneMatch(e -> e.type() == EventType.SEEDING_LIMIT_REACHED));
+    }
+
+    /** addTorrent() records ADDED exactly once for a genuinely new torrent, and not again for
+     * an idempotent re-add of the same info hash. */
+    @Test
+    void addTorrentRecordsAnAddedEventOnlyOnceForTheSameInfoHash(@TempDir Path tempDir) throws Exception {
+        String announceUrl = startFakeTrackerServer();
+        InMemoryEventStore eventStore = new InMemoryEventStore();
+        TorrentEngine engine = new TorrentEngine(tempDir, 6881, new NoOpListener(), false, false,
+                new InMemorySettingsStore(), FileHandlePool.unbounded(), Integer.MAX_VALUE, eventStore);
+        byte[] torrentBytes = torrentBytes("added-event.bin", fill(20, 13), announceUrl);
+
+        TorrentSession session = engine.addTorrent(torrentBytes).session();
+        engine.addTorrent(torrentBytes);
+
+        List<LibraryEvent> events = eventStore.forTorrent(session.metadata().infoHash().hex());
+        assertEquals(1, events.stream().filter(e -> e.type() == EventType.ADDED).count());
+    }
+
+    @Test
+    void removeTorrentRecordsARemovedEvent(@TempDir Path tempDir) throws Exception {
+        String announceUrl = startFakeTrackerServer();
+        InMemoryEventStore eventStore = new InMemoryEventStore();
+        TorrentEngine engine = new TorrentEngine(tempDir, 6881, new NoOpListener(), false, false,
+                new InMemorySettingsStore(), FileHandlePool.unbounded(), Integer.MAX_VALUE, eventStore);
+        byte[] torrentBytes = torrentBytes("removed-event.bin", fill(20, 14), announceUrl);
+        TorrentSession session = engine.addTorrent(torrentBytes).session();
+        InfoHash infoHash = session.metadata().infoHash();
+
+        engine.removeTorrent(infoHash);
+
+        List<LibraryEvent> events = eventStore.forTorrent(infoHash.hex());
+        assertEquals(1, events.stream().filter(e -> e.type() == EventType.REMOVED).count());
     }
 
     /** The "override can enable a limit the global default leaves disabled" direction isn't

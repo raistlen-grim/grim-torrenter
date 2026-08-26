@@ -48,6 +48,9 @@ public class TorrentEngineProducer {
     @Inject
     SettingsStore settingsStore;
 
+    @Inject
+    JsonLinesEventStore eventStore;
+
     /**
      * TorrentEventListener has no TorrentEngine reference (see
      * TorrentSnapshotScheduler for the one that does) specifically so this
@@ -72,6 +75,6 @@ public class TorrentEngineProducer {
                 : Runtime.getRuntime().availableProcessors();
         return new TorrentEngine(Path.of(downloadDirectory), listenPort, eventListener,
                 settings.dhtEnabled(), settings.acceptIncomingConnections(), settingsStore,
-                new FileHandlePool(maxOpenFiles), verificationPermits);
+                new FileHandlePool(maxOpenFiles), verificationPermits, eventStore);
     }
 }
