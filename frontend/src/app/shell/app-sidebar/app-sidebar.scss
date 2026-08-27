@@ -1,7 +1,10 @@
+/* align-self: stretch (the grid default - dropped the earlier align-self: start) so this
+ * fills .shell-body's full row height rather than only its own nav items' natural height,
+ * which is what .below-filters' margin-top: auto below needs to actually push Events/
+ * Settings down to the bottom rather than just trailing directly under the filter list. */
 .shell-sidebar {
   position: sticky;
   top: var(--shell-header-height);
-  align-self: start;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -46,10 +49,13 @@
   font-size: 0.75rem;
 }
 
-/* Separates the status-filter nav above from Events/Settings below - applied to the first
- * item in that second group (Events), not every item in it. */
+/* Separates the status-filter nav above from Events/Settings below, and (margin-top: auto)
+ * pins that trailing group to the bottom of the sidebar rather than letting it trail
+ * directly under a short filter list - applied to the first item in the group (Events), not
+ * every item in it, since auto-margin on just this one still carries Settings down with it
+ * (both are ordinary flow siblings after it, in the same flex column). */
 .below-filters {
-  margin-top: var(--space-6);
+  margin-top: auto;
   padding-top: var(--space-4);
   border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent);
 }

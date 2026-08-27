@@ -277,6 +277,369 @@ persisted pin vs. today's per-navigation state), not just a missing button - the
 leave the panel fully route-driven (opening is "click a row," closing is "Esc or the panel's
 own close") for this pass.
 
+## Details panel: header, fact grid, progress bar, footer
+
+Rebuilt `torrent-detail.html`/`.scss`/`.ts` per `README.md`'s "Panel structure" points 1-3 and
+6 (header, fact grid, progress bar, action footer) - points 4-5 (tab strip/content) are task 7
+and untouched here beyond a plain interim padding wrapper (`.tabs-wrap`) so they don't sit
+flush against the panel edge in the meantime.
+
+**Header**: the old three-line Cinzel `<h1>` and top-left "✕ Close" text link are gone, per the
+guide - name is plain body text now (never Cinzel, filenames are data), clamped to two lines
+with the full name in `title`; close is a 26px ghost icon button at top-right. `.header-name`
+carries an explicit `min-height: calc(1.35em * 2)` (added once the user noticed everything
+below it shifted depending on whether the current torrent's name happened to wrap) - without
+it, a one-line name rendered a shorter header than a two-line one, since `-webkit-line-clamp`
+only caps the *maximum*, it doesn't reserve room for it.
+
+**Fact grid, 7 of the guide's 8 cells**: Size, Done, Down, Up, Ratio, Peers, Added - "Saved to"
+was already dropped, see [[0057-torrent-added-at]]. `Ratio` (uploaded/downloaded) and `Peers`
+are both worth a note:
+- `Ratio` has no backend field - computed client-side, em-dash (never `∞`) when nothing's been
+  downloaded yet, so there's no division to do.
+- `Peers` reads as a bare connected count, not the guide's `9 of 43` (connected of known) -
+  there is no reliable "known peers" figure available today (that would mean summing live
+  tracker seeder/leecher counts, which are only fetched on-demand for the Trackers tab, not
+  part of the always-pushed snapshot this header reads). Decided when this was raised with the
+  user directly, before task 6 started.
+
+**Not in the guide's fact grid, kept anyway**: `lastError`. The guide's 8-cell list has no
+error cell at all, but this torrent's error was the single most load-bearing piece of
+information the pre-restyle header showed (`No space`, `Hash mismatch`, etc.) - dropping it
+silently to match the guide's cell count would be losing real information, not restyling, the
+same call already made for the row's Peers column and byte totals. Rendered as a plain
+`--alarm` line directly under the header instead.
+
+**Also dropped from the header** (not in the guide, and now redundant or relocated):
+- State text/icon - the row keeps its own state icon while the panel is open (see the
+  dock-and-push section above), and that icon's own `title` tooltip already carries the label;
+  repeating it here would be exactly the "progress reported three times" pattern this whole
+  redesign exists to remove.
+- DHT/tracker-count summary (`usesDht`, `trackerCount`, `dhtBackstopActive`) - not the guide's
+  header at all; it's a natural fit for the Trackers tab's own per-source line (`[DHT]·[PeX]·
+  [LSD] / Enabled`) that task 7 builds, so it's moving rather than disappearing.
+- ETA - genuinely absent from the guide's panel (it's a row-only column, dropped along with
+  the row's other rate columns while the panel is open - see the dock-and-push section above).
+  While the panel is open, ETA is now nowhere visible for that torrent. Not raised as a
+  question since this is what the current guide itself specifies, not a deviation from
+  anything already agreed - flagged here for visibility, same as the row's dropped Peers
+  column was.
+
+**Progress bar**: 5px, renders only below 100% (a completed torrent just shows `Done: 100%` in
+the fact grid, no dead bar underneath); striped fill + a `Checking N of M pieces` caption while
+verifying, reusing the exact same striped-gradient values as the row's own verifying underlay
+(`torrent-row.scss`) so the two read as one signal.
+
+**Footer**: pause/resume (secondary/outlined) and a ghost `ellipsis` button carrying the full
+overflow menu (same trimmed item set as `TorrentRow`'s own context menu - Copy magnet link,
+Seeding limits, Remove, Remove and delete files) - duplicated here rather than shared with
+`TorrentRow`, following the same self-contained-per-instance precedent
+`SeedingLimitsDialog`'s embedding already set. `ConfirmationService`/`MessageService` are
+injected, not re-provided: `TorrentDetail` is always rendered inside `TorrentList`'s own
+`<router-outlet>`, so it resolves `TorrentList`'s existing instances (and its `<p-toast>`/
+`<p-confirmDialog>`) via ordinary hierarchical DI, the same way `TorrentRow` already does.
+Removing from inside the panel also navigates back to `/` afterward (unlike `TorrentRow`'s own
+`onRemove()`), since the torrent that just disappeared is the entire view here, not one row
+among many.
+
+**Not built**: `Open folder`. Raised alongside "Saved to" ([[0057-torrent-added-at]]) and
+rejected for the same reason - the guide's own affordance for it ("reveal in the file
+manager") is a desktop-app action a browser tab cannot perform, and there's no download path
+surfaced to act on anyway now that "Saved to" isn't built.
+
+**Panel padding restructured**: the panel wrapper (`torrent-list.scss`'s `.detail-panel`) lost
+the flat `var(--space-6)` padding it carried over from the old drawer in task 5 - header, fact
+grid and footer now each own their exact padding straight from the guide instead (`13px 14px
+12px`, `8px 14px` per cell, `10px 14px`), which only reads correctly if the wrapper around them
+adds none of its own.
+
+## Details panel: tabs
+
+Restyled the tab strip and rebuilt all four tab-content components per `README.md`'s "Panel
+structure" points 4-5 and its per-tab content specs.
+
+**Tab strip**: `<p-tab>`/`<p-tablist>`/`<p-tabs>` all render with `ViewEncapsulation.None`
+(confirmed by reading `primeng-tabs.mjs`) - but since these elements are written directly in
+`torrent-detail.html`'s own template (not projected in through another component's
+`pTemplate`), they still carry `TorrentDetail`'s own Angular-emulated scoping attribute like
+any element there would, so a plain scoped selector in `torrent-detail.scss` reaches them with
+no `::ng-deep` - same reasoning already used for `th`/`.sort-header` against `p-table`, now
+against a fully-styled PrimeNG component instead of markup we fully own. Active-tab styling
+targets PrimeNG's own reactive `data-p-active` attribute directly rather than a class binding
+of our own.
+
+**Default tab and persistence**: Files by default, Pieces only while downloading/verifying
+("never open a completed torrent on Pieces"). Once the user picks a tab for a given torrent,
+that choice persists for the rest of the session, per the guide - needed a new small
+`TorrentDetailTabService` (a `Map<infoHash, tab>` behind a signal, same shape as the existing
+`TorrentFilterService`) rather than a plain component field, since `TorrentDetail` is
+destroyed and recreated whenever the `torrents/:infoHash` route deactivates and reactivates
+(closing the panel and reopening it on the same torrent later), even though the router reuses
+the same instance when just navigating between two already-open torrents. The guide's other
+reason to hide the Pieces tab - "a magnet still fetching metadata" - doesn't apply to this app
+at all: a torrent only ever becomes visible/selectable in the first place once its metadata is
+already fully known (design_docs/0028), so there's no in-between state to guard against.
+
+**Tab counts**: three of the four (Peers/Trackers/Pieces) read straight off fields already on
+the torrent snapshot. Files has no such field, so `TorrentDetail` runs its own independent
+poll of the same `files()` endpoint the Files tab itself polls, purely for a `.length` - traded
+off against either a new backend field for a cosmetic count, or restructuring `FilesTab` to
+take its data as an input just so the two could share one fetch.
+
+**Per-tab content, real gaps found and how each was handled**:
+
+- **Files**: type icon substituted from PrimeIcons (`pi-image`/`pi-video`/`pi-box`/`pi-file` -
+  no direct file-text/file-video/file-archive equivalents exist). The guide's caption
+  ("Priority is set per file from the right-click menu — skip, normal, first.") describes a
+  feature that doesn't exist anywhere in this app - no per-file priority concept exists in the
+  backend at all, and there's no right-click menu on file rows either. Dropped rather than
+  shown pointing at nothing. Multi-select also not built - out of scope for this whole pass.
+- **Peers**: the guide's `Done` column (per-peer completion) has no backing data - no per-peer
+  piece-availability/bitfield is exposed anywhere, session-level or otherwise - dropped, grid
+  narrowed to three columns. Client-name decoding (next to the address) was already a known,
+  previously-deferred gap (design_docs/0031), not solved here either. The row's existing
+  choke/interest indicators (previously full `StatusIndicator` badges) don't fit the guide's
+  tight column grid at all, but dropping that protocol state entirely would be losing real
+  information rather than restyling - kept as small inline icons next to the address instead
+  of a full badge row. Sort-by-upload-rate-descending is implemented (no data gap there).
+- **Trackers**: working trackers collapse into one summary line, per the guide, and per-tracker
+  seeders/leechers/announce times move into a tooltip on each still-individually-listed
+  (non-`WORKING`) tracker - not shown anywhere for a collapsed healthy tracker, matching the
+  guide's own "a list nobody reads" reasoning rather than working around it. The guide's peer
+  sources line drops `[LSD]` entirely - Local Service Discovery isn't implemented anywhere in
+  this engine, unlike the other gaps here, which had real data just not surfaced yet. `[PeX]`
+  always reads Enabled (no per-torrent toggle exists - it's unconditionally advertised); `[DHT]`
+  reflects `usesDht || dhtBackstopActive`.
+- **Pieces**: fixed `repeat(26, 1fr)` - the guide's own "reduce column count as the panel
+  narrows" responsive rule is moot at this panel's current fixed 392px width (no narrower
+  breakpoint exists in this pass's scope). `Availability 2.1×` dropped from the caption per
+  the guide's own documented fallback for exactly this case ("if [piece availability] is not
+  already exposed, the caption can drop [it] rather than adding a request"). Piece size
+  ("512 KB each") *was* added: `TorrentMetadata.pieceLength()` already existed engine-side but
+  was never exposed - added a small `PiecesView` wrapper record (`{pieces, pieceLength}`)
+  around the `/pieces` endpoint's previously-bare array, a genuinely no-persistence,
+  no-migration addition (unlike [[0057-torrent-added-at]]), after checking with the user
+  first rather than assuming.
+
+**Deferred, not solved here**: "pinned to the bottom" (footer) and tab content "scrolling
+internally" (README point 5) both need a bounded-height ancestor to flex/scroll within, which
+this panel's chain no longer has anywhere - task 5 removed the old drawer's
+`position: fixed` viewport clamp specifically because that was the floating-overlay behavior
+the guide's own docking spec rules out. Reintroducing a bounded height just to make the footer
+sticky and give tab content its own scrollbar would mean re-litigating that task 5 call, not a
+task-7-sized change - left as a real, flagged gap. Today the whole page scrolls together when
+tab content runs long, and the footer sits after the tabs in normal flow rather than pinned.
+
+## Post-task-7 visual bug pass
+
+Six issues surfaced from actually running the restyled list/panel in a browser (something
+none of tasks 1-7 could verify directly - see CLAUDE.md's "builds and tests run manually by
+the user"). Fixed together since several share a root cause:
+
+- **Docked panel not full height when content is short** and **page margin around the whole
+  list/panel area**: both trace back to `.shell-main` (`app.scss`) never giving a routed
+  page's own host a real, bounded height or width to fill - `:host`'s `min-height: 100vh`
+  only padded the *page* to a full viewport, not any element inside it, so a short torrent
+  list left a visible gap between where the docked panel's own background actually ended and
+  where the page's own bottom edge was. Fixed by threading a proper flex chain down from the
+  app root (`:host` → `.shell-body` → `.shell-main`, each now `flex: 1; min-height: 0` on the
+  next link) so `TorrentList`'s own host, and `.list-panel-grid` inside it, can do the same
+  and genuinely fill whatever vertical space is available - short content still leaves
+  whitespace, but now *inside* the panel's own tinted background, not below it.
+  Separately, **full bleed for the torrent list page specifically** (explicit user choice,
+  not the shell's default - every other routed page keeps `.shell-main`'s existing padding
+  unchanged): `TorrentList`'s own `:host` cancels that padding horizontally via a negative
+  margin, restoring a left-only inset on `.list-column` (sidebar clearance) and leaving the
+  panel side at 0 so it reaches the browser's true right edge, matching "docks... no
+  shadow, no backdrop, no overlay" read literally rather than floating inside a leftover gap.
+- **Horizontal scroll from a long tracker error, plus a resulting stray vertical scrollbar**:
+  the Trackers tab's status column was `auto`-width with no cap (per the guide's own literal
+  spec), which sizes itself to a raw tracker error string's full length - and a real tracker
+  error can echo back a full announce URL, easily hundreds of pixels wide. Capped to
+  `minmax(0, 160px)` with ellipsis + a `title` for the full text (the row already carries a
+  tooltip with seeders/leechers/announce times, so hovering surfaces both). The vertical
+  scrollbar was very likely a side effect of the same overflow, not a separate bug - fixing
+  the horizontal overflow is expected to resolve both.
+- **Row name/extension split visually detaching**: `.name-cell` (the `<td>`) had no
+  `overflow: hidden` of its own - a table cell doesn't clip its content by default, so a name
+  long enough to outrun its column's fixed width before the flex child's own ellipsis
+  "caught up" would visually spill past the cell, dragging `.name-extension` far to the right
+  with it rather than sitting right after the truncated stem. Also gave `<p-table>` an
+  explicit `width: 100%` alongside `table-layout: fixed` - the fixed-column-width algorithm
+  needs a determinate table width to divide the unspecified (Name) column's share of space
+  from; without it, that column's width could end up governed by content instead.
+- **Size column values wrapping to two lines**: `.size-cell` had no `white-space: nowrap` of
+  its own (nothing in this app's `td` styling sets it globally), so a value like
+  "1004.8 MB" could wrap at the space once its column was even slightly narrower than the
+  text. Added `nowrap` to it and the other short single-value cells (Done, Down, Up, ETA -
+  *not* the state-text cell, which can carry a genuinely long `lastError` line in
+  `.error-detail` that should keep wrapping normally) and widened the Size column from 72px
+  to 84px.
+
+## Second visual bug round
+
+- **Panel footer not pinned to the bottom** (a short-content gap between the tabs and the
+  footer, then a much larger gap before the app footer): the bounded-height chain built for
+  the "panel not full height" fix above turned out to be exactly the missing piece task 7's
+  own deferred "pinned to the bottom" note was waiting on. `TorrentDetail`'s `:host` is a
+  flex column, and `p-tabs`/`p-tabpanels`/the active `p-tabpanel` are `flex: 1` within it, so
+  the tab area grows to fill whatever's left, pushing the footer to the true bottom - but that
+  alone did nothing the first time around: `.detail-panel` (the `<aside>` wrapper) was still a
+  plain block element, and flex/grid "stretch" only reaches as far as the *immediate* child -
+  `.list-panel-grid`'s own `align-items: stretch` correctly gave `.detail-panel` itself the
+  full height, but nothing propagated that any further down, so `TorrentDetail`'s `flex: 1`
+  had no flex container to actually apply against. Fixed by also giving `.detail-panel` its
+  own `display: flex; flex-direction: column`, completing the chain. Still `min-height`, not
+  a capped `max-height`: nothing
+  above this in the chain is actually capped (`min-height: 100vh` at the app root is a floor,
+  not a ceiling, precisely so the whole page keeps growing and scrolling as one unit for long
+  content - see the dock-and-push section's own reasoning). So this only visibly pins the
+  footer when content is short enough to fit in the available space; genuinely long tab
+  content still just grows the whole page, same as before - a real fix for the reported gap,
+  not the harder "tab content scrolls internally" requirement, which still needs an actual
+  height ceiling somewhere to mean anything and remains its own explicit follow-up.
+- **Nav sidebar (unrelated, found while diagnosing the above under a misread report)**:
+  Events/Settings now pin to the bottom of the sidebar (`align-self: stretch` restored instead
+  of `start`, `margin-top: auto` on the Events item) rather than trailing directly under the
+  filter list - not something the guide bundle specifies (the nav sidebar predates this restyle
+  pass entirely), kept because it's a reasonable, low-risk improvement in its own right.
+- **Page margin / horizontal scrollbar, still unresolved**: added `overflow-x: hidden` at both
+  `TorrentList`'s own `:host` and `.list-column`, matching the guide's explicit "never let the
+  row scroll horizontally" rule regardless of root cause. Also confirmed PrimeNG's own
+  `.p-datatable-table` already carries `width: 100%` by default (found reading
+  `@primeuix/styles`'s datatable source) - the earlier `[tableStyle]` `width: '100%'` addition
+  was redundant, not wrong, and table-layout:fixed's column math should already have had a
+  determinate width to work against before that change. Root cause of the still-reported
+  margin/scrollbar not confirmed; the CSS reasoning for the full-bleed negative-margin
+  approach checks out on paper (verified against the flexbox spec's stretch-with-negative-
+  margins behavior), so this needs a live re-check rather than more blind changes.
+
+## Third visual bug round
+
+- **Horizontal scrollbar directly under the table, root cause found**: PrimeNG's `Table`
+  component always sets `overflow: auto` on its internal `.p-datatable-table-container` via
+  an *inline* style (`TableStyle.inlineStyles` in `primeng-table.mjs`) - unconditional, not
+  gated behind the `scrollable` input this app doesn't set. An inline style beats any external
+  stylesheet rule regardless of specificity, which is why the previous round's `overflow-x:
+  hidden` on ancestor elements (`TorrentList`'s `:host`, `.list-column`) never touched it -
+  those targeted the wrong element entirely, and even a correctly-targeted rule couldn't have
+  won against an inline style without `!important`. This element is also PrimeNG's own
+  internal markup, not declared in any of this app's own component templates, so no *scoped*
+  selector could reach it either way - global `styles.scss` plus `!important` is the only
+  actual way in, added there rather than the previous round's now-superseded ancestor rules
+  (left in place; harmless, and still the right defensive belt-and-suspenders for anything
+  else in the list that might someday try to force width). A sub-pixel layout-rounding
+  mismatch between the table's own `width: 100%` and this container's content box is enough
+  to trigger PrimeNG's always-on `overflow: auto` and show a scrollbar for nothing there was
+  ever a reason to scroll to.
+- **Row height changing when the panel opens**, five attempts:
+  1. No row height was ever set explicitly - it fell out of whichever cell's content happened
+     to be tallest, and `.actions-cell` (real `p-button` elements, taller than any plain
+     text/icon cell) is exactly the column this doc's dock-and-push work hides while the
+     panel is open (`TorrentRow`'s `compact` input). Losing that cell dropped the row's
+     tallest content, so the row visibly shrank. First fix: an explicit `height: 34px` on the
+     row (README's own row-anatomy number), intended as a floor (not a cap) since `height` on
+     a `<tr>` is documented as a *minimum* per the CSS table-layout spec.
+  2. That alone didn't close the gap: `size="small"` p-buttons render taller than the guide's
+     actual 24px row-action-button spec once their own padding is added, so the non-compact
+     row's *natural* content height already exceeded the 34px floor - a floor only stops a
+     row going *below* its value, it can't pull an already-taller one down. Second fix: sized
+     the row-action buttons to the guide's literal 24px (`.row-action-btn` in `styles.scss` -
+     see below for why it has to live there, not in `torrent-row.scss`).
+  3. Live-tested after that and the two states were still measurably different (21px content
+     + 6px padding open vs. 24px + 6px closed) - `height` on the `<tr>` itself turned out to
+     have no real effect at all in practice, confirmed live, not just a remaining few pixels
+     of imprecision. Third fix: moved the floor from `:host` (the row) to `min-height: 34px`
+     on every `<td>` instead, reasoning that a table row's rendered height is always the max
+     of its cells' heights regardless of whatever the `<tr>`-height quirk turned out to be.
+  4. Also confirmed to have no live effect: `min-height: 34px` on every `<td>`, reasoning
+     that a table row's rendered height is always the max of its cells' heights regardless of
+     whatever the `<tr>`-height quirk from attempt 1 turned out to be.
+  5. Plain `height: 34px` on every `<td>` (not `min-height`) - the CSS table-layout spec does
+     give cells (unlike rows) an actual defined rule: "the height of a cell is the maximum of
+     its own `height` and the height its content needs," which should make `height`
+     specifically a real floor there even though `min-height` isn't defined for table parts
+     at all. Live-inspected the computed box model directly this time (devtools, not just
+     eyeballing) and it was **still** measurably different - 24px content + 6px padding closed
+     vs. 21px + 6px open, neither anywhere near 34. So all four of the "set a floor value
+     somewhere" attempts above were dead ends in this app's actual rendering, not just
+     imprecise. The devtools measurement also revealed *why* a floor could never fully work
+     even in principle: the closed state's real content need (36px total, from the 24px
+     button) is already **above** the guide's 34px number, so a 34px floor could only ever
+     have affected the open state - the two states' natural heights were never going to
+     converge on a value neither of them naturally exceeds.
+
+     Fifth fix, the one that actually held: stopped trying to impose a floor on the `<tr>`/
+     `<td>` at all, and instead gave `.name-inner` (name-cell's existing flex wrapper, present
+     and identical in both states) an explicit `height: 24px` - exactly matching
+     `.row-action-btn`'s own height. `.name-inner` is a normal flex box, not a table part, so
+     an explicit height on it is unambiguously respected (no table-specific ambiguity to run
+     into); "a cell grows to fit its content" and "every cell in a row shares the row's
+     height" are both uncontested, un-ambiguous parts of table layout. With `.name-cell`
+     needing the identical 24px of content height as `.actions-cell` in *every* row now, by
+     construction, the row's actual height is the same in both states without relying on any
+     explicit height/min-height on a `<tr>` or `<td>` succeeding at all.
+
+  **Why `.row-action-btn` lives in `styles.scss`, not `torrent-row.scss`**: `<p-button>`'s
+  actual rendered `<button class="p-button">` is built by `Button`'s own template (also
+  `ViewEncapsulation.None`, like `Table`/`Tabs`) - but unlike `p-tab`/`p-tabpanel`, whose
+  template is just `<ng-content>` (so *our own projected content* stays attributed to
+  whichever component wrote it), `Button` constructs the `<button>` itself from scratch. It
+  isn't content this app projected into it, so it carries neither `Button`'s own scoping
+  attribute nor `TorrentRow`'s, and no selector in `torrent-row.scss` can reach it regardless
+  of encapsulation - same unreachability as `.p-datatable-table-container` above, different
+  cause. `.row-action-btn` (a plain class on the `<p-button>` host tag itself, which *is*
+  reachable from `torrent-row.scss` since that tag is written directly in `torrent-row.html`)
+  exists purely so a global rule can target just these two buttons instead of every `p-button`
+  in the app.
+- **Name/extension detaching for short filenames**: `.name-stem`'s `flex: 1 1 auto` was meant
+  to let it *shrink* (the truncation case, flex-shrink: 1) but the same declaration's
+  flex-grow: 1 also made it *expand* to fill any unused space in the column - which a short
+  filename, not needing the column's full width, always leaves some of. The visible text
+  doesn't stretch to fill that wider box (it just sits left-aligned inside it), but
+  `.name-extension` - a flex sibling, positioned at the end of the *stem's box*, not the end
+  of its *visible text* - ends up stranded off to the right, worse the shorter the name is
+  (more leftover space to grow into). This one was never actually about `.name-cell`'s
+  overflow/table-width (the fix from the first visual bug round) at all - that fix was real
+  and needed (long names genuinely were spilling past the column before it), but a second,
+  unrelated bug remained for short names specifically, only caught once the user could compare
+  a short name's rendering against a long one's side by side. Fixed by dropping the stem's
+  flex-grow to 0 (`flex: 0 1 auto`) - still shrinks when the row's too narrow, never grows
+  past its own text's natural width otherwise.
+
+## Fourth visual bug round: the deferred viewport-height cap, resolved
+
+Every earlier round that touched the panel's height explicitly deferred one thing: task 5
+removed the old drawer's `position: fixed` viewport clamp because it was the literal
+floating-overlay behavior the guide's docking spec rules out, and everything built afterward
+(footer-pinning, tab strip/content) was declared "min-height, not max-height" - a floor that
+lets the whole page grow and scroll together, with no ceiling anywhere for tab content to
+scroll *within*. The user hit this directly: a torrent with enough trackers/peers grew the
+panel past the bottom of the viewport, pushing the footer off-screen entirely rather than
+just needing an internal scrollbar.
+
+**Resolution**: a real viewport-height cap on `.detail-panel.open` - `position: sticky; top:
+var(--shell-header-height); max-height: calc(100vh - var(--shell-header-height) -
+var(--shell-footer-height)); overflow: hidden;` - plus `overflow-y: auto` on the active
+`p-tabpanel`, now meaningful since there's finally something real to be constrained against.
+
+This is *not* a reversal of task 5's call, even though it looks similar on the surface -
+`app-sidebar.scss`'s nav sidebar already uses the exact same `position: sticky` + `max-height`
++ `overflow-y: auto` pattern, and nobody has called *that* a floating overlay. The distinction
+the guide's docking spec actually cares about is `position: fixed` (escapes the document
+entirely, paints over content regardless of scroll position, needs its own z-index stacking)
+versus `position: sticky` (a normal flow/grid item that happens to stay in view as its
+scrolling ancestor scrolls, still occupies its column, still pushes nothing, no z-index
+games). The panel remains exactly where the grid puts it; it just also stays visible and
+caps its own height the same way the sidebar beside it always has.
+
+**What changes in practice**: header, fact grid, progress bar, tab strip and footer all stay
+on-screen and fully visible regardless of tab content length; only the active tab's own
+content area scrolls once it exceeds the space actually available in the viewport. Short
+content still behaves exactly as the previous rounds already fixed it (footer sits right
+after it, not pinned artificially high) - the cap and the scroll only ever activate once
+content genuinely needs more room than the viewport has to give.
+
 ## Alternatives considered
 
 - **Replacing Aura outright with a from-scratch preset** - rejected; `definePreset(Aura,

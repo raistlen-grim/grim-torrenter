@@ -75,12 +75,18 @@
       </div>
     }
 
-    <p-table [value]="rows()" [rowTrackBy]="trackByRow" [rowHover]="true" size="small" [tableStyle]="{ 'table-layout': 'fixed' }">
+    <p-table
+      [value]="rows()"
+      [rowTrackBy]="trackByRow"
+      [rowHover]="true"
+      size="small"
+      [tableStyle]="{ 'table-layout': 'fixed', width: '100%' }"
+    >
       <ng-template pTemplate="colgroup">
         <colgroup>
           <col style="width: 28px" />
           <col />
-          <col style="width: 72px" />
+          <col style="width: 84px" />
           <col style="width: 92px" [class.col-hidden]="isDetailOpen()" />
           <col style="width: 56px" />
           <col style="width: 80px" [class.col-hidden]="isDetailOpen()" />

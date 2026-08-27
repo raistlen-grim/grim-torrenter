@@ -50,7 +50,7 @@
       <p-button
         icon="pi pi-play"
         [text]="true"
-        size="small"
+        class="row-action-btn"
         [disabled]="isVerifying() || pendingAction() !== null"
         [loading]="pendingAction() === 'resume'"
         [ariaLabel]="'Resume ' + name()"
@@ -60,7 +60,7 @@
       <p-button
         icon="pi pi-pause"
         [text]="true"
-        size="small"
+        class="row-action-btn"
         [disabled]="isVerifying() || pendingAction() !== null"
         [loading]="pendingAction() === 'pause'"
         [ariaLabel]="'Pause ' + name()"
@@ -70,7 +70,7 @@
     <p-button
       icon="pi pi-ellipsis-h"
       [text]="true"
-      size="small"
+      class="row-action-btn"
       [ariaLabel]="'More actions for ' + name()"
       (onClick)="onEllipsisClick($event)"
     />

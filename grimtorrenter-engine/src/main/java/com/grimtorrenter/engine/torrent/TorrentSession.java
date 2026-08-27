@@ -43,6 +43,7 @@ import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -154,6 +155,15 @@ public final class TorrentSession implements AutoCloseable {
      * data that was already done - see design_docs/0055's own COMPLETED-event Javadoc and the
      * real duplicate-event bug this field was added to fix. */
     private volatile boolean wasCompleteOnRestore;
+    /** When this torrent was first added, for the details panel's "Added" fact (see
+     * design_docs/0032). Nullable, not Optional - same convention as lastError() - because a
+     * directory restored from a process that predates this field has no marker to read it
+     * back from (see TorrentEngine.readAddedAtMarker()); "unknown" is a real, permanent state
+     * for those torrents, not something to backfill with a guess (e.g. the restore time,
+     * which would be wrong) or default away. Immutable per session, unlike the
+     * runtime/mutable fields above - set once at construction (create()/restoreAsync()) and
+     * never reassigned. */
+    private final Instant addedAt;
 
     private final Set<PeerConnection> connections = ConcurrentHashMap.newKeySet();
     private final Set<PeerAddress> knownAddresses = ConcurrentHashMap.newKeySet();
@@ -181,7 +191,8 @@ public final class TorrentSession implements AutoCloseable {
                             PieceManager pieceManager, PeerId ourPeerId, int ourListenPort,
                             TorrentSessionListener listener, DhtNode dhtNode, RateLimiters rateLimiters,
                             Semaphore pieceVerificationLimiter, Supplier<EncryptionMode> encryptionMode,
-                            SeedingLimitOverride seedingLimitOverride, TorrentState initialState) {
+                            SeedingLimitOverride seedingLimitOverride, TorrentState initialState,
+                            Instant addedAt) {
         this.metadata = metadata;
         this.trackerClient = trackerClient;
         this.storage = storage;
@@ -195,6 +206,7 @@ public final class TorrentSession implements AutoCloseable {
         this.encryptionMode = encryptionMode;
         this.seedingLimitOverride = seedingLimitOverride;
         this.state = initialState;
+        this.addedAt = addedAt;
     }
 
     /** Same as the eight-arg overload below but with no rate limiting - for every caller
@@ -253,6 +265,9 @@ public final class TorrentSession implements AutoCloseable {
                 rateLimiters, fileHandlePool, pieceVerificationLimiter, encryptionMode, SeedingLimitOverride.INHERIT);
     }
 
+    /** Same as the thirteen-arg overload below but stamps addedAt as now - every caller that
+     * predates the details panel's "Added" fact (tests, mainly; a genuinely brand-new torrent
+     * has no other addedAt to give it anyway). See design_docs/0032. */
     public static TorrentSession create(TorrentMetadata metadata, TrackerClient trackerClient,
                                          Path downloadDirectory, PeerId ourPeerId, int ourListenPort,
                                          TorrentSessionListener listener, DhtNode dhtNode,
@@ -260,11 +275,24 @@ public final class TorrentSession implements AutoCloseable {
                                          Semaphore pieceVerificationLimiter,
                                          Supplier<EncryptionMode> encryptionMode,
                                          SeedingLimitOverride seedingLimitOverride) throws IOException {
+        return create(metadata, trackerClient, downloadDirectory, ourPeerId, ourListenPort, listener, dhtNode,
+                rateLimiters, fileHandlePool, pieceVerificationLimiter, encryptionMode, seedingLimitOverride,
+                Instant.now());
+    }
+
+    public static TorrentSession create(TorrentMetadata metadata, TrackerClient trackerClient,
+                                         Path downloadDirectory, PeerId ourPeerId, int ourListenPort,
+                                         TorrentSessionListener listener, DhtNode dhtNode,
+                                         RateLimiters rateLimiters, FileHandlePool fileHandlePool,
+                                         Semaphore pieceVerificationLimiter,
+                                         Supplier<EncryptionMode> encryptionMode,
+                                         SeedingLimitOverride seedingLimitOverride,
+                                         Instant addedAt) throws IOException {
         TorrentStorage storage = TorrentStorage.create(metadata, downloadDirectory, fileHandlePool);
         PieceManager pieceManager = new PieceManager(metadata);
         return new TorrentSession(metadata, trackerClient, storage, pieceManager, ourPeerId, ourListenPort,
                 listener, dhtNode, rateLimiters, pieceVerificationLimiter, encryptionMode, seedingLimitOverride,
-                TorrentState.STOPPED);
+                TorrentState.STOPPED, addedAt);
     }
 
     /** Same as the nine-arg overload below but with no rate limiting - see create()'s own
@@ -341,7 +369,8 @@ public final class TorrentSession implements AutoCloseable {
     /** seedingLimitOverride is the value TorrentEngine already read back from this torrent's
      * own marker file (design_docs/0054) - restoring is exactly where a previously-set
      * per-torrent override needs to actually take effect again, not just a freshly-added
-     * torrent's default. */
+     * torrent's default. Same as the fourteen-arg overload below but stamps addedAt as now -
+     * every caller that predates the details panel's "Added" fact (tests, mainly). */
     public static TorrentSession restoreAsync(TorrentMetadata metadata, TrackerClient trackerClient,
                                                Path downloadDirectory, PeerId ourPeerId, int ourListenPort,
                                                TorrentSessionListener listener, DhtNode dhtNode,
@@ -350,11 +379,30 @@ public final class TorrentSession implements AutoCloseable {
                                                Supplier<EncryptionMode> encryptionMode,
                                                SeedingLimitOverride seedingLimitOverride,
                                                boolean autoStart) throws IOException {
+        return restoreAsync(metadata, trackerClient, downloadDirectory, ourPeerId, ourListenPort, listener,
+                dhtNode, rateLimiters, fileHandlePool, pieceVerificationLimiter, encryptionMode,
+                seedingLimitOverride, Instant.now(), autoStart);
+    }
+
+    /** addedAt is nullable - TorrentEngine.restoreOne() passes whatever
+     * readAddedAtMarker() found, which is null for a directory that predates this field (see
+     * design_docs/0032); a genuinely new torrent (addTorrent()'s own use of this method, for
+     * the reused-directory "removed with keep files, now re-added" case) always has a real
+     * value. */
+    public static TorrentSession restoreAsync(TorrentMetadata metadata, TrackerClient trackerClient,
+                                               Path downloadDirectory, PeerId ourPeerId, int ourListenPort,
+                                               TorrentSessionListener listener, DhtNode dhtNode,
+                                               RateLimiters rateLimiters, FileHandlePool fileHandlePool,
+                                               Semaphore pieceVerificationLimiter,
+                                               Supplier<EncryptionMode> encryptionMode,
+                                               SeedingLimitOverride seedingLimitOverride,
+                                               Instant addedAt,
+                                               boolean autoStart) throws IOException {
         TorrentStorage storage = TorrentStorage.create(metadata, downloadDirectory, fileHandlePool);
         PieceManager pieceManager = new PieceManager(metadata);
         TorrentSession session = new TorrentSession(metadata, trackerClient, storage, pieceManager,
                 ourPeerId, ourListenPort, listener, dhtNode, rateLimiters, pieceVerificationLimiter,
-                encryptionMode, seedingLimitOverride, TorrentState.VERIFYING);
+                encryptionMode, seedingLimitOverride, TorrentState.VERIFYING, addedAt);
         Thread.ofVirtual().start(() -> session.verifyThenSettle(autoStart));
         return session;
     }
@@ -1018,6 +1066,11 @@ public final class TorrentSession implements AutoCloseable {
 
     public Throwable lastError() {
         return lastError;
+    }
+
+    /** Null when unknown - see this field's own Javadoc. */
+    public Instant addedAt() {
+        return addedAt;
     }
 
     /** 0 until this session first reaches SEEDING - see this field's own Javadoc for why it's

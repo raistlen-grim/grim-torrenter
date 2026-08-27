@@ -3,44 +3,71 @@
   opacity: 0.7;
 }
 
+/* README's Peers tab content spec: minmax(0,1fr) 54px 62px 62px (Address/Done/Down/Up) -
+ * only three columns here, not four: no per-peer completion percentage exists to put in a
+ * Done column (see peers-tab.ts's own comment), so it's dropped rather than left blank. */
+.peer-header,
+.peer-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 62px 62px;
+  align-items: center;
+  gap: 8px;
+}
+
+.peer-header {
+  padding: 0 0 4px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  opacity: 0.5;
+}
+
+.peer-col-right {
+  text-align: right;
+}
+
 .peer-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
   display: flex;
   flex-direction: column;
 }
 
-.peer-card {
-  padding: var(--space-3) 0;
-  border-bottom: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+.peer-row {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--rule);
+  font-size: 11.5px;
 }
 
-.peer-card:last-child {
+.peer-row:last-child {
   border-bottom: none;
 }
 
 .peer-address {
-  font-size: 0.8125rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: monospace;
 }
 
-.peer-status {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-  margin-top: var(--space-2);
+/* Compact choke/interest state, inline rather than the old full-width StatusIndicator
+ * badges - the guide's own column grid has no slot for them, but dropping this protocol
+ * state entirely would be losing real information rather than restyling (same reasoning as
+ * torrent-detail's kept lastError line). Dim by default, full opacity when genuinely
+ * unchoked/interested (the "active" state worth noticing). */
+.peer-flag {
+  margin-left: var(--space-2);
+  font-size: 10px;
+  opacity: 0.35;
 }
 
-.peer-rates {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-4);
-  margin-top: var(--space-2);
-  font-size: 0.8rem;
-  opacity: 0.75;
+.peer-flag.active {
+  opacity: 0.85;
 }
 
-.peer-rates .pi {
-  font-size: 0.7rem;
-  margin-right: var(--space-1);
+.peer-rate {
+  text-align: right;
+}
+
+.peer-rate.idle {
+  opacity: 0.35;
 }

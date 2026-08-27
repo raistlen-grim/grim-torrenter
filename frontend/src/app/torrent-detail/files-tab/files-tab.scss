@@ -4,30 +4,43 @@
 }
 
 .file-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
   display: flex;
   flex-direction: column;
 }
 
-.file-card {
-  padding: var(--space-3) 0;
-  border-bottom: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+/* README's Files tab content spec: 15px minmax(0,1fr) 58px 40px, gap 8px. */
+.file-row {
+  display: grid;
+  grid-template-columns: 15px minmax(0, 1fr) 58px 40px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--rule);
+  font-size: 12.5px;
 }
 
-.file-card:last-child {
+.file-row:last-child {
   border-bottom: none;
 }
 
-.file-path {
-  font-size: 0.8125rem;
-  overflow-wrap: break-word;
-  margin-bottom: var(--space-2);
+.file-icon {
+  font-size: 14px;
+  opacity: 0.55;
 }
 
-.byte-progress {
-  margin-top: var(--space-2);
-  font-size: 0.875rem;
+.file-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-size {
+  text-align: right;
+  opacity: 0.65;
+}
+
+.file-percent {
+  text-align: right;
   opacity: 0.75;
 }

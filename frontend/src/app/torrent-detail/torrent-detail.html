@@ -1,44 +1,90 @@
 @if (torrent(); as torrent) {
-  <a routerLink="/" class="close-link">
-    <i class="pi pi-times"></i>
-    Close
-  </a>
-
-  <header class="detail-header">
-    <h1 class="heading-font">{{ torrent.name }}</h1>
-    <div class="detail-meta">
-      <app-status-indicator [icon]="stateDisplay().icon" [label]="stateDisplay().label" [tone]="stateDisplay().tone" />
-      @if (torrent.usesDht) {
-        <app-status-indicator icon="pi-share-alt" label="DHT" tone="active" />
-      } @else {
-        <span class="tracker-count">{{ torrent.trackerCount }} tracker(s)</span>
-        @if (torrent.dhtBackstopActive) {
-          <app-status-indicator icon="pi-share-alt" label="DHT backstop" tone="active" />
-        }
-      }
-      @if (torrent.lastError) {
-        <span class="error-detail">{{ torrent.lastError }}</span>
-      }
+  <header class="panel-header">
+    <div class="header-text">
+      <div class="header-label">Torrent</div>
+      <h1 class="header-name" [title]="torrent.name">{{ torrent.name }}</h1>
     </div>
-    <p-progressBar [value]="progressPercent()" />
-    <div class="byte-progress tabular-nums">
-      {{ torrent.bytesDownloaded | formatBytes }} / {{ torrent.totalLength | formatBytes }}
-      &mdash; {{ torrent.connectedPeers }} peer(s)
-      &mdash; {{ bytesRemaining() | formatEta : torrent.downloadRateBytesPerSec }}
-    </div>
+    <button type="button" class="close-button" title="Close (Esc)" aria-label="Close" (click)="close()">
+      <i class="pi pi-times" aria-hidden="true"></i>
+    </button>
   </header>
 
-  <p-tabs value="pieces" [lazy]="true">
+  @if (torrent.lastError) {
+    <div class="panel-error">{{ torrent.lastError }}</div>
+  }
+
+  <div class="fact-grid">
+    <div class="fact-cell">
+      <div class="fact-label">Size</div>
+      <div class="fact-value tabular-nums">{{ torrent.totalLength | formatBytes }}</div>
+    </div>
+    <div class="fact-cell">
+      <div class="fact-label">Done</div>
+      <div class="fact-value tabular-nums">{{ progressPercent() }}%</div>
+    </div>
+    <div class="fact-cell">
+      <div class="fact-label">Down</div>
+      <div class="fact-value tabular-nums" [class.idle]="torrent.downloadRateBytesPerSec === 0">
+        @if (torrent.downloadRateBytesPerSec > 0) {
+          {{ torrent.downloadRateBytesPerSec | formatRate }}
+        } @else {
+          &mdash;
+        }
+      </div>
+    </div>
+    <div class="fact-cell">
+      <div class="fact-label">Up</div>
+      <div class="fact-value tabular-nums" [class.idle]="torrent.uploadRateBytesPerSec === 0">
+        @if (torrent.uploadRateBytesPerSec > 0) {
+          {{ torrent.uploadRateBytesPerSec | formatRate }}
+        } @else {
+          &mdash;
+        }
+      </div>
+    </div>
+    <div class="fact-cell">
+      <div class="fact-label">Ratio</div>
+      <div class="fact-value tabular-nums">
+        @if (ratio() !== null) {
+          {{ ratio() | number: '1.2-2' }}
+        } @else {
+          &mdash;
+        }
+      </div>
+    </div>
+    <div class="fact-cell">
+      <div class="fact-label">Peers</div>
+      <div class="fact-value tabular-nums">{{ torrent.connectedPeers }}</div>
+    </div>
+    <div class="fact-cell">
+      <div class="fact-label">Added</div>
+      <div class="fact-value tabular-nums" [title]="torrent.addedAt ? (torrent.addedAt | date: 'medium') : ''">
+        @if (torrent.addedAt) {
+          {{ torrent.addedAt | date: 'd MMM, HH:mm' }}
+        } @else {
+          &mdash;
+        }
+      </div>
+    </div>
+  </div>
+
+  @if (progressPercent() < 100) {
+    <div class="progress-track" [class.verifying]="isVerifying()">
+      <div class="progress-fill" [style.width.%]="isVerifying() ? 100 : progressPercent()"></div>
+    </div>
+    @if (isVerifying()) {
+      <div class="progress-caption">Checking {{ torrent.completedPieces | number }} of {{ torrent.totalPieces | number }} pieces</div>
+    }
+  }
+
+  <p-tabs [value]="activeTab()" (valueChange)="onTabChange($event)" [lazy]="true">
     <p-tablist>
-      <p-tab value="pieces">Piece map</p-tab>
-      <p-tab value="files">Files</p-tab>
-      <p-tab value="peers">Peers</p-tab>
-      <p-tab value="trackers">Trackers</p-tab>
+      <p-tab value="files">Files <span class="tab-count tabular-nums">{{ fileCount() }}</span></p-tab>
+      <p-tab value="peers">Peers <span class="tab-count tabular-nums">{{ torrent.connectedPeers }}</span></p-tab>
+      <p-tab value="trackers">Trackers <span class="tab-count tabular-nums">{{ torrent.trackerCount }}</span></p-tab>
+      <p-tab value="pieces">Pieces <span class="tab-count tabular-nums">{{ torrent.totalPieces }}</span></p-tab>
     </p-tablist>
     <p-tabpanels>
-      <p-tabpanel value="pieces">
-        <app-piece-map [infoHash]="infoHash()" />
-      </p-tabpanel>
       <p-tabpanel value="files">
         <app-files-tab [infoHash]="infoHash()" />
       </p-tabpanel>
@@ -48,8 +94,40 @@
       <p-tabpanel value="trackers">
         <app-trackers-tab [infoHash]="infoHash()" />
       </p-tabpanel>
+      <p-tabpanel value="pieces">
+        <app-piece-map [infoHash]="infoHash()" />
+      </p-tabpanel>
     </p-tabpanels>
   </p-tabs>
+
+  <div class="panel-footer">
+    <p-button
+      [icon]="torrent.state === 'STOPPED' ? 'pi pi-play' : 'pi pi-pause'"
+      [outlined]="true"
+      [disabled]="isVerifying() || pendingAction() !== null"
+      [loading]="pendingAction() === 'pause' || pendingAction() === 'resume'"
+      [ariaLabel]="torrent.state === 'STOPPED' ? 'Resume' : 'Pause'"
+      [pTooltip]="torrent.state === 'STOPPED' ? 'Resume' : 'Pause'"
+      tooltipPosition="top"
+      (onClick)="torrent.state === 'STOPPED' ? onResume() : onPause()"
+    />
+    <p-button
+      icon="pi pi-ellipsis-h"
+      [text]="true"
+      class="footer-menu-button"
+      ariaLabel="More actions"
+      pTooltip="More actions"
+      tooltipPosition="top"
+      (onClick)="onMenuClick($event)"
+    />
+    <p-contextMenu #detailMenu [model]="contextMenuItems()" [appendTo]="'body'" />
+    <app-seeding-limits-dialog
+      [infoHash]="infoHash()"
+      [torrentName]="torrent.name"
+      [visible]="showSeedingLimitsDialog()"
+      (visibleChange)="showSeedingLimitsDialog.set($event)"
+    />
+  </div>
 } @else {
   <p>Loading&hellip;</p>
 }

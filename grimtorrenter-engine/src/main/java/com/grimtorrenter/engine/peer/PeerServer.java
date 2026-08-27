@@ -11,6 +11,7 @@ import java.io.BufferedInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.security.SecureRandom;
@@ -68,7 +69,15 @@ public final class PeerServer implements AutoCloseable {
     public PeerServer(int port, Function<InfoHash, Optional<IncomingConnectionHandler>> handlerLookup,
                        Supplier<EncryptionMode> encryptionMode, Supplier<Collection<InfoHash>> activeInfoHashes)
             throws IOException {
-        this.serverSocket = new ServerSocket(port);
+        // Unbound construction + setReuseAddress(true) before bind() - see DhtNode's own
+        // matching comment for why (the convenience constructor new ServerSocket(port) binds
+        // immediately with no chance to set this first, and without it a quick rebind right
+        // after close() - e.g. Quarkus dev mode's live-reload on every backend source
+        // change - can fail with "Address already in use" purely from OS-level lingering).
+        // See design_docs/0058.
+        this.serverSocket = new ServerSocket();
+        this.serverSocket.setReuseAddress(true);
+        this.serverSocket.bind(new InetSocketAddress(port));
         this.handlerLookup = handlerLookup;
         this.encryptionMode = encryptionMode;
         this.activeInfoHashes = activeInfoHashes;

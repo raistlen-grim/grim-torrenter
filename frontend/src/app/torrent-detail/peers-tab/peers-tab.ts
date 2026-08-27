@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, inject, input } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { TooltipModule } from 'primeng/tooltip';
 import { map } from 'rxjs';
@@ -6,12 +6,10 @@ import { map } from 'rxjs';
 import { Peer } from '../../models/torrent.model';
 import { PRIMARY_RATE_WINDOW, RATE_WINDOWS } from '../../services/torrent-events.service';
 import { TorrentService } from '../../services/torrent.service';
-import { FormatBytesPipe } from '../../shared/format-bytes.pipe';
 import { FormatRateWindowsPipe } from '../../shared/format-rate-windows.pipe';
 import { FormatRatePipe } from '../../shared/format-rate.pipe';
 import { pollWhileInput } from '../../shared/poll-while-input';
 import { RateTracker } from '../../shared/rate-tracker';
-import { StatusIndicator } from '../../shared/status-indicator/status-indicator';
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -28,16 +26,14 @@ function peerKey(peer: Peer): string {
   return `${peer.address}:${peer.port}`;
 }
 
-/** Existing-field subset plus a client-side rate - no % piece availability or client-name
- * decoding yet (see design_docs/0031). Rendered as a stacked card list rather than a wide
- * table - see design_docs/0044's narrow-drawer follow-up. `peerId` (raw BEP 20 hex, not yet
- * decoded into a client name - design_docs/0031 left that as a deferred, isolated utility)
- * is dropped from this compact view entirely rather than squeezed in - it wasn't
- * human-meaningful even in the old wide table, just visible because there was a spare
- * column for it. */
+/** Existing-field subset plus a client-side rate. `peerId` (raw BEP 20 hex, not yet decoded
+ * into a client name - design_docs/0031 left that as a deferred, isolated utility) and a
+ * per-peer completion percentage (the guide's "Done" column - no per-peer piece-availability/
+ * bitfield data is exposed anywhere today, session-level or otherwise) are both still absent;
+ * neither is new to this task. See design_docs/0032's task 7 notes. */
 @Component({
   selector: 'app-peers-tab',
-  imports: [FormatBytesPipe, FormatRateWindowsPipe, FormatRatePipe, StatusIndicator, TooltipModule],
+  imports: [FormatRateWindowsPipe, FormatRatePipe, TooltipModule],
   templateUrl: './peers-tab.html',
   styleUrl: './peers-tab.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -54,12 +50,18 @@ export class PeersTab {
   private trackedKeys = new Set<string>();
 
   readonly infoHash = input.required<string>();
+  readonly peerKey = peerKey;
 
-  readonly peers = toSignal(
+  private readonly peers = toSignal(
     pollWhileInput(this.infoHash, POLL_INTERVAL_MS, (infoHash) => this.torrentService.peers(infoHash)).pipe(
       map((peers) => this.withRates(peers)),
     ),
     { initialValue: [] as PeerWithRate[] },
+  );
+
+  /** "The peers you are serving matter most" - README's own reasoning for this sort order. */
+  readonly sortedPeers = computed(() =>
+    [...this.peers()].sort((a, b) => b.uploadRateBytesPerSec - a.uploadRateBytesPerSec),
   );
 
   private withRates(peers: Peer[]): PeerWithRate[] {

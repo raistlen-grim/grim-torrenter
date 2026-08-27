@@ -5,7 +5,7 @@ import { Observable } from 'rxjs';
 import {
   AddTorrentResponse,
   Peer,
-  PieceState,
+  PiecesResponse,
   SeedingLimitOverride,
   Torrent,
   TorrentFile,
@@ -23,8 +23,8 @@ export class TorrentService {
 
   /** Self-contained detail endpoints - not part of the list snapshot, fetched only while
    * a torrent's detail view is open. See design_docs/0031. */
-  pieces(infoHash: string): Observable<PieceState[]> {
-    return this.http.get<PieceState[]>(`${this.baseUrl}/${infoHash}/pieces`);
+  pieces(infoHash: string): Observable<PiecesResponse> {
+    return this.http.get<PiecesResponse>(`${this.baseUrl}/${infoHash}/pieces`);
   }
 
   files(infoHash: string): Observable<TorrentFile[]> {

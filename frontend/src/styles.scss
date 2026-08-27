@@ -107,6 +107,48 @@ body {
   display: none;
 }
 
+/* PrimeNG's own Table component always sets overflow: auto on its internal
+   .p-datatable-table-container via an inline style (TableStyle.inlineStyles in
+   primeng-table.mjs) - unconditional, not gated behind the scrollable input, which the
+   torrent list doesn't set. An inline style beats any external stylesheet rule regardless of
+   specificity, and this element is PrimeNG's own internal markup - not declared in any of our
+   own component templates, so no scoped selector could reach it even without that problem;
+   !important is the only way to actually override it. A sub-pixel layout-rounding mismatch
+   between the table's own width: 100% and this container's content box is enough to trigger
+   it and show a scrollbar for nothing there's actually a reason to scroll to - the torrent
+   list's fixed-width columns should never need horizontal scroll at all (see design_docs/
+   0032's "never let the row scroll horizontally" guide rule). overflow-x specifically, not
+   overflow - the only <p-table> in this app (torrent-list), but scoped to the class rather
+   than reached globally by tag, in case another one is ever added elsewhere with a genuine
+   need for vertical auto-sizing (this rule's other half, max-height, is untouched). */
+.p-datatable-table-container {
+  overflow-x: hidden !important;
+}
+
+/* Row action buttons (torrent-row.html's pause/resume/ellipsis) - guide's row-anatomy spec:
+   "24px ghost icon buttons". <p-button>'s own rendered <button class="p-button"> is created
+   by Button's own template (also ViewEncapsulation.None, like Table/Tabs), but unlike
+   p-tab/p-tabpanel (whose template is just <ng-content>, so projected content stays scoped
+   to whichever component wrote it), Button's template builds the <button> itself from
+   scratch - it isn't content we projected, so it carries neither Button's own scoping
+   attribute nor torrent-row's, and no selector in torrent-row.scss can reach it regardless of
+   encapsulation. .row-action-btn (a plain class on the <p-button> host tag itself, which IS
+   reachable from torrent-row.scss since we wrote that tag directly) exists purely so this
+   global rule can target the right inner buttons specifically rather than every p-button in
+   the app. Without an explicit size, PrimeNG's own size="small" preset renders taller than
+   34px once its own padding is added - see torrent-row.scss's own height: 34px comment for
+   why that then still couldn't hold the row to a consistent height while the panel is open
+   and this cell disappears versus the (already-slightly-too-tall) state when it doesn't. */
+.row-action-btn .p-button {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+}
+
+.row-action-btn .p-button .p-button-icon {
+  font-size: 14px;
+}
+
 /* p-inputnumber renders its own inner <input> from its own template, so a class applied to
    it via [inputStyleClass] lands outside any consuming component's emulated view
    encapsulation - has to live here globally rather than in that component's own .scss.

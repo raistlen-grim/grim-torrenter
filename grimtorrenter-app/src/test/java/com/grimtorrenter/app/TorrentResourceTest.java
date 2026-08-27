@@ -22,6 +22,7 @@ import java.util.Map;
 
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -223,8 +224,9 @@ class TorrentResourceTest {
         given()
                 .when().get("/api/torrents/" + infoHash + "/pieces")
                 .then().statusCode(200)
-                .body("$", hasSize(1))
-                .body("[0]", equalTo("NEEDED"));
+                .body("pieces", hasSize(1))
+                .body("pieces[0]", equalTo("NEEDED"))
+                .body("pieceLength", greaterThan(0));
     }
 
     @Test

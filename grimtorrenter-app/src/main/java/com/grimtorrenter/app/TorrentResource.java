@@ -44,14 +44,14 @@ public class TorrentResource {
         return TorrentView.from(requireSession(infoHashHex));
     }
 
-    /** One entry per piece, in index order - NEEDED/IN_PROGRESS/COMPLETE. Self-contained
-     * detail endpoint, not part of the always-broadcast TorrentView - see
-     * design_docs/0031. */
+    /** Per-piece state (NEEDED/IN_PROGRESS/COMPLETE), in index order, plus pieceLength - see
+     * design_docs/0032/0031. Self-contained detail endpoint, not part of the
+     * always-broadcast TorrentView. */
     @GET
     @Path("/{infoHash}/pieces")
     @Produces(MediaType.APPLICATION_JSON)
-    public List<String> pieces(@PathParam("infoHash") String infoHashHex) {
-        return requireSession(infoHashHex).pieceStates().stream().map(Enum::name).toList();
+    public PiecesView pieces(@PathParam("infoHash") String infoHashHex) {
+        return PiecesView.from(requireSession(infoHashHex));
     }
 
     /** Self-contained detail endpoint - path, total length, and per-file download

@@ -2,6 +2,8 @@ package com.grimtorrenter.app;
 
 import com.grimtorrenter.engine.torrent.TorrentSession;
 
+import java.time.Instant;
+
 public record TorrentView(
         String infoHash,
         String name,
@@ -17,7 +19,9 @@ public record TorrentView(
         String lastError,
         boolean usesDht,
         int trackerCount,
-        boolean dhtBackstopActive
+        boolean dhtBackstopActive,
+        /** Null when unknown - see TorrentSession.addedAt()'s own Javadoc. */
+        Instant addedAt
 ) {
     /** bytesReceived (raw, includes not-yet-verified data - see
      * TorrentSession.bytesReceived()) is separate from bytesDownloaded (verified-complete
@@ -53,6 +57,7 @@ public record TorrentView(
                 error != null ? error.getMessage() : null,
                 session.isTrackerless(),
                 session.trackers().size(),
-                session.isDhtBackstopActive());
+                session.isDhtBackstopActive(),
+                session.addedAt());
     }
 }

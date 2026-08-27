@@ -50,6 +50,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
@@ -109,6 +110,12 @@ public final class TorrentEngine {
      * data, same as the data itself does. See design_docs/0054. */
     private static final String SEEDING_LIMIT_OVERRIDE_MARKER_FILENAME = ".grimtorrenter-seeding-limit-override";
     private static final long SEEDING_LIMIT_CHECK_INTERVAL_SECONDS = 30;
+
+    /** When this torrent was added, ISO-8601 instant text - for the details panel's "Added"
+     * fact (design_docs/0032). Absent on a directory added before this field existed; no
+     * migration/backfill for those (see readAddedAtMarker()) - "unknown" is a real, permanent
+     * state for them, not something to guess at. */
+    private static final String ADDED_AT_MARKER_FILENAME = ".grimtorrenter-added-at";
 
     /** See design_docs/0056. */
     private static final String WATCH_ADDED_SUBDIRECTORY = "added";
@@ -645,18 +652,20 @@ public final class TorrentEngine {
                 // global default; a genuinely new directory just gets INHERIT (no marker
                 // exists yet).
                 SeedingLimitOverride seedingLimitOverride = readSeedingLimitOverrideMarker(torrentDirectory);
+                Instant addedAt = Instant.now();
                 TorrentSession created = resolution.preExisting()
                         ? TorrentSession.restoreAsync(metadata, trackerClient, torrentDirectory,
                                 ourPeerId, ourListenPort, listener, dhtNode, rateLimiters, fileHandlePool,
-                                pieceVerificationLimiter, encryptionMode, seedingLimitOverride, true)
+                                pieceVerificationLimiter, encryptionMode, seedingLimitOverride, addedAt, true)
                         : TorrentSession.create(metadata, trackerClient, torrentDirectory, ourPeerId,
                                 ourListenPort, listener, dhtNode, rateLimiters, fileHandlePool,
-                                pieceVerificationLimiter, encryptionMode, seedingLimitOverride);
+                                pieceVerificationLimiter, encryptionMode, seedingLimitOverride, addedAt);
                 if (!resolution.preExisting()) {
                     created.start();
                 }
                 writeTorrentFileMarker(torrentDirectory, torrentFileBytes);
                 writeStateMarker(torrentDirectory, STATE_RUNNING);
+                writeAddedAtMarker(torrentDirectory, addedAt);
                 directories.put(infoHash, torrentDirectory);
                 seedFromDhtIfTrackerless(created, trackerClient, infoHash);
                 return created;
@@ -833,10 +842,11 @@ public final class TorrentEngine {
             TrackerClient trackerClient = createTrackerClient(metadata);
             boolean running = !STATE_STOPPED.equals(readStateMarker(directory));
             SeedingLimitOverride seedingLimitOverride = readSeedingLimitOverrideMarker(directory);
+            Instant addedAt = readAddedAtMarker(directory);
             TorrentSession session = TorrentSession.restoreAsync(
                     metadata, trackerClient, directory, ourPeerId, ourListenPort, listener, dhtNode,
                     rateLimiters, fileHandlePool, pieceVerificationLimiter, encryptionMode, seedingLimitOverride,
-                    running);
+                    addedAt, running);
             sessions.put(metadata.infoHash(), session);
             directories.put(metadata.infoHash(), directory);
             seedFromDhtIfTrackerless(session, trackerClient, metadata.infoHash());
@@ -979,6 +989,37 @@ public final class TorrentEngine {
         } catch (IOException e) {
             throw new TorrentEngineException(
                     "Could not persist seeding limit override to " + directory + ": " + e.getMessage());
+        }
+    }
+
+    /** No-ops if directory is null - see writeStateMarker's own comment for why that's
+     * possible in principle. */
+    private static void writeAddedAtMarker(Path directory, Instant addedAt) {
+        if (directory == null) {
+            return;
+        }
+        try {
+            Files.writeString(directory.resolve(ADDED_AT_MARKER_FILENAME), addedAt.toString());
+        } catch (IOException e) {
+            throw new TorrentEngineException(
+                    "Could not persist added-at timestamp to " + directory + ": " + e.getMessage());
+        }
+    }
+
+    /** Null when the marker is absent (every directory added before this field existed) -
+     * see ADDED_AT_MARKER_FILENAME's own comment on why that's left unknown rather than
+     * backfilled. A corrupt/unparseable marker (hand-edited, truncated by a crash mid-write)
+     * is treated the same way rather than failing the whole restore over one cosmetic fact. */
+    private static Instant readAddedAtMarker(Path directory) {
+        Path marker = directory.resolve(ADDED_AT_MARKER_FILENAME);
+        if (!Files.exists(marker)) {
+            return null;
+        }
+        try {
+            return Instant.parse(Files.readString(marker).strip());
+        } catch (IOException | DateTimeParseException e) {
+            LOG.log(System.Logger.Level.WARNING, "Could not read added-at marker in " + directory, e);
+            return null;
         }
     }
 

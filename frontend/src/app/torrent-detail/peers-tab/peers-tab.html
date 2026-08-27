@@ -1,33 +1,56 @@
-@if (peers().length === 0) {
+@if (sortedPeers().length === 0) {
   <p class="empty-message">No connected peers.</p>
 } @else {
-  <ul class="peer-list">
-    @for (peer of peers(); track peer.address + ':' + peer.port) {
-      <li class="peer-card">
-        <div class="peer-address tabular-nums">{{ peer.address }}:{{ peer.port }}</div>
-        <div class="peer-status">
-          <app-status-indicator
-            [icon]="peer.peerChoking ? 'pi-lock' : 'pi-lock-open'"
-            [label]="'They ' + (peer.peerChoking ? 'choke us' : 'unchoked us')"
-            [tone]="peer.peerChoking ? 'dim' : 'active'"
-          />
-          <app-status-indicator
-            [icon]="peer.amChoking ? 'pi-lock' : 'pi-lock-open'"
-            [label]="'We ' + (peer.amChoking ? 'choke them' : 'unchoked them')"
-            [tone]="peer.amChoking ? 'dim' : 'active'"
-          />
-        </div>
-        <div class="peer-rates tabular-nums">
-          <span [pTooltip]="peer.downloadRateWindows | formatRateWindows" tooltipPosition="top">
-            <i class="pi pi-arrow-down" aria-hidden="true"></i>
-            {{ peer.downloadedBytes | formatBytes }} &mdash; {{ peer.downloadRateBytesPerSec | formatRate }}
-          </span>
-          <span [pTooltip]="peer.uploadRateWindows | formatRateWindows" tooltipPosition="top">
-            <i class="pi pi-arrow-up" aria-hidden="true"></i>
-            {{ peer.uploadedBytes | formatBytes }} &mdash; {{ peer.uploadRateBytesPerSec | formatRate }}
-          </span>
-        </div>
-      </li>
+  <div class="peer-header">
+    <span>Address</span>
+    <span class="peer-col-right">Down</span>
+    <span class="peer-col-right">Up</span>
+  </div>
+  <div class="peer-list">
+    @for (peer of sortedPeers(); track peerKey(peer)) {
+      <div class="peer-row">
+        <span class="peer-address">
+          {{ peer.address }}:{{ peer.port }}
+          <i
+            class="pi peer-flag"
+            [class]="peer.peerChoking ? 'pi-lock' : 'pi-lock-open'"
+            [class.active]="!peer.peerChoking"
+            [title]="'They ' + (peer.peerChoking ? 'choke us' : 'unchoked us')"
+            aria-hidden="true"
+          ></i>
+          <i
+            class="pi peer-flag"
+            [class]="peer.amChoking ? 'pi-lock' : 'pi-lock-open'"
+            [class.active]="!peer.amChoking"
+            [title]="'We ' + (peer.amChoking ? 'choke them' : 'unchoked them')"
+            aria-hidden="true"
+          ></i>
+        </span>
+        <span
+          class="peer-rate tabular-nums"
+          [class.idle]="peer.downloadRateBytesPerSec === 0"
+          [pTooltip]="peer.downloadRateWindows | formatRateWindows"
+          tooltipPosition="top"
+        >
+          @if (peer.downloadRateBytesPerSec > 0) {
+            {{ peer.downloadRateBytesPerSec | formatRate }}
+          } @else {
+            &mdash;
+          }
+        </span>
+        <span
+          class="peer-rate tabular-nums"
+          [class.idle]="peer.uploadRateBytesPerSec === 0"
+          [pTooltip]="peer.uploadRateWindows | formatRateWindows"
+          tooltipPosition="top"
+        >
+          @if (peer.uploadRateBytesPerSec > 0) {
+            {{ peer.uploadRateBytesPerSec | formatRate }}
+          } @else {
+            &mdash;
+          }
+        </span>
+      </div>
     }
-  </ul>
+  </div>
 }

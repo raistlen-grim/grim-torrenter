@@ -87,7 +87,16 @@ public final class DhtNode implements AutoCloseable {
     public DhtNode(NodeId ourId, int port) {
         this.ourId = ourId;
         try {
-            this.socket = new DatagramSocket(port);
+            // Unbound construction + setReuseAddress(true) before bind() - the convenience
+            // constructor new DatagramSocket(port) binds immediately with no chance to set
+            // this first. Without it, quickly re-binding the same port right after close()
+            // (e.g. Quarkus dev mode's live-reload tearing down and recreating the engine on
+            // every backend source change) can fail with "Address already in use" for a
+            // window after the old socket closes, purely from OS-level lingering, even though
+            // nothing else is actually still using the port. See design_docs/0058.
+            this.socket = new DatagramSocket(null);
+            this.socket.setReuseAddress(true);
+            this.socket.bind(new InetSocketAddress(port));
         } catch (SocketException e) {
             throw new DhtException("Could not bind DHT socket to port " + port, e);
         }

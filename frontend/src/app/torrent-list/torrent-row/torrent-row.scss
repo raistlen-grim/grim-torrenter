@@ -74,13 +74,46 @@ td:not(.state-icon-cell) {
  * preserved"). display:flex lives on .name-inner rather than the <td> itself - see the
  * same reasoning documented on .row-actions below (overriding a table-cell's own display
  * misaligns its border against sibling cells). */
+/* overflow: hidden on the cell itself, not just .name-inner's flex children below - a table
+ * cell doesn't clip its own content by default (overflow: visible), so without this, a name
+ * long enough to render wider than the fixed column width before truncation "catches up"
+ * would visually spill out of the cell, dragging its trailing .name-extension span along
+ * with it far to the right instead of sitting immediately after the truncated stem. */
+.name-cell {
+  overflow: hidden;
+}
+
+/* height: 24px, exactly matching .row-action-btn's own explicit height (styles.scss) - not
+ * an attempt at the guide's literal 34px row height, and not a height/min-height on the
+ * <tr>/<td> themselves (both tried first and confirmed live to have no reliable effect - the
+ * CSS table-layout spec leaves height on a row as advisory and min-height/max-height on any
+ * table part as implementation-defined, and this app's target browser just doesn't treat
+ * either as an enforceable floor there). This sidesteps that ambiguity rather than resolving
+ * it: .name-inner is a normal flex box, not a table part, so an explicit height on IT is
+ * unambiguously respected, and "a table cell grows to fit its content, and every cell in a
+ * row shares the row's height" are both uncontested parts of table layout - given identical
+ * content height here, .name-cell always needs the same room .actions-cell's own button
+ * does, in every row, regardless of whether that column is currently hidden. align-items:
+ * center keeps the (shorter, ~18-19px) text looking normal inside the taller box rather than
+ * stretched to fill it. */
 .name-inner {
   display: flex;
+  align-items: center;
+  height: 24px;
+  width: 100%;
   min-width: 0;
 }
 
+/* flex-grow: 0 (the first number below), not 1 - flex-shrink: 1 (the second) is what makes
+ * this truncate when the row is too narrow, but a nonzero flex-grow would ALSO make it
+ * expand to fill any leftover space in short names that don't need the column's full width.
+ * The visible text doesn't stretch to fill that wider box (text just sits left-aligned inside
+ * it), but .name-extension - a flex sibling - gets positioned at the end of the STEM'S BOX,
+ * not the end of its visible text, stranding it far to the right of a short name with room to
+ * spare (worse the shorter the name is, since more space is left over to grow into) rather
+ * than sitting immediately after it. */
 .name-stem {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -92,19 +125,27 @@ td:not(.state-icon-cell) {
   white-space: nowrap;
 }
 
+/* white-space: nowrap throughout - these are short, single-value cells (a size, a
+ * percentage, a rate) that should never wrap even if a column ends up a hair narrower than
+ * its content; PrimeNG's default td doesn't set this itself, and the fixed column widths in
+ * torrent-list.html's colgroup are close enough to content width that a value like
+ * "1004.8 MB" could otherwise wrap onto two lines at the space. */
 .size-cell {
   text-align: right;
+  white-space: nowrap;
   opacity: 0.7;
 }
 
 .done-cell {
   text-align: right;
+  white-space: nowrap;
   opacity: 0.75;
 }
 
 .down-cell,
 .up-cell {
   text-align: right;
+  white-space: nowrap;
 }
 
 .rate-active {
@@ -119,6 +160,7 @@ td:not(.state-icon-cell) {
 
 .eta-cell {
   text-align: right;
+  white-space: nowrap;
   opacity: 0.6;
 }
 

@@ -3,6 +3,12 @@ export type TorrentState = 'DOWNLOADING' | 'VERIFYING' | 'SEEDING' | 'STOPPED' |
 /** Matches the backend's PieceState enum - see design_docs/0031's Piece map endpoint. */
 export type PieceState = 'NEEDED' | 'IN_PROGRESS' | 'COMPLETE';
 
+/** Matches the backend's PiecesView - see design_docs/0032's task 7. */
+export interface PiecesResponse {
+  pieces: PieceState[];
+  pieceLength: number;
+}
+
 export interface Torrent {
   infoHash: string;
   name: string;
@@ -30,6 +36,10 @@ export interface Torrent {
    * zero trackers at all." A tracker-bearing torrent (usesDht false) can still have this
    * true while its tracker is unreachable. See design_docs/0036/0039. */
   dhtBackstopActive: boolean;
+  /** ISO instant string, or null when unknown - a torrent directory added before this field
+   * existed has no marker to read it back from and is never backfilled with a guess. See
+   * design_docs/0032. */
+  addedAt: string | null;
 }
 
 /** downloadRateBytesPerSec/uploadRateBytesPerSec are computed client-side via RateTracker

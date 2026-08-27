@@ -143,6 +143,11 @@ endpoints above depend on one or the other.
   directly - keeps the JSON contract decoupled from the engine enum's Java identity, and
   avoids inventing a parallel app-layer enum purely to re-declare three values that
   already mean exactly what a UI wants to show.
+  **Revised in [[0032-style-guide-and-primeng-theme]] (task 7)**: `GET .../pieces` now
+  returns `PiecesView {pieces: List<String>, pieceLength: long}`, a small wrapper record,
+  instead of the bare array - the Pieces tab's redesigned caption needed a per-piece size
+  that `TorrentMetadata.pieceLength()` already carried but nothing exposed before then. The
+  decoupled-JSON-contract reasoning above still stands; only the top-level shape changed.
 
 ### Frontend (`TorrentDetail`, routed at `/torrents/:infoHash`)
 

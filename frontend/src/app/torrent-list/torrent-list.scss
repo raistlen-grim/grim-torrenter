@@ -1,11 +1,35 @@
 // Deliberately minimal - real visual design is pending the reference app.
 
+/* Full bleed for this page specifically (explicit user choice, not the shell's default -
+ * every other routed page keeps .shell-main's own padding unchanged): cancels its left/right
+ * padding only, so the list reaches the sidebar and the docked panel reaches the browser's
+ * true right edge with nothing but its own 1px divider between them. Top/bottom padding is
+ * untouched (top for breathing room below the header, bottom for the fixed footer's
+ * clearance - see app.scss). flex:1/min-height:0 lets .list-panel-grid below stretch to fill
+ * whatever vertical space .shell-main's own flex-column layout gives this page, rather than
+ * only ever being as tall as the list/panel's own content - see that rule's own comment. */
+:host {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  margin: 0 calc(-1 * var(--space-8));
+  /* Outermost safety net for the guide's "never let the row scroll horizontally" rule - see
+   * .list-column's own matching rule for why this exists twice. */
+  overflow-x: hidden;
+}
+
 .toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
   margin-bottom: var(--space-4);
+  /* .list-column's own left padding covers this side; the table body's row cells get their
+   * own breathing room from PrimeNG's per-cell padding, but the toolbar has no equivalent on
+   * its trailing edge, so it needs its own right inset now that the outer shell padding this
+   * used to borrow is gone on this page (see :host's full-bleed comment above). */
+  padding-right: 14px;
 }
 
 /* The bonded add unit (ADD_CONTROL.md / ADDENDUM_02): one paste field plus a primary
@@ -259,6 +283,12 @@ th {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 0;
   align-items: stretch;
+  /* Fills whatever vertical space :host's own flex:1 was given, rather than only being as
+   * tall as the list/panel's own content - without this, the docked panel's background
+   * (below) stops at its own content height even when the page has more room than that,
+   * reading as "not full height" against a short torrent list. */
+  flex: 1;
+  min-height: 0;
 }
 
 .list-panel-grid.panel-open {
@@ -267,23 +297,50 @@ th {
 
 .list-column {
   min-width: 0;
+  /* Restores the inset :host's negative margin (above) cancelled, on this side only - the
+   * panel side stays flush to the true right edge. */
+  padding-left: var(--space-8);
+  /* Belt and suspenders for the guide's own explicit row rule ("shed columns, never
+   * compress them or let the row scroll horizontally") - table-layout: fixed plus an
+   * explicit table width should already keep every column within bounds on its own, but
+   * this guarantees nothing inside the list (an unexpectedly wide toolbar control, a long
+   * unbroken string somewhere) can ever push the page itself wider than the viewport. */
+  overflow-x: hidden;
+}
+
+/* Flex column so TorrentDetail's own :host (flex: 1; min-height: 0 - see torrent-detail.scss)
+ * actually receives this element's stretched height instead of just sitting at its own
+ * content height inside a plain block box - flex/grid "stretch" only reaches as far as the
+ * immediate child; without this link, .detail-panel itself was correctly full height (via
+ * .list-panel-grid's own align-items: stretch) but nothing inside it actually filled that
+ * height, so the footer-pinning fix in torrent-detail.scss had no effect. */
+.detail-panel {
+  display: flex;
+  flex-direction: column;
 }
 
 /* Border/background only apply once open - at 0 width they'd otherwise still paint a
- * 1px sliver (a border adds to the box regardless of its content width). No independent
- * scroll region and no viewport-height clamp any more - the old drawer used
- * position:fixed + top/bottom: var(--shell-header/footer-height) specifically to escape
- * .shell-main's normal document flow and manage its own scrolling, which is exactly the
- * floating-overlay behavior the guide's docking spec rules out ("must never float over the
- * table"). As a grid item it now just flows and scrolls with the rest of the page, like the
- * list beside it. Padding carried over unchanged from the old drawer for now - task 6
- * replaces it with the guide's per-section padding (header/fact-grid/footer each carry their
- * own, no outer panel padding) when it rebuilds the panel's internal structure. */
-.detail-panel {
-  padding: var(--space-6);
-}
-
+ * 1px sliver (a border adds to the box regardless of its content width). No padding here
+ * (task 6 gave the panel's own header/fact-grid/footer their exact per-section padding
+ * straight from the guide, in torrent-detail.scss, which only works edge-to-edge if this
+ * wrapper adds none of its own).
+ *
+ * position: sticky + max-height is a real viewport-height clamp - reintroduced deliberately,
+ * after task 5 removed the old drawer's position: fixed one specifically because that escaped
+ * .shell-main's normal document flow entirely (a genuinely floating, independently-scrolling
+ * overlay - exactly what the guide's docking spec rules out, "must never float over the
+ * table"). This isn't that: it's the same position: sticky + max-height + overflow pattern
+ * app-sidebar.scss already uses for the nav sidebar - a normal grid/flow item that stays
+ * visible as the page scrolls and caps its own height, not an overlay floating above
+ * anything. Needed so the header/fact-grid/footer can stay on-screen and the tab content can
+ * scroll *within* the panel (p-tabpanel's own overflow-y: auto, torrent-detail.scss) instead
+ * of the panel growing past the viewport - a torrent with many trackers/peers previously just
+ * pushed the footer off the bottom of the screen. */
 .detail-panel.open {
   border-left: 1px solid var(--color-divider);
   background: color-mix(in srgb, var(--color-text) 2%, transparent);
+  position: sticky;
+  top: var(--shell-header-height);
+  max-height: calc(100vh - var(--shell-header-height) - var(--shell-footer-height));
+  overflow: hidden;
 }

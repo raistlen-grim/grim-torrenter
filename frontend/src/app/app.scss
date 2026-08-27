@@ -2,23 +2,35 @@
  * same "hardcode the literal pixel value" precedent the style guide's own document chrome
  * uses for its sticky nav offset - cascade to app-sidebar/app-footer via inheritance, since
  * Angular's emulated encapsulation still lets CSS custom properties cascade normally
- * through the DOM. */
+ * through the DOM. Flex column (not plain block) so .shell-body below can be told to fill
+ * whatever's left of the viewport after the header, rather than only ever being as tall as
+ * its own content - short page content (e.g. a torrent list with a handful of rows) would
+ * otherwise leave a visible gap between where the real content ends and where min-height:
+ * 100vh's own bottom edge is, instead of that space actually belonging to .shell-body's own
+ * children (see torrent-list.scss's docked-panel background, which relies on this). */
 :host {
   --shell-header-height: 52px;
   --shell-footer-height: 41px;
-  display: block;
+  display: flex;
+  flex-direction: column;
   min-height: 100vh;
 }
 
 .shell-body {
   display: grid;
   grid-template-columns: 200px minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
 }
 
 /* Bottom padding clears the footer, which is pinned to the viewport (position: fixed) -
  * see app-footer.scss - rather than sitting in normal document flow, so nothing here would
- * otherwise render underneath it. */
+ * otherwise render underneath it. Flex column so a routed page's own host (e.g.
+ * TorrentList's) can stretch to fill this rather than only being as tall as its content -
+ * same reasoning as :host above. */
 .shell-main {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   padding: var(--space-6) var(--space-8);
   padding-bottom: calc(var(--space-6) + var(--shell-footer-height));

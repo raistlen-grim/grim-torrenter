@@ -1,54 +1,229 @@
 /* Always rendered inside torrent-list's docked details panel (design_docs/0044/0032), which
- * already constrains both width (392px) and padding - no page-level sizing needed here. */
+ * already constrains its width (392px) - no page-level sizing here. Deliberately no padding
+ * on that wrapper: header/fact-grid/footer below carry their own exact padding straight from
+ * the guide instead of inheriting one blanket panel padding. Flex column, filling
+ * .detail-panel's own height (that panel now stretches to the full page height via a chain
+ * of flex:1/min-height:0 rules starting at the app root - see app.scss/torrent-list.scss) -
+ * this is what actually pins the footer to the bottom (below) rather than leaving it
+ * trailing right under short tab content with a page-length gap beneath it. */
 :host {
-  display: block;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
 }
 
-.close-link {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  margin-bottom: var(--space-4);
-  color: inherit;
-  text-decoration: none;
-  font-size: 0.875rem;
-  opacity: 0.75;
+/* design_docs/0032 tasks 6-7: header/fact-grid/progress-bar/tabs/footer, per README's
+ * "Panel structure". */
+.panel-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 13px 14px 12px;
 }
 
-.close-link:hover {
-  opacity: 1;
+.header-text {
+  flex: 1;
+  min-width: 0;
 }
 
-.detail-header {
-  margin-bottom: 1.5rem;
+.header-label {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  opacity: 0.5;
 }
 
-.detail-header h1 {
-  margin: 0 0 0.5rem;
-  font-size: 1.375rem;
+/* min-height: exactly 2 lines (1.35 * 2, in em so it tracks this element's own font-size)
+ * reserves the same vertical space regardless of whether the name actually wraps - without
+ * it, a one-line name renders shorter than a two-line one, shifting the fact grid/tabs/
+ * footer up or down depending purely on how long the current torrent's name happens to be. A
+ * floor, not a fixed height, though the two end up equivalent in practice: -webkit-line-clamp
+ * already caps visible content at 2 lines, so it can never need more room than this reserves. */
+.header-name {
+  margin: 4px 0 0;
+  min-height: calc(1.35em * 2);
+  font-size: 14.5px;
+  font-weight: 500;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
   overflow-wrap: break-word;
 }
 
-.detail-meta {
+/* Ghost icon button - no hover/focus tint yet, same as .add-clear in torrent-list.scss;
+ * the guide's universal ghost-button hover treatment (a color-mix accent tint) applies to
+ * every ghost button in these views at once as part of task 8, not piecemeal per task. */
+.close-button {
+  flex: none;
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-3);
-  margin-bottom: var(--space-2);
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
 }
 
-.error-detail {
+.close-button .pi {
+  font-size: 15px;
+}
+
+/* Not part of the guide's fact-grid (README's 8-cell list has no error/lastError cell) -
+ * kept because dropping torrent-level error visibility entirely would be a real regression,
+ * not a restyle. See design_docs/0032's task 6 notes. */
+.panel-error {
+  margin: 0 0 var(--space-3);
+  padding: 0 14px 12px;
   color: var(--alarm);
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
 }
 
-.tracker-count {
-  font-size: 0.875rem;
-  opacity: 0.75;
+.fact-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px 0;
+  background: var(--rule);
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
 }
 
-.byte-progress {
-  margin-top: var(--space-2);
-  font-size: 0.875rem;
-  opacity: 0.75;
+.fact-cell {
+  min-width: 0;
+  background: var(--color-bg);
+  padding: 8px 14px;
+  overflow: hidden;
+}
+
+.fact-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  opacity: 0.5;
+  margin-bottom: 2px;
+}
+
+.fact-value {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Down/Up specifically, per the guide's fact-grid spec - distinct from the row's own
+ * idle rule (an em dash at 35% flat opacity), which stays as-is. */
+.fact-value.idle {
+  color: color-mix(in srgb, currentColor 40%, transparent);
+}
+
+.progress-track {
+  height: 5px;
+  margin: var(--space-3) 14px;
+  background: color-mix(in srgb, var(--color-text) 10%, transparent);
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--color-accent);
+}
+
+/* Same striped-fill treatment as the row's own verifying underlay (torrent-row.scss) -
+ * intentionally identical values so the two read as the same signal. */
+.progress-track.verifying .progress-fill {
+  background-color: color-mix(in srgb, var(--color-accent) 30%, transparent);
+  background-image: repeating-linear-gradient(115deg, var(--color-accent) 0 5px, transparent 5px 10px);
+}
+
+.progress-caption {
+  margin: var(--space-1) 14px var(--space-3);
+  font-size: 11.5px;
+  opacity: 0.6;
+}
+
+/* Tab strip (README's "Panel structure" point 4) - overrides PrimeNG's own Tabs look via
+ * plain scoped selectors, not ::ng-deep: Tab/TabList/Tabs all render with
+ * ViewEncapsulation.None (confirmed in primeng-tabs.mjs), but <p-tab>/<p-tablist> are still
+ * elements written directly in *this* component's own template, so they carry
+ * TorrentDetail's own Angular-emulated scoping attribute like any other element here would -
+ * encapsulation only strips a component's ability to scope its *own* template, not how a
+ * parent template's scoping attaches to the tags it instantiates. Same reasoning already
+ * established for th/.sort-header in torrent-list.scss, just against a fully-styled PrimeNG
+ * component instead of our own markup this time. */
+p-tablist {
+  border-bottom: 1px solid var(--color-divider);
+  padding: 0 8px;
+}
+
+p-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 11px;
+  cursor: pointer;
+  font-size: 12.5px;
+  letter-spacing: 0.04em;
+  color: inherit;
+}
+
+p-tab[data-p-active='true'] {
+  color: var(--color-accent-700);
+  box-shadow: inset 0 -2px 0 0 var(--color-accent);
+}
+
+.tab-count {
+  font-size: 11px;
+  opacity: 0.55;
+}
+
+/* README's "Panel structure" point 5: p-tabs/p-tabpanels now flex:1 within :host's own flex
+ * column (see :host's comment above) - this is what actually pins the footer below to the
+ * bottom of the panel rather than leaving it trailing right under short tab content. Scoped
+ * to [data-p-active='true'] rather than a blanket `p-tabpanel` selector - PrimeNG hides an
+ * inactive panel via the native `hidden` attribute, and while `[hidden]`'s own
+ * higher-specificity UA-stylesheet rule should still win regardless, there's no reason to
+ * rely on winning that fight when scoping to the active panel avoids it outright. */
+p-tabs {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+p-tabpanels {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+/* overflow-y: auto is what actually makes tab content "scroll internally" (README point 5) -
+ * meaningful now that .detail-panel itself has a real viewport-height cap (position: sticky +
+ * max-height, torrent-list.scss) for this flex chain to be constrained within; before that,
+ * min-height: 268px was the only height-related property here (a floor with nothing to
+ * scroll against, since nothing above it in the chain was ever capped - see torrent-list.scss's
+ * own comment on why that cap was deliberately deferred, then added). */
+p-tabpanel[data-p-active='true'] {
+  display: block;
+  flex: 1;
+  min-height: 268px;
+  padding: 12px 14px;
+  overflow-y: auto;
+}
+
+.panel-footer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: var(--space-4);
+  padding: 10px 14px;
+  border-top: 1px solid var(--color-divider);
+}
+
+.footer-menu-button {
+  margin-left: auto;
 }
