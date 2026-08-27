@@ -1,11 +1,19 @@
-import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
+import { DOCUMENT } from '@angular/common';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  DestroyRef,
+  ElementRef,
+  computed,
+  inject,
+  signal,
+  viewChild,
+} from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
-import { FormControl, ReactiveFormsModule } from '@angular/forms';
 import { ActivatedRoute, NavigationEnd, Router, RouterOutlet } from '@angular/router';
 import { ConfirmationService, MessageService } from 'primeng/api';
 import { ButtonModule } from 'primeng/button';
 import { ConfirmDialogModule } from 'primeng/confirmdialog';
-import { FileUpload, FileUploadHandlerEvent, FileUploadModule } from 'primeng/fileupload';
 import { IconFieldModule } from 'primeng/iconfield';
 import { InputIconModule } from 'primeng/inputicon';
 import { InputTextModule } from 'primeng/inputtext';
@@ -18,6 +26,7 @@ import { TorrentWithRate } from '../models/torrent.model';
 import { TorrentEventsService } from '../services/torrent-events.service';
 import { TorrentFilterService, matchesSearchText, matchesStatusFilter } from '../services/torrent-filter.service';
 import { TorrentService } from '../services/torrent.service';
+import { FormatBytesPipe } from '../shared/format-bytes.pipe';
 import { StatusIndicator } from '../shared/status-indicator/status-indicator';
 import { TorrentRow } from './torrent-row/torrent-row';
 
@@ -35,16 +44,131 @@ type TableRow = { kind: 'pending'; upload: PendingUpload } | { kind: 'torrent'; 
 type SortField = 'name' | 'size' | 'status' | 'progress';
 type SortDirection = 'asc' | 'desc';
 
+/** Requires the actual btih infohash, not just the magnet: scheme - a bare
+ * `magnet:?dn=foo` must fail validation. See ADD_CONTROL.md's "Validation" section. */
+const MAGNET_PREFIX_RE = /^magnet:\?/i;
+const BTIH_RE = /xt=urn:btih:([0-9a-fA-F]{40}|[A-Za-z2-7]{32})/i;
+const HEX_INFOHASH_RE = /^[0-9a-fA-F]{40}$/;
+const URL_RE = /^https?:\/\/\S+$/i;
+
+interface ParsedMagnet {
+  /** Only populated for a 40-char hex btih (the base32 form isn't converted client-side,
+   * so a base32 magnet skips duplicate detection rather than mis-comparing). */
+  infoHash: string | null;
+  displayName: string | null;
+  lengthBytes: number | null;
+  trackerCount: number;
+}
+
+type AddState =
+  | { kind: 'empty' }
+  | { kind: 'invalid' }
+  /** The design guide's "Add link" (fetch a .torrent from a URL) has no backend endpoint
+   * yet - flagged when ADDENDUM_02 was reviewed as needing new server work plus an SSRF
+   * consideration, not something to build silently. A recognised URL is shown as
+   * unsupported rather than wired to a fetch that doesn't exist. */
+  | { kind: 'torrent-url' }
+  | ({ kind: 'magnet'; uri: string; duplicate: TorrentWithRate | null } & ParsedMagnet)
+  | { kind: 'multi-magnet'; uris: string[]; firstName: string | null };
+
+interface EchoState {
+  tone: 'accent' | 'alarm';
+  icon: string;
+  name: string;
+  meta: string;
+  hint: string;
+}
+
+function normalizeMagnetCandidate(value: string): string | null {
+  const stripped = value.trim().replace(/^[<'"]+/, '').replace(/[>'"]+$/, '');
+  if (MAGNET_PREFIX_RE.test(stripped)) {
+    return stripped;
+  }
+  if (HEX_INFOHASH_RE.test(stripped)) {
+    return `magnet:?xt=urn:btih:${stripped}`;
+  }
+  return null;
+}
+
+function parseMagnetParams(uri: string): ParsedMagnet | null {
+  const match = BTIH_RE.exec(uri);
+  if (!match) {
+    return null;
+  }
+  const infoHash = match[1].length === 40 ? match[1].toLowerCase() : null;
+  let displayName: string | null = null;
+  let lengthBytes: number | null = null;
+  let trackerCount = 0;
+  const query = uri.slice(uri.indexOf('?') + 1);
+  for (const part of query.split('&')) {
+    const eqIndex = part.indexOf('=');
+    if (eqIndex === -1) {
+      continue;
+    }
+    const key = part.slice(0, eqIndex);
+    const value = decodeURIComponent(part.slice(eqIndex + 1));
+    if (key === 'dn' && displayName === null) {
+      displayName = value;
+    } else if (key === 'xl' && lengthBytes === null) {
+      const parsedLength = Number(value);
+      lengthBytes = Number.isFinite(parsedLength) ? parsedLength : null;
+    } else if (key === 'tr') {
+      trackerCount++;
+    }
+  }
+  return { infoHash, displayName, lengthBytes, trackerCount };
+}
+
+/** Newline-separated pastes are treated as a batch only when every line parses as a
+ * magnet/infohash - a mix of valid and junk lines falls through to plain 'invalid'
+ * rather than silently dropping the junk. See ADD_CONTROL.md's behaviour table. */
+function resolveAddState(rawValue: string, torrents: readonly TorrentWithRate[]): AddState {
+  const trimmed = rawValue.trim();
+  if (!trimmed) {
+    return { kind: 'empty' };
+  }
+
+  const lines = trimmed
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  if (lines.length > 1) {
+    const uris = lines.map(normalizeMagnetCandidate);
+    if (uris.every((uri): uri is string => uri !== null)) {
+      const first = parseMagnetParams(uris[0]);
+      return { kind: 'multi-magnet', uris, firstName: first?.displayName ?? null };
+    }
+    return { kind: 'invalid' };
+  }
+
+  const single = lines[0];
+  const normalized = normalizeMagnetCandidate(single);
+  if (normalized) {
+    const parsed = parseMagnetParams(normalized);
+    if (parsed) {
+      const duplicate = parsed.infoHash
+        ? (torrents.find((t) => t.infoHash.toLowerCase() === parsed.infoHash) ?? null)
+        : null;
+      return { kind: 'magnet', uri: normalized, duplicate, ...parsed };
+    }
+  }
+
+  if (URL_RE.test(single)) {
+    return { kind: 'torrent-url' };
+  }
+
+  return { kind: 'invalid' };
+}
+
 @Component({
   selector: 'app-torrent-list',
   imports: [
     ButtonModule,
     ConfirmDialogModule,
-    FileUploadModule,
     IconFieldModule,
     InputIconModule,
     InputTextModule,
-    ReactiveFormsModule,
     RouterOutlet,
     StatusIndicator,
     TableModule,
@@ -63,7 +187,14 @@ export class TorrentList {
   private readonly events = inject(TorrentEventsService);
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
+  private readonly document = inject(DOCUMENT);
+  private readonly destroyRef = inject(DestroyRef);
   readonly filter = inject(TorrentFilterService);
+
+  private readonly formatBytes = new FormatBytesPipe();
+
+  readonly fileInput = viewChild<ElementRef<HTMLInputElement>>('fileInput');
+  readonly addFieldInput = viewChild<ElementRef<HTMLInputElement>>('addFieldInput');
 
   /** Drives the detail drawer's open/closed state directly from whether the
    * torrents/:infoHash child route is currently matched, rather than a separate boolean
@@ -84,8 +215,6 @@ export class TorrentList {
   }
 
   private readonly pendingUploads = signal<PendingUpload[]>([]);
-
-  readonly magnetUriControl = new FormControl('', { nonNullable: true });
 
   readonly sortField = signal<SortField>('name');
   readonly sortDirection = signal<SortDirection>('asc');
@@ -193,11 +322,183 @@ export class TorrentList {
     this.messageService.add({ severity: 'info', summary: 'Resuming', detail: `${targets.length} torrent(s)` });
   }
 
-  onUpload(event: FileUploadHandlerEvent, fileUpload: FileUpload): void {
-    const file = event.files[0];
-    if (!file) {
+  // --- Add control (ADD_CONTROL.md / ADDENDUM_02: one bonded field + primary, not the
+  // former separate Add Torrent / Add Magnet buttons) ---------------------------------
+
+  readonly addValue = signal('');
+  readonly addPending = signal(false);
+  readonly addError = signal<string | null>(null);
+  readonly isDraggingFile = signal(false);
+
+  readonly addState = computed<AddState>(() => resolveAddState(this.addValue(), this.events.torrents()));
+
+  readonly addFieldTone = computed<'idle' | 'accent' | 'alarm'>(() => {
+    switch (this.addState().kind) {
+      case 'empty':
+        return 'idle';
+      case 'magnet':
+      case 'multi-magnet':
+        return 'accent';
+      case 'invalid':
+      case 'torrent-url':
+        return 'alarm';
+    }
+  });
+
+  readonly addPrimary = computed<{ icon: string; label: string; disabled: boolean }>(() => {
+    const state = this.addState();
+    if (this.addPending()) {
+      const label =
+        state.kind === 'multi-magnet' ? `Add ${state.uris.length} magnets` : state.kind === 'magnet' ? 'Add magnet' : 'Add file…';
+      return { icon: 'pi pi-spinner pi-spin', label, disabled: true };
+    }
+    switch (state.kind) {
+      case 'empty':
+        return { icon: 'pi pi-file-plus', label: 'Add file…', disabled: false };
+      case 'magnet':
+        return state.duplicate
+          ? { icon: 'pi pi-plus', label: 'Show existing', disabled: false }
+          : { icon: 'pi pi-plus', label: 'Add magnet', disabled: false };
+      case 'multi-magnet':
+        return { icon: 'pi pi-plus', label: `Add ${state.uris.length} magnets`, disabled: false };
+      case 'torrent-url':
+        return { icon: 'pi pi-plus', label: 'Add link', disabled: true };
+      case 'invalid':
+        return { icon: 'pi pi-plus', label: 'Add magnet', disabled: true };
+    }
+  });
+
+  readonly echo = computed<EchoState | null>(() => {
+    const error = this.addError();
+    if (error) {
+      return { tone: 'alarm', icon: 'pi pi-exclamation-triangle', name: error, meta: '', hint: 'Enter to retry · Esc to clear' };
+    }
+
+    const state = this.addState();
+    switch (state.kind) {
+      case 'empty':
+        return null;
+      case 'invalid':
+        return {
+          tone: 'alarm',
+          icon: 'pi pi-exclamation-triangle',
+          name: "That isn't a magnet link or a .torrent file.",
+          meta: '',
+          hint: 'Paste starts magnet:?xt=urn:btih:…',
+        };
+      case 'torrent-url':
+        return {
+          tone: 'alarm',
+          icon: 'pi pi-exclamation-triangle',
+          name: "Adding by URL isn't supported yet.",
+          meta: '',
+          hint: 'Save the .torrent file and use Add file… instead',
+        };
+      case 'magnet': {
+        if (state.duplicate) {
+          return {
+            tone: 'alarm',
+            icon: 'pi pi-exclamation-triangle',
+            name: `Already in the list — ${state.duplicate.name}`,
+            meta: '',
+            hint: 'Enter to open · Esc to clear',
+          };
+        }
+        const name =
+          state.displayName ?? (state.infoHash ? `btih:${state.infoHash.slice(0, 4)}…${state.infoHash.slice(-4)}` : 'Unnamed magnet link');
+        const metaParts: string[] = [];
+        if (state.lengthBytes !== null) {
+          metaParts.push(this.formatBytes.transform(state.lengthBytes));
+        }
+        if (state.trackerCount > 0) {
+          metaParts.push(`${state.trackerCount} tracker${state.trackerCount === 1 ? '' : 's'}`);
+        }
+        return { tone: 'accent', icon: 'pi pi-check', name, meta: metaParts.join(' · '), hint: 'Enter to add · Esc to clear' };
+      }
+      case 'multi-magnet':
+        return {
+          tone: 'accent',
+          icon: 'pi pi-check',
+          name: `${state.firstName ?? 'Magnet link'} and ${state.uris.length - 1} more`,
+          meta: `${state.uris.length} magnet links`,
+          hint: 'Enter to add · Esc to clear',
+        };
+    }
+  });
+
+  constructor() {
+    const pasteHandler = (event: ClipboardEvent) => this.onGlobalPaste(event);
+    const dragOverHandler = (event: DragEvent) => this.onWindowDragOver(event);
+    const dragLeaveHandler = (event: DragEvent) => this.onWindowDragLeave(event);
+    const dropHandler = (event: DragEvent) => this.onWindowDrop(event);
+
+    // Global rather than scoped to the add field, per ADD_CONTROL.md: "Cmd/Ctrl-V anywhere
+    // on the page ... This is the single most important interaction in the control." Must
+    // ignore paste/drop events targeting another text input, textarea or contenteditable
+    // (the filter field, a rename dialog) so this doesn't hijack them.
+    this.document.addEventListener('paste', pasteHandler);
+    this.document.defaultView?.addEventListener('dragover', dragOverHandler);
+    this.document.defaultView?.addEventListener('dragleave', dragLeaveHandler);
+    this.document.defaultView?.addEventListener('drop', dropHandler);
+    this.destroyRef.onDestroy(() => {
+      this.document.removeEventListener('paste', pasteHandler);
+      this.document.defaultView?.removeEventListener('dragover', dragOverHandler);
+      this.document.defaultView?.removeEventListener('dragleave', dragLeaveHandler);
+      this.document.defaultView?.removeEventListener('drop', dropHandler);
+    });
+  }
+
+  onAddInput(event: Event): void {
+    this.addValue.set((event.target as HTMLInputElement).value);
+    this.addError.set(null);
+  }
+
+  onAddKeydownEnter(): void {
+    this.onPrimaryClick();
+  }
+
+  onAddKeydownEscape(): void {
+    this.clearAdd();
+  }
+
+  clearAdd(): void {
+    this.addValue.set('');
+    this.addError.set(null);
+  }
+
+  onPrimaryClick(): void {
+    if (this.addPending() || this.addPrimary().disabled) {
       return;
     }
+    const state = this.addState();
+    switch (state.kind) {
+      case 'empty':
+        this.fileInput()?.nativeElement.click();
+        break;
+      case 'magnet':
+        if (state.duplicate) {
+          this.router.navigate(['/torrents', state.duplicate.infoHash]);
+        } else {
+          this.submitMagnet(state.uri);
+        }
+        break;
+      case 'multi-magnet':
+        this.submitMultipleMagnets(state.uris);
+        break;
+      case 'torrent-url':
+      case 'invalid':
+        break;
+    }
+  }
+
+  onFilesPicked(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    const files = input.files ? Array.from(input.files) : [];
+    files.forEach((file) => this.uploadFile(file));
+    input.value = '';
+  }
+
+  private uploadFile(file: File): void {
     const pendingId = crypto.randomUUID();
     this.pendingUploads.update((uploads) => [...uploads, { id: pendingId, fileName: file.name }]);
 
@@ -214,7 +515,6 @@ export class TorrentList {
             detail: `"${response.torrent.name}" is already in your list.`,
           });
         }
-        fileUpload.clear();
       },
       error: (err: { error?: { error?: string } }) => {
         this.removePendingUpload(pendingId);
@@ -223,37 +523,111 @@ export class TorrentList {
           summary: 'Upload failed',
           detail: err?.error?.error ?? 'Could not add torrent',
         });
-        fileUpload.clear();
       },
     });
   }
 
   /** No torrent to show yet on success - metadata fetch happens in the background
-   * (design_docs/0028), same accepted add-to-visible latency as a file upload. The
-   * success toast exists so pasting at least gets unambiguous acknowledgement rather
-   * than silently doing nothing from the user's point of view. */
-  onAddMagnet(): void {
-    const magnetUri = this.magnetUriControl.value.trim();
-    if (!magnetUri) {
-      return;
-    }
-    this.torrentService.addMagnet(magnetUri).subscribe({
+   * (design_docs/0028). No success toast: per ADD_CONTROL.md, "the new row appearing *is*
+   * the confirmation." A failure keeps the echo strip open in its alarm state instead of a
+   * toast, naming the reason, per the same doc's behaviour table. */
+  private submitMagnet(uri: string): void {
+    this.addPending.set(true);
+    this.torrentService.addMagnet(uri).subscribe({
       next: () => {
-        this.magnetUriControl.reset('');
-        this.messageService.add({
-          severity: 'success',
-          summary: 'Magnet link added',
-          detail: 'Fetching metadata from peers…',
-        });
+        this.addPending.set(false);
+        this.addValue.set('');
       },
       error: (err: { error?: { error?: string } }) => {
-        this.messageService.add({
-          severity: 'error',
-          summary: 'Could not add magnet link',
-          detail: err?.error?.error ?? 'Invalid magnet link',
-        });
+        this.addPending.set(false);
+        this.addError.set(err?.error?.error ?? 'Invalid magnet link');
       },
     });
+  }
+
+  private submitMultipleMagnets(uris: string[]): void {
+    this.addPending.set(true);
+    let remaining = uris.length;
+    let failed = 0;
+    uris.forEach((uri) => {
+      this.torrentService.addMagnet(uri).subscribe({
+        next: () => {
+          remaining--;
+          if (remaining === 0) {
+            this.finishMultiAdd(failed);
+          }
+        },
+        error: () => {
+          failed++;
+          remaining--;
+          if (remaining === 0) {
+            this.finishMultiAdd(failed);
+          }
+        },
+      });
+    });
+  }
+
+  private finishMultiAdd(failed: number): void {
+    this.addPending.set(false);
+    if (failed > 0) {
+      this.addError.set(`${failed} of the pasted links couldn't be added.`);
+    } else {
+      this.addValue.set('');
+    }
+  }
+
+  private onGlobalPaste(event: ClipboardEvent): void {
+    const target = event.target as HTMLElement | null;
+    if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+      return;
+    }
+    const text = event.clipboardData?.getData('text/plain');
+    if (!text?.trim()) {
+      return;
+    }
+    event.preventDefault();
+    this.addValue.set(text);
+    this.addError.set(null);
+    this.addFieldInput()?.nativeElement.focus();
+  }
+
+  private onWindowDragOver(event: DragEvent): void {
+    if (!event.dataTransfer?.types.includes('Files')) {
+      return;
+    }
+    event.preventDefault();
+    this.isDraggingFile.set(true);
+  }
+
+  private onWindowDragLeave(event: DragEvent): void {
+    if (event.relatedTarget === null) {
+      this.isDraggingFile.set(false);
+    }
+  }
+
+  private onWindowDrop(event: DragEvent): void {
+    if (event.dataTransfer?.types.includes('Files')) {
+      event.preventDefault();
+    }
+    this.isDraggingFile.set(false);
+
+    const files = event.dataTransfer?.files;
+    if (files && files.length > 0) {
+      Array.from(files)
+        .filter((file) => file.name.toLowerCase().endsWith('.torrent'))
+        .forEach((file) => this.uploadFile(file));
+      return;
+    }
+
+    // Dropped text (rather than a file) that looks like a magnet fills the field so the
+    // echo strip can confirm it before anything is added, rather than adding blind.
+    const text = event.dataTransfer?.getData('text/plain');
+    if (text && normalizeMagnetCandidate(text.trim())) {
+      event.preventDefault();
+      this.addValue.set(text.trim());
+      this.addError.set(null);
+    }
   }
 
   private removePendingUpload(id: string): void {

@@ -1,5 +1,5 @@
-/* Now always rendered inside the torrent-list detail drawer (design_docs/0044), which
- * already constrains both width (480px) and padding - no page-level sizing needed here. */
+/* Always rendered inside torrent-list's docked details panel (design_docs/0044/0032), which
+ * already constrains both width (392px) and padding - no page-level sizing needed here. */
 :host {
   display: block;
 }

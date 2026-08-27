@@ -18,6 +18,7 @@
 <td class="size-cell tabular-nums">{{ totalLength() | formatBytes }}</td>
 <td
   class="state-text-cell"
+  [class.col-hidden]="compact()"
   [class.tone-active]="stateDisplay().tone === 'active'"
   [class.tone-dim]="stateDisplay().tone === 'dim'"
   [class.tone-alarm]="stateDisplay().tone === 'alarm'"
@@ -28,22 +29,22 @@
   }
 </td>
 <td class="done-cell tabular-nums">{{ progressPercent() }}%</td>
-<td class="down-cell tabular-nums" [pTooltip]="downloadRateWindows() | formatRateWindows" tooltipPosition="top">
+<td class="down-cell tabular-nums" [class.col-hidden]="compact()" [pTooltip]="downloadRateWindows() | formatRateWindows" tooltipPosition="top">
   @if (downloadRateBytesPerSec() > 0) {
     <span class="rate-active">{{ downloadRateBytesPerSec() | formatRate }}</span>
   } @else {
     <span class="rate-idle">&mdash;</span>
   }
 </td>
-<td class="up-cell tabular-nums" [pTooltip]="uploadRateWindows() | formatRateWindows" tooltipPosition="top">
+<td class="up-cell tabular-nums" [class.col-hidden]="compact()" [pTooltip]="uploadRateWindows() | formatRateWindows" tooltipPosition="top">
   @if (uploadRateBytesPerSec() > 0) {
     <span class="rate-active">{{ uploadRateBytesPerSec() | formatRate }}</span>
   } @else {
     <span class="rate-idle">&mdash;</span>
   }
 </td>
-<td class="eta-cell tabular-nums">{{ bytesRemaining() | formatEta : downloadRateBytesPerSec() }}</td>
-<td class="actions-cell">
+<td class="eta-cell tabular-nums" [class.col-hidden]="compact()">{{ bytesRemaining() | formatEta : downloadRateBytesPerSec() }}</td>
+<td class="actions-cell" [class.col-hidden]="compact()">
   <div class="row-actions" (click)="$event.stopPropagation()">
     @if (state() === 'STOPPED') {
       <p-button

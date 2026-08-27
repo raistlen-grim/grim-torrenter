@@ -1,133 +1,170 @@
 <p-toast />
 <p-confirmDialog />
 
-<div class="toolbar">
-  <div class="add-controls">
-    <p-fileUpload
-      #fileUpload
-      mode="basic"
-      chooseLabel="Add Torrent"
-      accept=".torrent"
-      [auto]="true"
-      [customUpload]="true"
-      (uploadHandler)="onUpload($event, fileUpload)"
-    />
-    <div class="magnet-input">
-      <p-iconField iconPosition="left">
-        <p-inputIcon class="pi pi-link" />
+@if (isDraggingFile()) {
+  <div class="drop-overlay" aria-hidden="true">
+    <div class="drop-overlay-label">Drop to add</div>
+  </div>
+}
+
+<!-- Dock-and-push details panel (design_docs/0044/0032): the panel is a grid column, never
+     an overlay, so it can never cover a row the user just interacted with. -->
+<div class="list-panel-grid" [class.panel-open]="isDetailOpen()">
+  <div class="list-column">
+    <div class="toolbar">
+      <div class="add-unit">
+        <label class="add-field" [class.tone-accent]="addFieldTone() === 'accent'" [class.tone-alarm]="addFieldTone() === 'alarm'">
+          <i class="pi pi-link add-field-icon" aria-hidden="true"></i>
+          <input
+            #addFieldInput
+            type="text"
+            [value]="addValue()"
+            (input)="onAddInput($event)"
+            (keydown.enter)="onAddKeydownEnter()"
+            (keydown.escape)="onAddKeydownEscape()"
+            placeholder="Paste a magnet link, or drop a .torrent anywhere"
+            aria-label="Magnet link or .torrent file"
+          />
+          <button
+            type="button"
+            class="add-clear"
+            [class.visible]="addValue().length > 0"
+            title="Clear"
+            aria-label="Clear"
+            (click)="clearAdd()"
+          >
+            <i class="pi pi-times" aria-hidden="true"></i>
+          </button>
+        </label>
+        <p-button
+          class="add-primary"
+          [icon]="addPrimary().icon"
+          [label]="addPrimary().label"
+          [disabled]="addPrimary().disabled"
+          (onClick)="onPrimaryClick()"
+        />
+        <input #fileInput type="file" accept=".torrent" multiple hidden (change)="onFilesPicked($event)" />
+      </div>
+
+      <p-iconField class="search-field" iconPosition="left">
+        <p-inputIcon class="pi pi-search" />
         <input
           pInputText
-          [formControl]="magnetUriControl"
-          placeholder="Paste magnet link"
-          aria-label="Magnet link"
-          (keydown.enter)="onAddMagnet()"
+          type="text"
+          [value]="filter.searchText()"
+          (input)="onSearchInput($event)"
+          placeholder="Filter by name"
+          aria-label="Filter by name"
         />
       </p-iconField>
-      <p-button label="Add Magnet" [outlined]="true" (onClick)="onAddMagnet()" />
+
+      <div class="toolbar-trailing">
+        <p-button icon="pi pi-pause" [text]="true" ariaLabel="Pause all" pTooltip="Pause all" tooltipPosition="top" (onClick)="pauseAll()" />
+        <p-button icon="pi pi-play" [text]="true" ariaLabel="Resume all" pTooltip="Resume all" tooltipPosition="top" (onClick)="resumeAll()" />
+      </div>
     </div>
-  </div>
 
-  <p-iconField class="search-field" iconPosition="left">
-    <p-inputIcon class="pi pi-search" />
-    <input
-      pInputText
-      type="text"
-      [value]="filter.searchText()"
-      (input)="onSearchInput($event)"
-      placeholder="Filter by name"
-      aria-label="Filter by name"
-    />
-  </p-iconField>
-
-  <div class="toolbar-trailing">
-    <p-button icon="pi pi-pause" [text]="true" ariaLabel="Pause all" pTooltip="Pause all" tooltipPosition="top" (onClick)="pauseAll()" />
-    <p-button icon="pi pi-play" [text]="true" ariaLabel="Resume all" pTooltip="Resume all" tooltipPosition="top" (onClick)="resumeAll()" />
-  </div>
-</div>
-
-<p-table [value]="rows()" [rowTrackBy]="trackByRow" [rowHover]="true" size="small" [tableStyle]="{ 'table-layout': 'fixed' }">
-  <ng-template pTemplate="colgroup">
-    <colgroup>
-      <col style="width: 28px" />
-      <col />
-      <col style="width: 72px" />
-      <col style="width: 92px" />
-      <col style="width: 56px" />
-      <col style="width: 80px" />
-      <col style="width: 80px" />
-      <col style="width: 72px" />
-      <col style="width: 68px" />
-    </colgroup>
-  </ng-template>
-  <ng-template pTemplate="header">
-    <tr>
-      <th scope="col"></th>
-      <th scope="col">
-        <button type="button" class="sort-header" [class.active]="sortField() === 'name'" (click)="toggleSort('name')">
-          Name <i [class]="'pi ' + sortIcon('name')" aria-hidden="true"></i>
-        </button>
-      </th>
-      <th scope="col">
-        <button type="button" class="sort-header" [class.active]="sortField() === 'size'" (click)="toggleSort('size')">
-          Size <i [class]="'pi ' + sortIcon('size')" aria-hidden="true"></i>
-        </button>
-      </th>
-      <th scope="col">
-        <button type="button" class="sort-header" [class.active]="sortField() === 'status'" (click)="toggleSort('status')">
-          State <i [class]="'pi ' + sortIcon('status')" aria-hidden="true"></i>
-        </button>
-      </th>
-      <th scope="col">
-        <button
-          type="button"
-          class="sort-header"
-          [class.active]="sortField() === 'progress'"
-          (click)="toggleSort('progress')"
-        >
-          Done <i [class]="'pi ' + sortIcon('progress')" aria-hidden="true"></i>
-        </button>
-      </th>
-      <th scope="col" class="header-label">Down</th>
-      <th scope="col" class="header-label">Up</th>
-      <th scope="col" class="header-label">ETA</th>
-      <th scope="col"></th>
-    </tr>
-  </ng-template>
-  <ng-template pTemplate="body" let-row>
-    @if (row.kind === 'pending') {
-      <tr>
-        <td></td>
-        <td>{{ row.upload.fileName }}</td>
-        <td></td>
-        <td><app-status-indicator icon="pi-spin pi-spinner" label="Processing" tone="dim" /></td>
-        <td colspan="5"></td>
-      </tr>
-    } @else {
-      <tr app-torrent-row [torrent]="row.torrent"></tr>
+    @if (echo(); as echoState) {
+      <div class="echo-strip" [class.tone-alarm]="echoState.tone === 'alarm'">
+        <i class="echo-icon" [class]="echoState.icon" aria-hidden="true"></i>
+        <span class="echo-name">{{ echoState.name }}</span>
+        @if (echoState.meta) {
+          <span class="echo-meta tabular-nums">{{ echoState.meta }}</span>
+        }
+        <span class="echo-hint">{{ echoState.hint }}</span>
+      </div>
     }
-  </ng-template>
-  <ng-template pTemplate="emptymessage">
-    <tr>
-      <td colspan="9">
-        <div class="empty-state">
-          <i class="pi pi-inbox" aria-hidden="true"></i>
-          @if (hasActiveFilter()) {
-            <div class="empty-state-title heading-font">No matches</div>
-            <div class="empty-state-body">No torrents match the current filter. Try "All" or clear the search.</div>
-          } @else {
-            <div class="empty-state-title heading-font">Nothing to reap</div>
-            <div class="empty-state-body">Add a .torrent file or paste a magnet link above to get started.</div>
-          }
-        </div>
-      </td>
-    </tr>
-  </ng-template>
-</p-table>
 
-<!-- Non-modal: no backdrop, the list stays fully visible and interactive while this is
-     open (see design_docs/0044) - <router-outlet> must stay unconditionally in the DOM
-     (never behind an @if) so the torrents/:infoHash child route can always activate into
-     it; open/closed is a plain CSS class toggle instead. -->
-<aside class="detail-drawer" [class.open]="isDetailOpen()" aria-label="Torrent details" (keydown.escape)="closeDetail()">
-  <router-outlet />
-</aside>
+    <p-table [value]="rows()" [rowTrackBy]="trackByRow" [rowHover]="true" size="small" [tableStyle]="{ 'table-layout': 'fixed' }">
+      <ng-template pTemplate="colgroup">
+        <colgroup>
+          <col style="width: 28px" />
+          <col />
+          <col style="width: 72px" />
+          <col style="width: 92px" [class.col-hidden]="isDetailOpen()" />
+          <col style="width: 56px" />
+          <col style="width: 80px" [class.col-hidden]="isDetailOpen()" />
+          <col style="width: 80px" [class.col-hidden]="isDetailOpen()" />
+          <col style="width: 72px" [class.col-hidden]="isDetailOpen()" />
+          <col style="width: 68px" [class.col-hidden]="isDetailOpen()" />
+        </colgroup>
+      </ng-template>
+      <ng-template pTemplate="header">
+        <tr>
+          <th scope="col"></th>
+          <th scope="col">
+            <button type="button" class="sort-header" [class.active]="sortField() === 'name'" (click)="toggleSort('name')">
+              Name <i [class]="'pi ' + sortIcon('name')" aria-hidden="true"></i>
+            </button>
+          </th>
+          <th scope="col">
+            <button type="button" class="sort-header" [class.active]="sortField() === 'size'" (click)="toggleSort('size')">
+              Size <i [class]="'pi ' + sortIcon('size')" aria-hidden="true"></i>
+            </button>
+          </th>
+          <th scope="col" [class.col-hidden]="isDetailOpen()">
+            <button type="button" class="sort-header" [class.active]="sortField() === 'status'" (click)="toggleSort('status')">
+              State <i [class]="'pi ' + sortIcon('status')" aria-hidden="true"></i>
+            </button>
+          </th>
+          <th scope="col">
+            <button
+              type="button"
+              class="sort-header"
+              [class.active]="sortField() === 'progress'"
+              (click)="toggleSort('progress')"
+            >
+              Done <i [class]="'pi ' + sortIcon('progress')" aria-hidden="true"></i>
+            </button>
+          </th>
+          <th scope="col" class="header-label" [class.col-hidden]="isDetailOpen()">Down</th>
+          <th scope="col" class="header-label" [class.col-hidden]="isDetailOpen()">Up</th>
+          <th scope="col" class="header-label" [class.col-hidden]="isDetailOpen()">ETA</th>
+          <th scope="col" [class.col-hidden]="isDetailOpen()"></th>
+        </tr>
+      </ng-template>
+      <ng-template pTemplate="body" let-row>
+        @if (row.kind === 'pending') {
+          <tr>
+            <td></td>
+            <td>{{ row.upload.fileName }}</td>
+            <td></td>
+            <td [class.col-hidden]="isDetailOpen()"><app-status-indicator icon="pi-spin pi-spinner" label="Processing" tone="dim" /></td>
+            <td></td>
+            <td [class.col-hidden]="isDetailOpen()"></td>
+            <td [class.col-hidden]="isDetailOpen()"></td>
+            <td [class.col-hidden]="isDetailOpen()"></td>
+            <td [class.col-hidden]="isDetailOpen()"></td>
+          </tr>
+        } @else {
+          <tr app-torrent-row [torrent]="row.torrent" [compact]="isDetailOpen()"></tr>
+        }
+      </ng-template>
+      <ng-template pTemplate="emptymessage">
+        <tr>
+          <td colspan="9">
+            <div class="empty-state">
+              <i class="pi pi-inbox" aria-hidden="true"></i>
+              @if (hasActiveFilter()) {
+                <div class="empty-state-title heading-font">No matches</div>
+                <div class="empty-state-body">No torrents match the current filter. Try "All" or clear the search.</div>
+              } @else {
+                <div class="empty-state-title heading-font">Nothing to reap</div>
+                <div class="empty-state-body">Add a .torrent file or paste a magnet link above to get started.</div>
+              }
+            </div>
+          </td>
+        </tr>
+      </ng-template>
+    </p-table>
+  </div>
+
+  <!-- Docks as a grid column and pushes the list column - never floats over the table
+       (design_docs/0044). No backdrop, so the list stays fully visible and interactive
+       while this is open. <router-outlet> must stay unconditionally in the DOM (never
+       behind an @if) so the torrents/:infoHash child route can always activate into it;
+       open/closed is a plain CSS class toggle on the grid wrapper instead. -->
+  <aside class="detail-panel" [class.open]="isDetailOpen()" aria-label="Torrent details" (keydown.escape)="closeDetail()">
+    <router-outlet />
+  </aside>
+</div>

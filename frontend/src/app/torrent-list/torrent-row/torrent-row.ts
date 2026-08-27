@@ -69,6 +69,13 @@ export class TorrentRow {
 
   readonly torrent = input.required<TorrentWithRate>();
 
+  /** True while the details panel is open (design_docs/0044's dock-and-push layout) - the
+   * row sheds to state-icon/name/size/done, matching the guide's docking spec ("the table
+   * gives up its rate columns so that nothing the user selected is hidden by the thing they
+   * opened"). Driven from TorrentList's own isDetailOpen(), not this row's own state, since
+   * every row sheds together regardless of which one is selected. */
+  readonly compact = input(false);
+
   /** Set the instant Pause/Resume/Remove is clicked, cleared on response (success or
    * failure) via finalize - drives both the clicked button's own loading/disabled state
    * and a whole-row dim (see host binding above), so this torrent visibly has something

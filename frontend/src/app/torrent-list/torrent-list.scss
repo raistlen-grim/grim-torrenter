@@ -8,24 +8,90 @@
   margin-bottom: var(--space-4);
 }
 
-/* Groups the two add controls (file upload, magnet paste) so they read as one leading
- * cluster - style guide toolbar order: add controls, then the filter, at the leading edge
- * (per the user's explicit choice to keep both permanently visible rather than the guide's
- * own single-split-button consolidation - see ADD_CONTROL.md's addendum discussion). */
-.add-controls {
+/* The bonded add unit (ADD_CONTROL.md / ADDENDUM_02): one paste field plus a primary
+ * button that follows the field's contents, reading as a single object rather than two
+ * controls. `align-items: stretch` (inherited from flex default) makes the field and the
+ * p-button match height without hardcoding one. */
+.add-unit {
   display: flex;
-  align-items: center;
-  gap: var(--space-2);
+  flex: 1;
+  min-width: 330px;
+  max-width: 480px;
 }
 
-.magnet-input {
+.add-field {
   display: flex;
+  flex: 1;
+  min-width: 0;
   align-items: center;
   gap: var(--space-2);
+  padding: 0 10px;
+  border: 1px solid var(--color-divider);
+  background: var(--color-surface);
+  cursor: text;
+}
+
+/* Border colour is the validation channel - divider (empty) / accent (recognised) /
+ * alarm (unrecognised, or a recognised-but-unsupported .torrent URL - see torrent-list.ts's
+ * AddState 'torrent-url' comment on why that's alarm rather than accent). */
+.add-field.tone-accent {
+  border-color: var(--color-accent);
+}
+
+.add-field.tone-alarm {
+  border-color: var(--alarm);
+}
+
+.add-field-icon {
+  flex: none;
+  opacity: 0.5;
+  font-size: 15px;
+}
+
+.add-field input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.8125rem;
+  outline: none;
+  padding: 8px 0;
+}
+
+/* Never removed from the flow so it doesn't shift the field width when it appears. */
+.add-clear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.add-clear.visible {
+  opacity: 1;
+}
+
+.add-clear .pi {
+  font-size: 13px;
+}
+
+/* Shares the field's right hairline rather than doubling it. */
+.add-primary {
+  flex: none;
+  margin-left: -1px;
 }
 
 .search-field {
-  width: 220px;
+  width: 210px;
 }
 
 /* Pushes the pause-all/resume-all cluster to the trailing edge, leaving the add controls
@@ -94,6 +160,64 @@ th {
   opacity: 1;
 }
 
+/* Full-width strip below the toolbar, shown whenever the add field is dirty
+ * (ADD_CONTROL.md's "Echo strip" section). Tints derive from the same two tokens as the
+ * field border above, so the two stay visually paired. */
+.echo-strip {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 14px;
+  font-size: 12.5px;
+  border-bottom: 1px solid var(--color-divider);
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+  color: var(--color-accent-700);
+}
+
+.echo-strip.tone-alarm {
+  background: color-mix(in srgb, var(--alarm) 10%, transparent);
+  color: var(--alarm);
+}
+
+.echo-icon {
+  flex: none;
+  font-size: 14px;
+}
+
+.echo-meta {
+  opacity: 0.55;
+}
+
+.echo-hint {
+  margin-left: auto;
+  font-size: 11.5px;
+  opacity: 0.5;
+}
+
+/* Full-window drop target (ADD_CONTROL.md: "Drop a .torrent anywhere on the window").
+ * pointer-events: none so the overlay never blocks the drop event itself from reaching
+ * the window listener that toggles isDraggingFile. */
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 3px dashed var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 6%, transparent);
+  pointer-events: none;
+}
+
+.drop-overlay-label {
+  font-family: var(--font-heading);
+  font-weight: 600;
+  font-size: 1.1rem;
+  padding: 10px 18px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-accent);
+}
+
 /* See design_docs/0034 - the style guide's empty-state pattern: a drawn frame (skipped,
  * per 0032's registration-mark-corners exemption), one icon, one sentence, no illustration
  * or mascot. Themed copy ("Nothing to reap") is explicitly one of the few spots the guide
@@ -122,28 +246,44 @@ th {
   max-width: 34ch;
 }
 
-/* Non-modal slide-out (design_docs/0044): inset between the shell's fixed header/footer
- * rather than spanning the full viewport, so it never covers that chrome; no backdrop, by
- * design, so the list stays visible and clickable the whole time it's open. A custom panel
- * rather than PrimeNG's p-drawer, which structurally removes its projected content
- * (including our <router-outlet>) from the DOM whenever closed - see design_docs/0044 for
- * why that breaks child-route activation. */
-.detail-drawer {
-  position: fixed;
-  top: var(--shell-header-height);
-  bottom: var(--shell-footer-height);
-  right: 0;
-  width: min(480px, 100vw);
-  overflow-y: auto;
-  padding: var(--space-6);
-  background: var(--p-content-background);
-  box-shadow: -4px 0 16px rgba(0, 0, 0, 0.15);
-  border-left: 1px solid color-mix(in srgb, currentColor 10%, transparent);
-  transform: translateX(100%);
-  transition: transform 0.2s ease;
-  z-index: 35;
+/* Dock-and-push (design_docs/0044/0032, reversing the original fixed-position overlay
+ * drawer): the panel is a grid column that pushes the list column, never a floating overlay.
+ * The closed-state track is 0 width rather than the column being conditionally rendered, so
+ * <router-outlet> - which must never leave the DOM, see .detail-panel's own comment in
+ * torrent-list.html - keeps its width collapsed instead of needing display:none (which would
+ * still leave a 0-width grid item, so this is equivalent but keeps the intent in one place:
+ * the grid template, not a second rule on the item). The guide's motion rules explicitly
+ * exclude a panel slide ("no panel slide" - see design_docs/0032's Motion notes for task 8),
+ * so this is an instant class toggle, not a transition. */
+.list-panel-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 0;
+  align-items: stretch;
 }
 
-.detail-drawer.open {
-  transform: translateX(0);
+.list-panel-grid.panel-open {
+  grid-template-columns: minmax(0, 1fr) 392px;
+}
+
+.list-column {
+  min-width: 0;
+}
+
+/* Border/background only apply once open - at 0 width they'd otherwise still paint a
+ * 1px sliver (a border adds to the box regardless of its content width). No independent
+ * scroll region and no viewport-height clamp any more - the old drawer used
+ * position:fixed + top/bottom: var(--shell-header/footer-height) specifically to escape
+ * .shell-main's normal document flow and manage its own scrolling, which is exactly the
+ * floating-overlay behavior the guide's docking spec rules out ("must never float over the
+ * table"). As a grid item it now just flows and scrolls with the rest of the page, like the
+ * list beside it. Padding carried over unchanged from the old drawer for now - task 6
+ * replaces it with the guide's per-section padding (header/fact-grid/footer each carry their
+ * own, no outer panel padding) when it rebuilds the panel's internal structure. */
+.detail-panel {
+  padding: var(--space-6);
+}
+
+.detail-panel.open {
+  border-left: 1px solid var(--color-divider);
+  background: color-mix(in srgb, var(--color-text) 2%, transparent);
 }

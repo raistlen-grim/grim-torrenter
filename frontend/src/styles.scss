@@ -96,6 +96,17 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* Torrent list's dock-and-push details panel (design_docs/0044): the row sheds to
+   state-icon/name/size/done while the panel is open. Needs to live here rather than in
+   torrent-list.scss or torrent-row.scss alone - it's applied to <col>/<th> in TorrentList's
+   own template AND to <td>s inside TorrentRow, a separately-encapsulated child component,
+   so a single scoped stylesheet can't reach both. display:none (not visibility:collapse) on
+   matching <col>/<th>/<td> indices in every row keeps each row's remaining cells positionally
+   aligned with the remaining visible <col>s - see design_docs/0032. */
+.col-hidden {
+  display: none;
+}
+
 /* p-inputnumber renders its own inner <input> from its own template, so a class applied to
    it via [inputStyleClass] lands outside any consuming component's emulated view
    encapsulation - has to live here globally rather than in that component's own .scss.
