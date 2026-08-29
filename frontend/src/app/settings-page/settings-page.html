@@ -4,6 +4,7 @@
 
 @if (form(); as settingsForm) {
   <div class="settings-groups">
+    <app-appearance-settings [form]="settingsForm.controls.appearance" />
     <app-network-settings [form]="settingsForm.controls.network" />
     <app-rate-limit-settings [form]="settingsForm.controls.rateLimiting" />
     <app-seeding-settings [form]="settingsForm.controls.seeding" />

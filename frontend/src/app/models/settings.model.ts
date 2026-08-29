@@ -3,6 +3,12 @@
  * design_docs/0052. */
 export type EncryptionMode = 'DISABLED' | 'PREFERRED' | 'REQUIRED';
 
+/** Matches the backend's ThemePreference enum (grimtorrenter-engine, settings package) - same
+ * plain string-literal union convention as EncryptionMode above. SYSTEM means "follow the
+ * OS/browser preference," resolved live in ThemeService rather than by this value alone. See
+ * design_docs/0032's "Manual theme switcher" section. */
+export type ThemePreference = 'SYSTEM' | 'LIGHT' | 'DARK';
+
 /** Matches the backend's Settings record (grimtorrenter-engine, settings package) - see
  * design_docs/0041, design_docs/0042, design_docs/0045, design_docs/0046, design_docs/0052,
  * design_docs/0053, design_docs/0054. Rate limits are in bytes/sec, 0 meaning unlimited; the
@@ -26,7 +32,11 @@ export type EncryptionMode = 'DISABLED' | 'PREFERRED' | 'REQUIRED';
  * watchFolderRetentionDays govern the watch-folder auto-add feature (see design_docs/0056) -
  * both live, checked fresh on every scan tick; defaults disabled/7 days.
  * watchFolderRetentionDays follows the same no-unlimited-value, silently-normalized-below-1
- * treatment as eventLogRetentionDays, for the same reason. */
+ * treatment as eventLogRetentionDays, for the same reason. theme is the frontend's light/dark
+ * preference (design_docs/0032's "Manual theme switcher" section) - the only field here with
+ * no engine relevance at all,
+ * stored the same way as everything else anyway (a deliberate choice over browser
+ * localStorage, so it follows the user across devices/browsers hitting this instance). */
 export interface Settings {
   dhtEnabled: boolean;
   acceptIncomingConnections: boolean;
@@ -46,4 +56,5 @@ export interface Settings {
   eventLogRetentionDays: number;
   watchFolderEnabled: boolean;
   watchFolderRetentionDays: number;
+  theme: ThemePreference;
 }

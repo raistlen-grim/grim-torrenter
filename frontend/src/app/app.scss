@@ -1,37 +1,70 @@
-/* --shell-header-height/--shell-footer-height are plain estimates (padding + line-height),
- * same "hardcode the literal pixel value" precedent the style guide's own document chrome
- * uses for its sticky nav offset - cascade to app-sidebar/app-footer via inheritance, since
- * Angular's emulated encapsulation still lets CSS custom properties cascade normally
- * through the DOM. Flex column (not plain block) so .shell-body below can be told to fill
- * whatever's left of the viewport after the header, rather than only ever being as tall as
- * its own content - short page content (e.g. a torrent list with a handful of rows) would
- * otherwise leave a visible gap between where the real content ends and where min-height:
- * 100vh's own bottom edge is, instead of that space actually belonging to .shell-body's own
- * children (see torrent-list.scss's docked-panel background, which relies on this). */
+/* height: 100vh, not min-height - a deliberate reversal of this project's earlier "whole
+ * document scrolls, header/sidebar/footer/docked-panel each stick against it" model (see
+ * design_docs/0032's "Fourth visual bug round" for that model and the fifth-round comment
+ * this replaces). That model made min-height: 100vh a FLOOR on purpose, so a long page could
+ * grow taller than one viewport and scroll as a normal document - but it meant every "stays
+ * visible" element (header, footer, docked panel) needed its own position: sticky, and each
+ * of those needed a real, viewport-anchored cap (100vh-based calc()) rather than a percentage
+ * of its own ancestor chain, since that chain was itself unbounded by design - percentage
+ * caps against a growable ancestor never actually cap anything (see the same design doc
+ * section for the several-round saga that lesson came from).
+ *
+ * height: 100vh instead makes this a real, fixed-size app frame: the shell itself never
+ * grows past one viewport, full stop. Nothing needs position: sticky or a guessed pixel
+ * constant to "stay visible" anymore - header/sidebar/footer/docked-panel are simply outside
+ * whichever inner region actually scrolls (.shell-main, below, for most routed pages;
+ * torrent-list.scss's own .list-column for the split list/detail layout), so they can never
+ * scroll away in the first place. overflow: hidden here is belt-and-suspenders - nothing
+ * should overflow :host itself once every routed page manages its own internal scroll
+ * region, but this guarantees no stray content can ever force a second, page-level
+ * scrollbar outside the ones deliberately created lower down. */
 :host {
-  --shell-header-height: 52px;
-  --shell-footer-height: 41px;
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
 }
 
+/* grid-template-rows: minmax(0, 1fr), not a bare 1fr - an explicit fr row is still needed
+ * (not the implicit/auto one a single-row grid gets by default: auto sizes to content, not to
+ * the grid container's own available height, even though this container has a definite one -
+ * flex: 1, below). But a bare 1fr track is really shorthand for minmax(auto, 1fr): the spec
+ * still gives it an automatic minimum equal to its content's min-content/needed size as a
+ * floor, so a tall enough grid item can still force the track (and therefore every item
+ * stretched to it) past the container's own definite height regardless of align-items:
+ * stretch - confirmed live: .shell-main's own overflow-y: auto zeroes out *its own* automatic
+ * minimum contribution, but not the bare-1fr *track's* separate auto-minimum floor, and
+ * torrent-list's full-bleed negative margin (torrent-list.scss's :host) computes a taller
+ * content-box than .shell-main's intended height specifically to cancel .shell-main's
+ * padding - exactly the kind of taller-than-container content this floor picks up, pushing
+ * .shell-main (and everything stretched off it) past app-footer and behind it. minmax(0, 1fr)
+ * hard-floors the track at 0, the same fix grid-template-columns already uses one property
+ * over on this same rule (200px minmax(0, 1fr)) - see .list-panel-grid in torrent-list.scss
+ * for the identical latent bug in that grid's own row. */
 .shell-body {
   display: grid;
   grid-template-columns: 200px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   flex: 1;
   min-height: 0;
 }
 
-/* Bottom padding clears the footer, which is pinned to the viewport (position: fixed) -
- * see app-footer.scss - rather than sitting in normal document flow, so nothing here would
- * otherwise render underneath it. Flex column so a routed page's own host (e.g.
- * TorrentList's) can stretch to fill this rather than only being as tall as its content -
- * same reasoning as :host above. */
+/* overflow-y: auto makes this the scroll region for most routed pages' content - the page
+ * itself (e.g. EventsPage) just renders whatever it wants, however tall, and this clips/
+ * scrolls the excess rather than growing past .shell-body's row and pushing app-footer off
+ * the fixed frame app.scss's :host now establishes. min-height: 0 is needed for the same
+ * flex-item reason as .shell-body's own above - without it this flex child would refuse to
+ * shrink below its content's size and the overflow would never actually engage.
+ *
+ * TorrentList is the one exception: its docked-panel layout needs the row list and the
+ * detail panel to scroll independently of each other (the panel must stay in place while
+ * just the list scrolls), so it manages its own internal scroll region (.list-column, in
+ * torrent-list.scss) instead of relying on this one - see that file's :host comment. */
 .shell-main {
   display: flex;
   flex-direction: column;
   min-width: 0;
   padding: var(--space-6) var(--space-8);
-  padding-bottom: calc(var(--space-6) + var(--shell-footer-height));
+  overflow-y: auto;
+  min-height: 0;
 }

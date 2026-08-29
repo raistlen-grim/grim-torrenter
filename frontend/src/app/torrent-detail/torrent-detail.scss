@@ -53,9 +53,13 @@
   overflow-wrap: break-word;
 }
 
-/* Ghost icon button - no hover/focus tint yet, same as .add-clear in torrent-list.scss;
- * the guide's universal ghost-button hover treatment (a color-mix accent tint) applies to
- * every ghost button in these views at once as part of task 8, not piecemeal per task. */
+/* Ghost icon button - task 8: same 12%/hover, ~20%/press accent-tint values as every other
+ * ghost button in these views (grimtorrenter-preset.ts's button.text overrides cover every
+ * PrimeNG [text]=true button; this and .add-clear in torrent-list.scss are the only two
+ * hand-rolled <button>s that don't come from PrimeNG at all, so they need the literal CSS
+ * here to match). transition + var(--motion-fast) for the same reason as torrent-row.scss's
+ * :host - declared on the base rule, not :hover/:focus-visible, so the fade-out on
+ * pointer-leave/blur animates too, not just the fade-in. */
 .close-button {
   flex: none;
   display: flex;
@@ -68,6 +72,16 @@
   background: none;
   color: inherit;
   cursor: pointer;
+  transition: background var(--motion-fast);
+}
+
+.close-button:hover,
+.close-button:focus-visible {
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+
+.close-button:active {
+  background: color-mix(in srgb, var(--color-accent) 20%, transparent);
 }
 
 .close-button .pi {
@@ -127,9 +141,15 @@
   background: color-mix(in srgb, var(--color-text) 10%, transparent);
 }
 
+/* Same "creeps rather than jumps" treatment as the row's own progress-underlay
+ * (torrent-row.scss) - the guide's Motion section only names "the progress underlay" (the
+ * row's), but this is the same live-ticking-data pattern in the same views, and leaving it
+ * snapping while the row's equivalent animates would read as inconsistent rather than as a
+ * deliberate distinction. */
 .progress-fill {
   height: 100%;
   background: var(--color-accent);
+  transition: width var(--motion-progress);
 }
 
 /* Same striped-fill treatment as the row's own verifying underlay (torrent-row.scss) -
@@ -159,6 +179,15 @@ p-tablist {
   padding: 0 8px;
 }
 
+/* transition lives on the base rule (applies to every tab, not just [data-p-active]) so it
+ * covers both directions: the newly-active tab's underline fading in and the previously-active
+ * one's fading out. README.md "Motion" names this "tab underline position" - the underline
+ * here is a per-tab inset box-shadow (task 7), not a separate element that could slide between
+ * two tabs' positions, so this is a crossfade approximation rather than a literal sliding
+ * indicator. A true sliding underline would need a separate absolutely-positioned element
+ * measured against the active tab's own geometry (e.g. via ResizeObserver) - a real structural
+ * change, not a one-line motion tweak, so flagged here rather than silently built or silently
+ * skipped; left for a future pass if the crossfade doesn't read as intended live. */
 p-tab {
   display: inline-flex;
   align-items: center;
@@ -168,6 +197,7 @@ p-tab {
   font-size: 12.5px;
   letter-spacing: 0.04em;
   color: inherit;
+  transition: box-shadow var(--motion-fast);
 }
 
 p-tab[data-p-active='true'] {
@@ -202,15 +232,27 @@ p-tabpanels {
 }
 
 /* overflow-y: auto is what actually makes tab content "scroll internally" (README point 5) -
- * meaningful now that .detail-panel itself has a real viewport-height cap (position: sticky +
- * max-height, torrent-list.scss) for this flex chain to be constrained within; before that,
- * min-height: 268px was the only height-related property here (a floor with nothing to
- * scroll against, since nothing above it in the chain was ever capped - see torrent-list.scss's
- * own comment on why that cap was deliberately deferred, then added). */
+ * meaningful now that .detail-panel itself has a real, bounded height (grid align-items:
+ * stretch off .list-panel-grid's explicit 1fr row, torrent-list.scss) for this flex chain to
+ * be constrained within.
+ *
+ * min-height: 0, not the guide's literal 268px - confirmed live: with 268px here, a
+ * short-content tab (e.g. Files) rendered at the flex-allocated height as expected, but a
+ * long-content one (Trackers, 86 entries) rendered ~28px *taller* than that instead of
+ * scrolling within it. This is the standard nested flex-scroll gotcha: a flex item's
+ * min-height defaults to auto, which resolves to its content's own min-content size and
+ * silently wins over flex-shrink, so the item can never actually be shrunk down to its
+ * flex-allocated size and overflow-y: auto never gets anything to activate against - the box
+ * just grows to fit content instead. The usual fix is min-height: 0 specifically, not merely
+ * a small explicit number - 268px, though smaller than the flex-allocated height in the
+ * short-content case, still weakened the shrink behavior for the long-content one live. flex:
+ * 1 alone already sizes this consistently to whatever space is actually available (the whole
+ * point of the height chain above), so the guide's 268px floor is no longer doing useful work
+ * distinctly from that. */
 p-tabpanel[data-p-active='true'] {
   display: block;
   flex: 1;
-  min-height: 268px;
+  min-height: 0;
   padding: 12px 14px;
   overflow-y: auto;
 }

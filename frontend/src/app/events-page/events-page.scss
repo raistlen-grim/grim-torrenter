@@ -27,6 +27,16 @@
   border-bottom: none;
 }
 
+/* Fixed width, not flex: 0 0 auto - the whole point is every row's type label lines up in
+ * the same column regardless of how long each event's own label is. 190px fits the longest
+ * label ("Seeding limit reached") on one line at this font-size without wrapping; a narrower
+ * fixed width would wrap that one label and break the alignment it's meant to create.
+ * app-status-indicator is a separate encapsulated component but its host tag lives directly
+ * in this template, so it's reachable from here like any other child element. */
+.event-type {
+  flex: 0 0 190px;
+}
+
 .event-body {
   flex: 1 1 auto;
   min-width: 0;
@@ -48,8 +58,12 @@
   opacity: 0.7;
 }
 
+/* Fixed width, same reasoning as .event-type above - a timeline reads left-to-right off a
+ * consistent date column, not one that shifts per row with "8/9/26" vs "12/31/26". 120px fits
+ * the widest 'short'-format value ("12/31/26, 12:59 PM") without wrapping; tabular-nums keeps
+ * the digits themselves aligned within that width run-to-run. */
 .event-time {
-  flex: 0 0 auto;
+  flex: 0 0 120px;
   font-size: 0.8125rem;
   opacity: 0.65;
   white-space: nowrap;

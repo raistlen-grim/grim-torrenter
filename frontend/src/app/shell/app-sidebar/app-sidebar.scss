@@ -1,16 +1,21 @@
-/* align-self: stretch (the grid default - dropped the earlier align-self: start) so this
- * fills .shell-body's full row height rather than only its own nav items' natural height,
- * which is what .below-filters' margin-top: auto below needs to actually push Events/
- * Settings down to the bottom rather than just trailing directly under the filter list. */
+/* align-self: stretch (the grid default) so this fills .shell-body's full row height rather
+ * than only its own nav items' natural height, which is what .below-filters' margin-top: auto
+ * below needs to actually push Events/Settings down to the bottom rather than just trailing
+ * directly under the filter list.
+ *
+ * height: 100% (not the earlier calc(100vh - header - footer), and no position: sticky) -
+ * app.scss's :host is now a real height: 100vh ceiling, not a floor, so .shell-body's row
+ * track is a genuine, definite height all the way down and a plain percentage of it finally
+ * resolves correctly (see app.scss's :host comment). overflow-y: auto is still a real safety
+ * valve for a nav list that somehow outgrows the available height (unlikely with today's
+ * fixed set of filters/Events/Settings, but cheap to keep). */
 .shell-sidebar {
-  position: sticky;
-  top: var(--shell-header-height);
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: var(--space-6) var(--space-3);
+  padding: var(--space-6) var(--space-3) var(--space-6);
   min-width: 180px;
-  max-height: calc(100vh - var(--shell-header-height) - var(--shell-footer-height));
+  height: 100%;
   overflow-y: auto;
 }
 
@@ -24,6 +29,12 @@
   text-decoration: none;
   font-size: 0.875rem;
   opacity: 0.75;
+  /* task 8 consistency pass: every other hover/focus-driven background or opacity change in
+   * these views now transitions at the guide's 120ms - this one already changed both on
+   * hover/focus-visible below, just instantly. */
+  transition:
+    opacity var(--motion-fast),
+    background var(--motion-fast);
 }
 
 .nav-item:hover,

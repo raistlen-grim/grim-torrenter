@@ -6,7 +6,9 @@
   <ul class="event-list">
     @for (event of events(); track event.timestamp + event.infoHash + event.type) {
       <li class="event-card">
+        <span class="event-time tabular-nums">{{ event.timestamp | date: 'short' }}</span>
         <app-status-indicator
+          class="event-type"
           [icon]="statusDisplay(event.type).icon"
           [label]="statusDisplay(event.type).label"
           [tone]="statusDisplay(event.type).tone"
@@ -25,7 +27,6 @@
             <span class="event-message">{{ event.message }}</span>
           }
         </div>
-        <span class="event-time tabular-nums">{{ event.timestamp | date: 'short' }}</span>
       </li>
     }
   </ul>

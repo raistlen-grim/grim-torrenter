@@ -640,6 +640,405 @@ content still behaves exactly as the previous rounds already fixed it (footer si
 after it, not pinned artificially high) - the cap and the scroll only ever activate once
 content genuinely needs more room than the viewport has to give.
 
+**Follow-up, found live**: the cap alone wasn't quite enough - a short-content tab (Files)
+correctly rendered at the flex-allocated height, but a long-content one (Trackers, 86
+entries) rendered ~28px *taller* than that instead of scrolling within it, confirmed by
+comparing the active `p-tabpanel`'s own computed height between the two. Root cause: the
+tabpanel's `min-height: 268px` (the guide's literal minimum), while smaller than the
+flex-allocated height in the short-content case, still weakened `flex-shrink` enough in the
+long-content case to let the box grow to fit its content instead of being held to its
+allocation with `overflow-y: auto` doing the work. This is the standard nested flex-scroll
+gotcha - a flex item's `min-height` defaults to `auto` (≈ its content's min-content size),
+which silently wins over `flex-shrink` unless overridden, and apparently a merely-smaller
+explicit value doesn't fully substitute for `min-height: 0` specifically. Fixed by dropping
+the 268px floor in favor of `min-height: 0` - `flex: 1` alone already sizes the tab area
+consistently to whatever space the cap actually leaves available, which was the real goal.
+
+**Second follow-up, also found live**: that still didn't close the gap - `p-tabpanels`
+itself (one level up from the active tabpanel) measured a matching ~28px difference between
+tab states, ruling out anything specific to Trackers' own content and pointing further up the
+chain. Root cause: `.detail-panel.open` used `max-height`, not `height` - a ceiling, not a
+fixed size, so the panel's actual rendered height still shrank to fit its own content up to
+that ceiling rather than always reaching it. Every `flex: 1` inside it divides *whatever total
+height the panel actually has*, so a shorter-content tab (less for the whole panel to need
+overall) meant a smaller total for every one of those flex items to divide, not a consistent
+one - no amount of fixing further down the chain could have closed a gap whose actual cause
+was one level above where all of that fixing was happening. Changed `max-height` to `height`
+(same `calc()` value) - a fixed height forces one constant total for the whole flex chain to
+divide regardless of which tab is active, which is also just what "the panel is always full
+available height" (the original "not full height" fix, earlier in this doc) already meant to
+guarantee in the first place.
+
+**Third follow-up**: the user separately asked to trim the shell footer's redundant fields
+(count and rates, both already shown elsewhere - sidebar, header) - while looking at that,
+its `position: fixed` turned out to be the more fundamental issue underneath the whole
+"panel needs to match the viewport height minus a guessed footer height" pattern.
+`--shell-footer-height` was a hand-estimated constant (its own comment said so from the
+start); once the panel's height actually needed to be *exact* rather than approximately
+right, that estimate's few pixels of error became a real overlap into the footer bar.
+Changed `app-footer.scss`'s `.shell-footer` from `position: fixed` to `position: sticky;
+bottom: 0` - it still stays visible at the bottom of the viewport while scrolling, but unlike
+`fixed`, `sticky` keeps the element in normal document flow for sizing purposes, so its real,
+browser-measured height is what everything upstream of it (`.shell-body`, and transitively
+`app-sidebar`/the docked panel) naturally accounts for via ordinary flex/grid sizing - no
+second guessed number for the same thing needed anywhere. `app-sidebar.scss`'s
+`max-height`/torrent-list.scss's `.detail-panel.open`'s `height` both switched from their own
+`calc(100vh - var(--shell-header-height) - var(--shell-footer-height))` to plain `100%`,
+reading the real value through their own (now correctly footer-aware) containing block
+instead of re-deriving it. `--shell-footer-height` itself, and `.shell-main`'s matching
+`padding-bottom` compensation, were removed as no longer needed.
+
+**Fourth follow-up, also found live**: `height: 100%` on `.detail-panel.open` still didn't
+work - the panel reverted to being taller than available space again. A real contributing
+factor, one level further up than any of the previous follow-ups touched: `.list-panel-grid`
+(and, the same issue, `.shell-body`) never gave their grid an explicit row size, so the single
+implicit row both `.list-column`/`.detail-panel` (or `app-sidebar`/`.shell-main`) sit in
+defaulted to `auto` - which sizes to the row's own *content*, not to the grid container's
+available height, even though the container itself has a definite one via `flex: 1`.
+`align-items: stretch` (already set) only stretches an *item* to fill whatever height its
+*row track* already has; it does nothing to make an `auto` track claim more space than its
+content needs in the first place. Fixed by giving both grids an explicit `grid-template-rows:
+1fr` (unlike `auto`, an `fr` track genuinely claims the container's full available space) -
+left in place, still correct in its own right, but **this alone did not actually fix the
+regression** (see the follow-up immediately below) - it was a real, separate bug, just not
+the one actually responsible for the panel growing unbounded.
+
+**Fifth follow-up, the actual root cause**: with the `1fr` row fix in place, the panel still
+grew to full content height with no internal scrolling, and the whole page scrolled instead -
+confirmed live (no devtools measurement needed to see it: the tab content was no longer
+capped or scrolling at all). The real cause was structural, not another missing piece of the
+grid/flex chain: `height: 100%` (and `app-sidebar`'s matching `max-height: 100%`) resolve
+against their own *ancestor chain*, and `:host`'s `min-height: 100vh` (app.scss) is a
+**floor, not a ceiling** - deliberately, so a long torrent list can grow the whole page and
+scroll it normally rather than being trapped in an independent scroll region of its own. If
+literally anything on the page needs more than one viewport - including the docked panel's
+own tab content - `:host` itself grows to accommodate it, and every element measuring its own
+"cap" as a percentage of that same growable chain sees its cap grow right along with the
+content it was supposed to be capping. Circular, and by construction incapable of ever
+actually bounding anything.
+
+The fix: revert `height`/`max-height` back to an explicit `calc(100vh - var(
+--shell-header-height) - var(--shell-footer-height))` on both the docked panel and the nav
+sidebar - `100vh` is the one reference point on this page genuinely immune to any of this
+page's own content, unlike a percentage of an ancestor. This reintroduces the
+`--shell-footer-height` estimate the third follow-up (above) had removed - but this time
+measured directly in devtools (`43px`) rather than guessed, which is what caused the
+original imprecision this whole chain of fixes started from. The lesson that actually stuck
+across every round so far: a *cap* needs an anchor that cannot itself be inflated by the thing
+it's capping - a percentage of a growable ancestor never qualifies, no matter how many levels
+of that ancestor chain get individually fixed.
+
+**Sixth follow-up**: even with an absolute `100vh`-anchored calc, the footer was still being
+pushed down - found live again, the panel's own visible box looked right, but something
+downstream of it was still growing. Cause: the calc accounted for the header and footer, but
+not for `.shell-main`'s own vertical padding (`var(--space-6)` top and bottom, 40px total) -
+`app-sidebar` sits directly in `.shell-body` as its own grid column, so its padding is
+entirely self-contained within its own `max-height` budget, but the docked panel is nested
+*inside* `.shell-main`'s padding box (via `app-torrent-list`'s own `:host` →
+`.list-panel-grid`), so that 40px sits *outside* the panel's explicit height, adding to it
+rather than being part of it. The panel's demanded height plus the padding surrounding it
+exceeded what its own container chain could naturally provide, so - once again - everything
+upstream, ultimately `:host`'s own floor, grew to cover the shortfall and pushed the footer
+down. Same underlying failure mode as the fifth follow-up (an unaccounted-for source of
+height forcing growth past a nominal "cap"), just from padding this time instead of a
+percentage-of-ancestor reference.
+
+First fix attempted: subtract `var(--space-6) * 2` from the panel's `calc()` too. Worked, but
+fragile - the moment `--space-6` changes, or `.shell-main`'s own padding rule changes, this
+number silently goes stale again with no compiler or type system to catch it. Simplified
+instead, at the user's suggestion, to remove the padding at the source rather than account for
+it downstream: `TorrentList`'s own `:host` already cancelled `.shell-main`'s left/right padding
+for the full-bleed fix (this doc, task 5 era) - extended to cancel top/bottom too, with
+`.list-column` restoring its own top/left insets locally (the panel gets neither, staying
+flush on every side it's already flush on). With the panel now sitting in literally none of
+`.shell-main`'s padding, its `calc()` reverts to the simple `100vh - header - footer` with
+nothing left to subtract - a case where the more *correct* fix (100vh, not a percentage) still
+needed a second pass to also be the more *robust* one (nothing external left to silently drift
+out of sync with).
+
+**Seventh follow-up, the actual final piece**: a small gap still remained around the whole
+shell - top, and both sides, including the docked panel's right edge - even with every
+padding/height source in this app's own layout accounted for. Confirmed live via devtools'
+Computed box model on `<body>` itself: `margin: 8` on all four sides, the browser's own UA
+stylesheet default, which this project had never reset. Every one of this round's "there's
+still a gap somewhere" reports traced back to this one missing `body { margin: 0; }`
+(`styles.scss`), not to anything in the app's own grid/flex/calc work - worth checking for
+before assuming a persistent small gap is this app's own layout math being wrong again.
+
+**Eighth follow-up**: `--shell-header-height` was still the original unverified `52px`
+estimate this whole time - only the footer's got corrected to a measured value back in the
+third follow-up. The user noticed the sticky panel/sidebar sitting visibly lower than the
+real header bar (the real header is `40px`, not `52px`). Corrected to the measured value,
+same as the footer's - both constants in `app.scss` are now devtools-measured, not guessed.
+
+## Fifth visual bug round: fixed-frame shell replaces sticky-against-the-document
+
+Two more live bugs turned up after the Fourth round shipped, both stemming from the same
+underlying limitation of that round's model - the whole document scrolling, with header/
+sidebar/footer/docked-panel each individually `position: sticky` against it:
+
+- The navbar itself scrolled away with the page, while the sidebar correctly stayed put.
+  Root cause: `<app-header>`, a plain unpositioned flex item of `app.scss`'s `:host` column,
+  was exactly as tall as `.shell-header` inside it - a sticky element is constrained to stay
+  within its own containing block's bounds, and a container the same height as the sticky
+  item itself gives it zero slack to visually detach from flow as the page scrolls, so it
+  just scrolled away like a static element despite the `position: sticky` declaration.
+  `app-sidebar` never hit this because `.shell-body`'s grid stretches `<app-sidebar>` itself
+  to the full row height (`align-items: stretch`), giving its sticky child real room to work.
+- Once that was understood, the user asked for something the sticky-against-the-document
+  model couldn't cleanly give at all: every routed page's own content scrolling internally,
+  with the header/sidebar/footer chrome (and, for the torrent list specifically, the docked
+  detail panel) never scrolling away regardless of how tall that page's content gets. The
+  events page was the concrete trigger - a long enough event log pushed the footer off the
+  bottom of the screen, same failure shape the Fourth round already fixed for the torrent
+  list's own docked panel, just on a page that had never gotten that treatment.
+
+Patching the header bug alone (move its `position: sticky` from `.shell-header` onto
+`app-header`'s own `:host`, so its containing block became the full-page column instead of
+a same-height wrapper) would have worked, but every other page still had the same "whole
+document grows past one viewport" problem the Fourth round only solved for the torrent list
+specifically. Reversing the model at the root fixes both at once:
+
+- `app.scss`'s `:host` changed from `min-height: 100vh` (a deliberate floor, so a long page
+  could grow taller than one viewport and scroll as a normal document) to `height: 100vh;
+  overflow: hidden` - a real, fixed-size app frame that never grows past one viewport, full
+  stop.
+- `.shell-main` gained `overflow-y: auto; min-height: 0` - the scroll region for every routed
+  page except the torrent list. A page just renders however tall it wants; `.shell-main`
+  clips/scrolls the excess instead of growing past `.shell-body`'s row and pushing
+  `app-footer` off the fixed frame.
+- Because nothing above `.shell-main` scrolls anymore, `app-header`/`app-footer`/
+  `app-sidebar` no longer need `position: sticky` (or a guessed pixel constant) at all - they
+  simply live outside whichever region actually scrolls, so they can never scroll away.
+  `--shell-header-height`/`--shell-footer-height` (the two devtools-measured constants from
+  the Fourth round's Third/Eighth follow-ups) are gone entirely; nothing needs to measure the
+  header or footer against `100vh` anymore.
+- `app-sidebar.scss`'s `.shell-sidebar` dropped its `position: sticky` + `max-height:
+  calc(100vh - header - footer)` for a plain `height: 100%` (kept `overflow-y: auto` as a
+  safety valve). This finally resolves cleanly because `.shell-body`'s row track is now a
+  genuine, definite height all the way down - the Fourth round's central lesson ("a percentage
+  cap on a growable ancestor never actually caps anything") no longer applies once the
+  ancestor in question, `:host`, is a real ceiling instead of a floor.
+- The torrent list is the one page that can't just use `.shell-main`'s generic scroll region -
+  the row list and the docked detail panel need to scroll independently (the panel has to
+  stay in view while just the list scrolls under it). `TorrentList`'s own `:host` gained
+  `overflow: hidden` (both axes, not just the existing `overflow-x: hidden`) so it opts out of
+  `.shell-main`'s scrolling entirely, and `.list-column` gained `overflow-y: auto` to become
+  its own internal scroll region for just the row list - the same pattern the docked panel's
+  tab content already used internally. With that, `.detail-panel.open` no longer needs its own
+  `position: sticky` or explicit `calc(100vh - header - footer)` height either - plain
+  `align-items: stretch` off `.list-panel-grid`'s explicit `1fr` row now gives it a genuine
+  bounded height on its own, for the same "real ceiling, not a floor" reason as the sidebar.
+
+Net effect: every routed page's middle section scrolls internally, and the header/sidebar/
+footer/docked-panel chrome is simply never part of anything that scrolls - no `position:
+sticky`, no guessed pixel constants, no viewport-relative `calc()` anywhere in the shell or
+the torrent list's own layout. Confirmed live for Events, Settings (footer stays fixed, page
+content scrolls within the visible window on both), and the torrent-list overflow/footer-
+overlap case (Sixth round, below, which required an additional fix beyond this round alone).
+
+## Sixth visual bug round: bare `1fr` grid rows carry a content-based floor
+
+Live-tested immediately after the Fifth round, before it could be considered closed: with a
+short browser window and enough torrents to overflow one screen, `.shell-main` (and everything
+stretched off it - `app-torrent-list`, `.list-panel-grid`, `.list-column`) rendered measurably
+taller than `.shell-body`'s own row track, overlapping and rendering behind `app-footer` -
+confirmed via `getBoundingClientRect()` on the whole chain (`.shell-body`: top 40/bottom
+322/height 282; `.shell-main`: top 40/bottom 350/height 310 - 28px past its own parent).
+
+Root cause: `.shell-body`'s `grid-template-rows: 1fr` is a *bare* `fr` track, which the Grid
+spec treats as shorthand for `minmax(auto, 1fr)`, not `minmax(0, 1fr)` - it still carries an
+automatic, content-based minimum size as a floor. `overflow-y: auto` on `.shell-main` zeroes
+out *that item's own* automatic-minimum contribution (the same carve-out `min-height: 0`
+exists for elsewhere in this doc), but that's a different mechanism from the *track's own*
+auto-minimum floor, which isn't affected by any one item's `overflow`. `TorrentList`'s own
+`:host` uses a negative margin equal to `.shell-main`'s padding to bleed edge-to-edge (see that
+file's `:host` comment) - by design, that margin math computes a content-box taller than
+`.shell-main`'s intended height, specifically so the negative margin can cancel the padding
+back out. That taller content-box is exactly the kind of thing the row track's auto-minimum
+floor picks up, forcing `.shell-main` (and the whole stretch chain below it) past its intended
+282px regardless of `align-items: stretch`.
+
+Fix: `grid-template-rows: minmax(0, 1fr)` on `.shell-body` - the identical idiom already used
+one property over in the same rule (`grid-template-columns: 200px minmax(0, 1fr)`), just never
+applied to the row axis. `.list-panel-grid` in `torrent-list.scss` had the same bare-`1fr`-row
+pattern and got the same fix pre-emptively, even though `.detail-panel.open`'s own `overflow:
+hidden` currently backstops it from being visible there - same latent bug, kept consistent
+rather than relying on that backstop alone.
+
+Diagnosed live via `getBoundingClientRect()`/`getComputedStyle()` dumped across the whole
+`app-root` → `app-footer` chain in the browser console, per
+[[feedback_css_fixes_need_live_verification]] - `scrollHeight`/`clientHeight` alone on
+`.list-column` looked consistent with correct behavior at every step; only comparing bounding
+rects across parent/child pairs surfaced the actual mismatch.
+
+## Task 8: focus, motion, keyboard polish
+
+README.md's "Focus and states" and "Motion" sections, applied last (after every visual-bug
+round above had already settled the layout). Two pieces:
+
+**Focus ring, ghost-button hover/press, and disabled opacity - a real conflict, flagged
+before implementing.** `grimtorrenter-preset.ts`'s own header comment documented a prior,
+deliberate decision that focus/hover/disabled state handling would stay exactly what Aura
+ships, with only color/border-radius tokens customized. The guide's own values for these
+(2px focus outline, 12% accent tint on ghost-button hover, 45% disabled opacity) differ from
+Aura's defaults (1px ring, scheme-dependent faint tints, 60% disabled opacity) - a genuine
+guide-vs-prior-decision conflict, per [[feedback_flag_design_guide_deviations]]. Put to the
+user as a scoped choice (apply only to this app's own hand-rolled controls, or override
+PrimeNG's own components too); the user redirected the question back with their own priority
+- "ease of use and consistency of UI/UX" - and asked for a recommendation on that basis.
+Recommended and implemented the "everywhere" option: a single inconsistent-looking focus ring
+or hover tint depending on whether a given control happens to be a `p-button` or a hand-rolled
+`<button>` actively works against that stated priority, so PrimeNG's own components were
+brought in line via its own token system rather than left at Aura's differing defaults:
+
+- `semantic.focusRing.width` bumped from Aura's `1px` to the guide's `2px` - the only field
+  that actually differed (color already resolves to this app's own accent via `primary.color`,
+  offset was already `2px`). Read `@primeuix/themes/dist/aura/button/index.mjs` directly to
+  confirm this ring is drawn via `outline`, not `box-shadow` (`shadow: "none"` in every
+  severity's own focusRing block) - meaning `styles.scss`'s own bare `:focus-visible { outline:
+  2px solid var(--color-accent); outline-offset: 2px }` rule (for the elements PrimeNG doesn't
+  style at all: nav items, sort headers, the close/clear buttons) can't visually double up with
+  it; PrimeNG's own class-scoped selectors simply outrank the bare one wherever both could
+  apply.
+- `semantic.disabledOpacity` bumped from Aura's `0.6` to the guide's `0.45`.
+- `components.button.colorScheme.{light,dark}.text.{primary,secondary}.{hoverBackground,
+  activeBackground}` overridden to a uniform `color-mix(in srgb, {primary.color}, transparent
+  88%)` (12%) hover / `80%` (20%) press tint - both severities, both schemes, identically,
+  rather than Aura's own scheme- and severity-dependent defaults. `secondary` (only the
+  seeding-limits dialog's Cancel button today) deliberately gets the same accent tint as
+  `primary` rather than a neutral gray one - "every ghost control looks the same" reads more
+  consistent than preserving a severity-based distinction nothing else in these views makes.
+  Press uses a stronger version of the same translucent wash, not the guide's own literal
+  `--color-accent-600` example from the same paragraph - that example already matches Aura's
+  *existing* filled/primary button hover-step exactly (confirmed against this preset's own
+  ramp comment), so it reads as aimed at filled controls; a solid ramp-color fill on a ghost
+  button would be the one interaction state in these views that isn't a translucent wash,
+  which is its own inconsistency.
+- The two hand-rolled ghost buttons that aren't PrimeNG components at all - `.close-button`
+  (torrent-detail.scss) and `.add-clear` (torrent-list.scss) - got literal CSS with the same
+  12%/20% values, so they match the token-driven PrimeNG ones exactly rather than approximately.
+
+**Motion.** README.md names exactly three `120ms ease-out` transitions (row action opacity,
+row background, tab underline) plus one `1s linear` one (the progress underlay's width, "so it
+creeps rather than jumps"), and says to drop all four to `0ms` under `prefers-reduced-motion:
+reduce`. Centralized as two custom properties in `styles.scss` (`--motion-fast`,
+`--motion-progress`), overridden to `0ms` inside one `@media (prefers-reduced-motion: reduce)`
+block, rather than repeating that block in every file that needs one of the four durations:
+
+- Row action opacity (already existed from task 7) and row background hover (new - needed
+  adding to `:host`, not just `:hover`, so the fade-*out* on pointer-leave animates too, not
+  just the fade-in) - both in `torrent-row.scss`.
+- Progress underlay width - `torrent-row.scss`'s `.progress-underlay` and, extending the same
+  "live-ticking data" reasoning to the details panel's own progress bar even though the guide's
+  text only names "the row" specifically, `torrent-detail.scss`'s `.progress-fill` too -
+  leaving the panel's bar snapping while the row's identical-looking one animates would read as
+  an inconsistency, not a deliberate distinction.
+- Tab underline - implemented as a `box-shadow` transition on `p-tab` (crossfades the active
+  tab's underline in while the previous one fades out), not a literal sliding-position
+  indicator. The current underline is a per-tab inset `box-shadow` (task 7), not a separate
+  element with its own geometry to slide between two tabs' positions - a true sliding indicator
+  would need a separately-positioned element measured against the active tab's own bounds (e.g.
+  via `ResizeObserver`), a real structural addition rather than a one-line motion tweak.
+  Flagged rather than silently built or silently skipped; left for a future pass if the
+  crossfade doesn't read as intended live.
+
+Beyond the guide's literal three-item list, the same `var(--motion-fast)` transition was also
+added to `.sort-header .pi`'s hover-reveal, `.close-button`/`.add-clear`'s new hover/press
+tints, and `app-sidebar.scss`'s `.nav-item` / `app-header.scss`'s `.settings-link` (both
+already had a hover/focus-visible state, just an instant one) - the same "ease of use and
+consistency" priority behind the focus/hover token decision above: leaving these as the one
+remaining set of instant-snap hover states, after every other one in these views now animates,
+would itself be the inconsistency.
+
+Confirmed working live by the user.
+
+## Manual theme switcher (System / Light / Dark)
+
+Flagged by the user right after task 8 shipped: the app had dark-mode *tokens* (this whole
+document) but no way to actually choose one - theming was 100% driven by
+`prefers-color-scheme`, with zero manual override anywhere. Two real decisions before
+building it, both put to the user rather than assumed:
+
+1. **Scope**: a three-way System/Light/Dark switcher (not a plain two-way toggle) - the
+   default most apps with a persisted theme preference use, and consistent with also asking
+   the OS to be respected by default.
+2. **Placement**: a new group on the Settings page, alongside Network/Rate limits/Seeding/
+   Event log/Watch folder, rather than a header quick-toggle - consistent with how every other
+   persisted preference in this app is already surfaced, and keeps the header free of anything
+   beyond the wordmark/live stats/settings link.
+3. **Persistence**: a second real decision, since this is the one Settings-page field with no
+   engine/protocol relevance at all (everything else there governs actual download/upload/
+   tracker/DHT/seeding behavior). Backend Settings API, matching every other row on that page
+   (same GET/PUT /api/settings round-trip, same Settings record), over browser localStorage
+   (the more common industry default for a pure "theme" preference, and simpler - no backend
+   change at all). Chosen so the preference follows the user to any browser/device hitting
+   this self-hosted instance, at the cost the next section explains.
+
+**Backend** (grimtorrenter-engine): a new `ThemePreference` enum (`SYSTEM`/`LIGHT`/`DARK`,
+`settings` package - not `mse`, unlike `EncryptionMode`, since this has no protocol relevance
+to sit alongside there) appended as `Settings`'s 19th field. `Settings`'s compact constructor
+already backfills `encryptionMode` to a default when Jackson deserializes an old
+`settings.json` missing that field (a `null` reference for a missing enum) - `theme` gets the
+identical treatment, defaulting to `SYSTEM`. The record's already-well-established "add a
+sibling overload for the old canonical signature, touch zero existing call sites" pattern
+(used for every prior field this record has gained) applies again: one new secondary
+constructor matching the *previous* 18-arg canonical, defaulting `theme` to `SYSTEM` -
+needed because `WatchFolderTest`'s `settingsWithWatchFolder()` calls that exact 18-arg form
+directly (confirmed by grepping every `new Settings(...)` call site before touching the
+record, rather than assuming). No `SettingsResource` change needed - Jackson already rejects
+an unrecognized enum literal with a 400 automatically, the same as it already does for
+`encryptionMode`, so there's nothing new to validate at that boundary.
+
+**Frontend mechanism**: PrimeNG's `darkModeSelector` (`app.config.ts`) changed from the
+default `'system'` (which makes PrimeNG's own dark tokens respond to
+`@media (prefers-color-scheme: dark)` directly, with no way to override) to the attribute
+selector `'[data-theme="dark"]'` (confirmed by reading `@primeuix/styled`'s own source rather
+than guessing - `darkModeSelector` accepts a `system` keyword, a `.class`, or an `[attr]`
+selector, each compiled into different generated CSS). A new `ThemeService`
+(`services/theme.service.ts`, started eagerly from `App`'s constructor, same pattern as
+`TorrentEventsService.connect()`) is the one place that resolves `SYSTEM` into a concrete
+`light`/`dark` value (via `matchMedia('(prefers-color-scheme: dark)')`, with a change listener
+so a live OS-preference change while the tab is open still takes effect for `SYSTEM` users)
+and writes it to `data-theme` on `<html>` - both PrimeNG's own dark tokens and this app's own
+(`styles.scss`'s former `@media (prefers-color-scheme: dark)` block, now
+`:root[data-theme='dark']`) key off that one attribute, so there's exactly one theming
+mechanism instead of two that could drift apart.
+
+**Instant preview, deferred persistence**: every other control on the Settings page only
+takes effect after the page's single "Save" button PUTs the whole form (design_docs/0045) -
+correct for things like rate limits or DHT, but a theme choice is the one setting on this page
+where seeing it applied *before* committing is obviously more useful than not. `AppearanceSettings`
+(the new settings group) calls `ThemeService.preview()` on every `theme` control value change,
+applying it to the page immediately - `preview()` deliberately persists nothing itself
+(doubles as both this live-preview path and `ThemeService`'s own startup application of the
+confirmed backend value); `SettingsPage.save()` is still the only thing that actually PUTs to
+the backend, via the same `buildXSettingsForm`/`xSettingsPatch` pair every other group already
+uses. A user who changes the dropdown, sees the preview, and navigates away without saving
+gets exactly the same outcome as changing any other field without saving: it reverts on
+reload, since the reload re-derives everything (including `ThemeService`'s own applied theme)
+from the last *actually saved* backend value, not from an abandoned in-page edit.
+
+**Stability**: storing this server-side instead of in `localStorage` means it can't be read
+synchronously before first paint the way a `localStorage` value could - every page load needs
+a real `GET /api/settings` round-trip before the *confirmed* preference is known. `ThemeService`
+mitigates rather than eliminates this: it applies the OS's current `prefers-color-scheme`
+immediately and synchronously in its own constructor (correct outright for the common `SYSTEM`
+case, self-correcting the moment the real GET resolves for an explicit override), rather than
+leaving the page unstyled or guessing light unconditionally - but a user with an explicit
+`LIGHT`/`DARK` override that disagrees with their current OS preference will see a brief flash
+of the wrong theme on every load. Accepted as the known cost of the backend-persistence choice
+above, not treated as a bug to chase further. Separately: `ThemeService`'s own constructor now
+issues a `GET /api/settings` on every app load regardless of whether the user ever visits
+Settings, in addition to `SettingsPage`'s own already-existing independent `GET` when they do
+- two lightweight requests instead of one in that case, not de-duplicated (would need a shared
+caching/`shareReplay` layer around `SettingsService.current()` that nothing else in this app
+needs yet) - a minor, accepted duplication, not a real resource concern for a single small
+JSON file read on each request.
+
+Confirmed working live by the user - the three-way switch, persistence across reload, and the
+theme applying correctly.
+
 ## Alternatives considered
 
 - **Replacing Aura outright with a from-scratch preset** - rejected; `definePreset(Aura,

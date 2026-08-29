@@ -1,22 +1,28 @@
 // Deliberately minimal - real visual design is pending the reference app.
 
 /* Full bleed for this page specifically (explicit user choice, not the shell's default -
- * every other routed page keeps .shell-main's own padding unchanged): cancels its left/right
- * padding only, so the list reaches the sidebar and the docked panel reaches the browser's
- * true right edge with nothing but its own 1px divider between them. Top/bottom padding is
- * untouched (top for breathing room below the header, bottom for the fixed footer's
- * clearance - see app.scss). flex:1/min-height:0 lets .list-panel-grid below stretch to fill
- * whatever vertical space .shell-main's own flex-column layout gives this page, rather than
- * only ever being as tall as the list/panel's own content - see that rule's own comment. */
+ * every other routed page keeps .shell-main's own padding unchanged): cancels all of
+ * .shell-main's padding, so the list reaches the sidebar and the header above, and the docked
+ * panel reaches the browser's true right edge, with nothing but the panel's own 1px divider
+ * marking any of these boundaries. .list-column below restores the left inset only, staying
+ * flush against the header and the panel's own right edge on the other three sides. flex:1/
+ * min-height:0 lets .list-panel-grid below stretch to fill whatever vertical space
+ * .shell-main's own flex-column layout gives this page, rather than only ever being as tall as
+ * the list/panel's own content - see that rule's own comment. */
 :host {
   display: flex;
   flex-direction: column;
   flex: 1;
   min-height: 0;
-  margin: 0 calc(-1 * var(--space-8));
-  /* Outermost safety net for the guide's "never let the row scroll horizontally" rule - see
-   * .list-column's own matching rule for why this exists twice. */
-  overflow-x: hidden;
+  margin: calc(-1 * var(--space-6)) calc(-1 * var(--space-8));
+  /* overflow: hidden (both axes), not just overflow-x - this page manages its own internal
+   * scroll region (.list-column, below) rather than relying on .shell-main's generic
+   * overflow-y: auto (app.scss), because the row list and the docked detail panel need to
+   * scroll independently: the panel has to stay in view while just the list scrolls under it.
+   * Keeping :host itself fully clipped guarantees nothing here ever escapes to trigger
+   * .shell-main's own scrollbar instead - .list-column is the one and only scroll region for
+   * this page. */
+  overflow: hidden;
 }
 
 .toolbar {
@@ -24,6 +30,7 @@
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
+  margin-top: var(--space-4);
   margin-bottom: var(--space-4);
   /* .list-column's own left padding covers this side; the table body's row cells get their
    * own breathing room from PrimeNG's per-cell padding, but the toolbar has no equivalent on
@@ -84,7 +91,12 @@
   padding: 8px 0;
 }
 
-/* Never removed from the flow so it doesn't shift the field width when it appears. */
+/* Never removed from the flow so it doesn't shift the field width when it appears. Ghost icon
+ * button (task 8) - same accent-tint hover/press values as .close-button in
+ * torrent-detail.scss; see that rule's comment for why these two need literal CSS instead of
+ * a PrimeNG token override. The transition here covers opacity's own fade too, not just the
+ * hover/press background - appearing instantly when the field goes from empty to non-empty
+ * would read as a glitch next to everything else in these views now transitioning smoothly. */
 .add-clear {
   display: flex;
   align-items: center;
@@ -98,10 +110,22 @@
   color: inherit;
   cursor: pointer;
   opacity: 0;
+  transition:
+    opacity var(--motion-fast),
+    background var(--motion-fast);
 }
 
 .add-clear.visible {
   opacity: 1;
+}
+
+.add-clear:hover,
+.add-clear:focus-visible {
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+
+.add-clear:active {
+  background: color-mix(in srgb, var(--color-accent) 20%, transparent);
 }
 
 .add-clear .pi {
@@ -162,6 +186,11 @@ th {
 
 .sort-header .pi {
   font-size: 0.7rem;
+  /* Not one of README.md Motion's own named three (that list is row action opacity/row
+   * background/tab underline specifically), but the same 120ms fade applied here too for
+   * task 8's consistency goal - every other hover-revealed thing in these views now animates,
+   * and an instant snap here would be the one visible exception. */
+  transition: opacity var(--motion-fast);
 }
 
 /* Removed from six identical always-on arrow glyphs (style guide: "tell the user nothing
@@ -282,6 +311,19 @@ th {
 .list-panel-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 0;
+  /* minmax(0, 1fr), not a bare 1fr - see app.scss's .shell-body for the live-confirmed bug
+   * this avoids: a bare fr row still carries an automatic *content-based* minimum (it's really
+   * shorthand for minmax(auto, 1fr)), so a tall enough item can force the track past this
+   * grid's own definite height regardless of align-items: stretch. .detail-panel.open's own
+   * overflow: hidden currently keeps that from being visible here (unlike .shell-main, which
+   * had no such backstop against its full-bleed child), but it's the same latent bug and the
+   * same fix, kept consistent rather than relying on that backstop alone. Explicit fr track
+   * still needed in the first place, not the implicit/auto row a single-row grid gets by
+   * default - auto sizes a row to its own content, not to the grid container's available
+   * height, even when the container (flex: 1, below) has a definite one; align-items: stretch
+   * only stretches an item to fill whatever height its row track already has, it doesn't make
+   * an auto track claim more than content needs to begin with. */
+  grid-template-rows: minmax(0, 1fr);
   align-items: stretch;
   /* Fills whatever vertical space :host's own flex:1 was given, rather than only being as
    * tall as the list/panel's own content - without this, the docked panel's background
@@ -298,7 +340,7 @@ th {
 .list-column {
   min-width: 0;
   /* Restores the inset :host's negative margin (above) cancelled, on this side only - the
-   * panel side stays flush to the true right edge. */
+   * panel side gets none (flush to the true right edge). */
   padding-left: var(--space-8);
   /* Belt and suspenders for the guide's own explicit row rule ("shed columns, never
    * compress them or let the row scroll horizontally") - table-layout: fixed plus an
@@ -306,6 +348,14 @@ th {
    * this guarantees nothing inside the list (an unexpectedly wide toolbar control, a long
    * unbroken string somewhere) can ever push the page itself wider than the viewport. */
   overflow-x: hidden;
+  /* This column is .list-panel-grid's own scroll region: the grid's explicit 1fr row (below)
+   * gives this a real, bounded height (align-items: stretch), and PrimeNG's table itself has
+   * no height cap of its own, so however many rows it renders would otherwise overflow this
+   * box - overflow-y: auto turns that overflow into an internal scrollbar here instead of
+   * escaping up to .shell-main (which this page deliberately opts out of - see :host's own
+   * overflow comment) or, worse, growing past .detail-panel's fixed-in-place column next to
+   * it. */
+  overflow-y: auto;
 }
 
 /* Flex column so TorrentDetail's own :host (flex: 1; min-height: 0 - see torrent-detail.scss)
@@ -325,22 +375,22 @@ th {
  * straight from the guide, in torrent-detail.scss, which only works edge-to-edge if this
  * wrapper adds none of its own).
  *
- * position: sticky + max-height is a real viewport-height clamp - reintroduced deliberately,
- * after task 5 removed the old drawer's position: fixed one specifically because that escaped
- * .shell-main's normal document flow entirely (a genuinely floating, independently-scrolling
- * overlay - exactly what the guide's docking spec rules out, "must never float over the
- * table"). This isn't that: it's the same position: sticky + max-height + overflow pattern
- * app-sidebar.scss already uses for the nav sidebar - a normal grid/flow item that stays
- * visible as the page scrolls and caps its own height, not an overlay floating above
- * anything. Needed so the header/fact-grid/footer can stay on-screen and the tab content can
- * scroll *within* the panel (p-tabpanel's own overflow-y: auto, torrent-detail.scss) instead
- * of the panel growing past the viewport - a torrent with many trackers/peers previously just
- * pushed the footer off the bottom of the screen. */
+ * No position: sticky, and no explicit height - now that app.scss's :host is a real
+ * height: 100vh ceiling (not the earlier min-height floor - see that file's :host comment),
+ * .list-panel-grid's explicit 1fr row already gives this a genuine, bounded height via plain
+ * align-items: stretch, the same way app-sidebar now sizes itself off .shell-body's row. That
+ * replaces both the old sticky-against-the-document trick (from when the whole page, not
+ * .list-column, was what scrolled) and the calc(100vh - header - footer) height it needed to
+ * stay a fixed size across tabs - see design_docs/0032's "Fourth visual bug round" and the
+ * "all pages scroll internally, footer never moves" follow-up for the two models this
+ * replaced in turn.
+ *
+ * overflow: hidden is still what forces the tab content to scroll *within* the panel
+ * (p-tabpanel's own overflow-y: auto, torrent-detail.scss) instead of the panel itself
+ * growing past its stretched height - a torrent with many trackers/peers would otherwise
+ * just make this element taller than .list-column next to it. */
 .detail-panel.open {
   border-left: 1px solid var(--color-divider);
   background: color-mix(in srgb, var(--color-text) 2%, transparent);
-  position: sticky;
-  top: var(--shell-header-height);
-  max-height: calc(100vh - var(--shell-header-height) - var(--shell-footer-height));
   overflow: hidden;
 }

@@ -8,6 +8,12 @@ import { ToastModule } from 'primeng/toast';
 import { Settings } from '../models/settings.model';
 import { SettingsService } from '../services/settings.service';
 import {
+  AppearanceSettings,
+  AppearanceSettingsForm,
+  buildAppearanceSettingsForm,
+  appearanceSettingsPatch,
+} from './appearance-settings/appearance-settings';
+import {
   EventLogSettings,
   EventLogSettingsForm,
   buildEventLogSettingsForm,
@@ -39,6 +45,7 @@ import {
 } from './watch-folder-settings/watch-folder-settings';
 
 type SettingsFormGroup = FormGroup<{
+  appearance: AppearanceSettingsForm;
   network: NetworkSettingsForm;
   rateLimiting: RateLimitSettingsForm;
   seeding: SeedingSettingsForm;
@@ -57,6 +64,7 @@ type SettingsFormGroup = FormGroup<{
 @Component({
   selector: 'app-settings-page',
   imports: [
+    AppearanceSettings,
     ButtonModule,
     EventLogSettings,
     NetworkSettings,
@@ -93,6 +101,7 @@ export class SettingsPage {
         this.baseline = settings;
         this.form.set(
           new FormGroup({
+            appearance: buildAppearanceSettingsForm(settings),
             network: buildNetworkSettingsForm(settings),
             rateLimiting: buildRateLimitSettingsForm(settings),
             seeding: buildSeedingSettingsForm(settings),
@@ -112,6 +121,7 @@ export class SettingsPage {
     const value = form.getRawValue();
     const updated: Settings = {
       ...this.baseline,
+      ...appearanceSettingsPatch(value.appearance),
       ...networkSettingsPatch(value.network),
       ...rateLimitSettingsPatch(value.rateLimiting),
       ...seedingSettingsPatch(value.seeding),

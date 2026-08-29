@@ -6,6 +6,12 @@
 :host {
   position: relative;
   cursor: default;
+  /* README.md "Motion": row background is one of only three 120ms ease-out transitions in
+   * these views - lives on :host itself, not the :hover rule below, so it also covers the
+   * transition *out* when the pointer leaves (a transition property only takes effect on a
+   * state that's still present after the change, so declaring it solely on `:hover` would
+   * animate the fade in but snap the fade back out). */
+  transition: background var(--motion-fast);
 }
 
 :host(:hover) {
@@ -32,6 +38,12 @@ td:not(.state-icon-cell) {
 /* The underlay lives inside .state-icon-cell in the markup (the first cell), but is
  * positioned against :host (the row) per the comment above - it visually spans every column,
  * not just its own containing cell. pointer-events: none so it never intercepts row clicks. */
+/* README.md "Motion": "The progress underlay width animates at the data refresh interval
+ * (1s linear) so it creeps rather than jumps." transition lives on the base rule, not
+ * .verifying, since it's the same element switching between the two states - width is the
+ * only property this needs to animate; background-color/-image snap instantly between the
+ * two fills, which is correct (the guide names width specifically, and a striped verifying
+ * fill fading in over a second would read as a bug, not a polish touch). */
 .progress-underlay {
   position: absolute;
   left: 0;
@@ -39,6 +51,7 @@ td:not(.state-icon-cell) {
   bottom: 0;
   pointer-events: none;
   background-color: color-mix(in srgb, var(--color-accent) 11%, transparent);
+  transition: width var(--motion-progress);
 }
 
 /* Never mistakable for download progress - a striped fill instead of a solid one while the
@@ -187,7 +200,7 @@ td:not(.state-icon-cell) {
   display: inline-flex;
   gap: var(--space-1);
   opacity: 0;
-  transition: opacity 120ms ease-out;
+  transition: opacity var(--motion-fast);
 }
 
 :host(:hover) .row-actions,

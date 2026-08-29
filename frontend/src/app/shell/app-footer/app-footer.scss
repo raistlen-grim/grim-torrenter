@@ -1,9 +1,8 @@
-/* Pinned to the bottom of the viewport (not just the end of the document) - an opaque
- * background is needed since it now floats over scrolled content rather than sitting in
- * normal document flow after it; --p-content-background is Aura's own light/dark-aware
- * "page content" background token, so this stays correct in both themes without a
- * hand-picked color. .shell-main's bottom padding (app.scss) keeps real content clear of
- * the space this now occupies. */
+/* No position: sticky - app.scss's :host is now a fixed height: 100vh frame (overflow:
+ * hidden), and this footer is the last item in that frame's flex column, outside whichever
+ * inner region actually scrolls (.shell-main, or torrent-list.scss's .list-column). It's
+ * simply never part of anything that scrolls, so it can't scroll away - no positioning trick
+ * needed to keep it visible. See app.scss's :host comment for the model this replaced. */
 .shell-footer {
   display: flex;
   flex-wrap: wrap;
@@ -13,10 +12,6 @@
   border-top: 1px solid color-mix(in srgb, currentColor 10%, transparent);
   font-size: 0.75rem;
   opacity: 0.6;
-  position: fixed;
-  inset-inline: 0;
-  bottom: 0;
-  z-index: 30;
   background: var(--p-content-background);
 }
 

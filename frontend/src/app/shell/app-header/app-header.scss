@@ -3,9 +3,6 @@
   align-items: center;
   gap: var(--space-6);
   padding: var(--space-3) var(--space-6);
-  position: sticky;
-  top: 0;
-  z-index: 40;
   background: var(--color-accent-900);
   color: var(--field-ink);
 }
@@ -54,6 +51,8 @@
   color: inherit;
   opacity: 0.85;
   text-decoration: none;
+  /* task 8 consistency pass - see app-sidebar.scss's .nav-item for the same reasoning. */
+  transition: opacity var(--motion-fast);
 }
 
 .settings-link:hover,

@@ -88,6 +88,13 @@ import com.grimtorrenter.engine.mse.EncryptionMode;
  * subfolders before being deleted - same **no** "0/negative means unlimited" treatment as
  * eventLogRetentionDays, and for the same reason: silently normalized to the default by the
  * compact constructor below, not rejected at the REST boundary.
+ *
+ * <p>theme is the frontend's light/dark preference (design_docs/0032's "Manual theme switcher" section) - the one field
+ * here with no engine/protocol relevance at all, unlike everything else in this record; kept
+ * in the same store rather than a separate one anyway, since "the same GET/PUT /api/settings
+ * round-trip as every other setting" was the explicit point of storing it server-side instead
+ * of in browser localStorage. Defaults to SYSTEM (follow the OS/browser preference) - see
+ * ThemePreference's own Javadoc.
  */
 public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
                         long uploadRateLimitBytesPerSec, long downloadRateLimitBytesPerSec,
@@ -97,7 +104,8 @@ public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
                         boolean seedRatioLimitEnabled, double seedRatioLimit,
                         boolean seedTimeLimitEnabled, long seedTimeLimitMinutes,
                         int eventLogRetentionDays,
-                        boolean watchFolderEnabled, int watchFolderRetentionDays) {
+                        boolean watchFolderEnabled, int watchFolderRetentionDays,
+                        ThemePreference theme) {
 
     private static final int DEFAULT_EVENT_LOG_RETENTION_DAYS = 30;
     private static final int DEFAULT_WATCH_FOLDER_RETENTION_DAYS = 7;
@@ -125,6 +133,31 @@ public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
         if (watchFolderRetentionDays <= 0) {
             watchFolderRetentionDays = DEFAULT_WATCH_FOLDER_RETENTION_DAYS;
         }
+        if (theme == null) {
+            theme = ThemePreference.SYSTEM;
+        }
+    }
+
+    /** Same as the canonical constructor above but without theme - for every caller that
+     * predates the theme switcher's addition of it (every secondary constructor below, plus any direct
+     * eighteen-arg caller, e.g. WatchFolderTest's settingsWithWatchFolder()), defaulting to
+     * ThemePreference.SYSTEM. Same "add a sibling overload, touch zero existing call sites"
+     * pattern used for every prior field addition to this record. See design_docs/0032's "Manual theme switcher" section. */
+    public Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
+                     long uploadRateLimitBytesPerSec, long downloadRateLimitBytesPerSec,
+                     boolean rateLimitScheduleEnabled, String rateLimitScheduleStart, String rateLimitScheduleEnd,
+                     long scheduledUploadRateLimitBytesPerSec, long scheduledDownloadRateLimitBytesPerSec,
+                     EncryptionMode encryptionMode, long rateLimitBurstSeconds,
+                     boolean seedRatioLimitEnabled, double seedRatioLimit,
+                     boolean seedTimeLimitEnabled, long seedTimeLimitMinutes,
+                     int eventLogRetentionDays,
+                     boolean watchFolderEnabled, int watchFolderRetentionDays) {
+        this(dhtEnabled, acceptIncomingConnections, uploadRateLimitBytesPerSec, downloadRateLimitBytesPerSec,
+                rateLimitScheduleEnabled, rateLimitScheduleStart, rateLimitScheduleEnd,
+                scheduledUploadRateLimitBytesPerSec, scheduledDownloadRateLimitBytesPerSec, encryptionMode,
+                rateLimitBurstSeconds, seedRatioLimitEnabled, seedRatioLimit, seedTimeLimitEnabled,
+                seedTimeLimitMinutes, eventLogRetentionDays, watchFolderEnabled, watchFolderRetentionDays,
+                ThemePreference.SYSTEM);
     }
 
     /** Same as the canonical constructor above but without watchFolderEnabled/
