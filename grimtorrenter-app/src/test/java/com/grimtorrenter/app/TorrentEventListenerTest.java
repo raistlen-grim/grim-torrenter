@@ -1,6 +1,7 @@
 package com.grimtorrenter.app;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.grimtorrenter.engine.events.EventType;
 import com.grimtorrenter.engine.events.InMemoryEventStore;
 import com.grimtorrenter.engine.metainfo.InfoHash;
@@ -63,7 +64,12 @@ class TorrentEventListenerTest {
 
     private static TorrentEventListener newListener(InMemoryEventStore eventStore) {
         TorrentEventListener listener = new TorrentEventListener();
-        listener.objectMapper = new ObjectMapper();
+        // JavaTimeModule registered by hand, same as JsonLinesEventStoreTest's own
+        // objectMapper - the real CDI-managed ObjectMapper gets it via quarkus-rest-jackson's
+        // auto-registration, which this hand-built one doesn't get for free. Needed since
+        // TorrentView.from(session) (broadcast() below) serializes an Instant addedAt
+        // (design_docs/0057); a bare ObjectMapper() throws on that with no module for it.
+        listener.objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
         listener.eventStore = eventStore;
         return listener;
     }

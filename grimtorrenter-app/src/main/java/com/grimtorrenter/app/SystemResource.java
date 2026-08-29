@@ -1,5 +1,6 @@
 package com.grimtorrenter.app;
 
+import com.sun.management.OperatingSystemMXBean;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
@@ -8,6 +9,8 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.lang.management.ManagementFactory;
+import java.lang.management.MemoryMXBean;
 import java.nio.file.Files;
 
 /** Global, torrent-independent host state - same "separate small resource" shape as
@@ -41,5 +44,25 @@ public class SystemResource {
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
+    }
+
+    /** {@code com.sun.management.OperatingSystemMXBean} rather than the plain
+     * {@code java.lang.management} one - the plain interface has no per-process CPU figure at
+     * all, only a system load average. No extra dependency: {@code com.sun.management} ships in
+     * every mainstream JDK, just isn't part of the Java SE platform API. Both
+     * {@code availableProcessors()} and the CPU load figures are already container-quota-aware
+     * on modern JDKs (active by default since JDK 10, further refined for cgroup v2 in later
+     * releases), so this reports what the container actually gets, not the host's full core
+     * count - relevant since this app ships as a single Docker container per the top-level
+     * CLAUDE.md. */
+    @GET
+    @Path("/resource-usage")
+    @Produces(MediaType.APPLICATION_JSON)
+    public ResourceUsageView resourceUsage() {
+        MemoryMXBean memory = ManagementFactory.getMemoryMXBean();
+        var heap = memory.getHeapMemoryUsage();
+        var os = (OperatingSystemMXBean) ManagementFactory.getOperatingSystemMXBean();
+        return new ResourceUsageView(heap.getUsed(), heap.getMax(), os.getProcessCpuLoad(),
+                os.getAvailableProcessors());
     }
 }

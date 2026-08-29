@@ -2,7 +2,7 @@ import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/c
 import { RouterLink, RouterLinkActive } from '@angular/router';
 
 import { TorrentEventsService } from '../../services/torrent-events.service';
-import { StatusFilter, TorrentFilterService, matchesStatusFilter } from '../../services/torrent-filter.service';
+import { STATUS_FILTER_LABELS, StatusFilter, TorrentFilterService, matchesStatusFilter } from '../../services/torrent-filter.service';
 
 interface FilterOption {
   value: StatusFilter;
@@ -11,14 +11,15 @@ interface FilterOption {
 }
 
 /** "Harvest" is taken verbatim from the style guide's lexicon - see
- * torrent-filter.service.ts. */
+ * torrent-filter.service.ts, which also owns these labels (shared with TorrentList's
+ * empty-state copy). */
 const FILTER_OPTIONS: FilterOption[] = [
-  { value: 'all', label: 'All', icon: 'pi-list' },
-  { value: 'downloading', label: 'Downloading', icon: 'pi-arrow-down' },
-  { value: 'seeding', label: 'Seeding', icon: 'pi-arrow-up' },
-  { value: 'paused', label: 'Paused', icon: 'pi-pause' },
-  { value: 'error', label: 'Error', icon: 'pi-exclamation-triangle' },
-  { value: 'harvest', label: 'Harvest', icon: 'pi-check-circle' },
+  { value: 'all', label: STATUS_FILTER_LABELS.all, icon: 'pi-list' },
+  { value: 'downloading', label: STATUS_FILTER_LABELS.downloading, icon: 'pi-arrow-down' },
+  { value: 'seeding', label: STATUS_FILTER_LABELS.seeding, icon: 'pi-arrow-up' },
+  { value: 'paused', label: STATUS_FILTER_LABELS.paused, icon: 'pi-pause' },
+  { value: 'error', label: STATUS_FILTER_LABELS.error, icon: 'pi-exclamation-triangle' },
+  { value: 'harvest', label: STATUS_FILTER_LABELS.harvest, icon: 'pi-check-circle' },
 ];
 
 /**

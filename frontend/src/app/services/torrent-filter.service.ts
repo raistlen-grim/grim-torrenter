@@ -27,6 +27,18 @@ export function matchesStatusFilter(torrent: Torrent, filter: StatusFilter): boo
   }
 }
 
+/** Shared with AppSidebar (its own nav labels) and TorrentList (its empty-state copy when a
+ * filter excludes every torrent) - one place for the label text so the two can't drift apart
+ * saying the same filter two different ways. */
+export const STATUS_FILTER_LABELS: Record<StatusFilter, string> = {
+  all: 'All',
+  downloading: 'Downloading',
+  seeding: 'Seeding',
+  paused: 'Paused',
+  error: 'Error',
+  harvest: 'Harvest',
+};
+
 export function matchesSearchText(torrent: Torrent, searchText: string): boolean {
   const trimmed = searchText.trim().toLowerCase();
   return trimmed === '' || torrent.name.toLowerCase().includes(trimmed);

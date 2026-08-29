@@ -1039,6 +1039,145 @@ JSON file read on each request.
 Confirmed working live by the user - the three-way switch, persistence across reload, and the
 theme applying correctly.
 
+## Task 9: copy pass
+
+README.md's "Copy" section and STYLE_GUIDE_NOTES.md's "Voice"/"Empty and error states"
+sections, audited against the actual implemented strings across the torrent list, the details
+panel, their dialogs/menus, and the footer status bar (the guide's own scope - settings/events
+pages have no corresponding spec in this bundle and weren't touched).
+
+**Fixed:**
+
+- **Pluralization.** `pauseAll()`/`resumeAll()` (torrent-list.ts) built their toast text as
+  `` `${targets.length} torrent(s)` `` - the exact `(s)` form STYLE_GUIDE_NOTES.md's Voice
+  rules forbid by name ("Never pluralise with (s)"). Extracted a shared `pluralTorrentCount()`
+  (`shared/plural-torrent-count.ts`) rather than fixing these two inline and leaving the
+  pattern to reappear later - `app-footer.html` had already hand-rolled the identical
+  `count === 1 ? '' : 's'` logic inline for its own "N torrents" status-bar text, so this also
+  consolidates that into the same one function instead of two independent implementations of
+  the same rule.
+- **"Cannot be undone."** Both `TorrentRow` and `TorrentDetail`'s `confirmRemoveWithData()`
+  read `"This will permanently delete the downloaded files for "X". This cannot be undone."` -
+  Voice rules forbid this almost verbatim ("Never `Are you sure? This action cannot be
+  undone.` - name the consequence in the button"). Rewritten to `"Downloaded files for "X"
+  will be permanently deleted from disk."` in both - "permanently" already carries the
+  irreversibility, and the danger-severity `Delete` button already names the consequence, so
+  the dropped sentence was exactly the redundant boilerplate the rule is reacting to.
+- **Menu ellipsis.** `Remove and delete files` (both context menus) opens the dialog above,
+  same as `Seeding limits…` right next to it - given an ellipsis, unlike it. Added, for
+  consistency with that existing convention (not literally the guide's own single `Remove…`
+  label, which assumes a different, single-item remove flow - see below).
+- **Empty state, no torrents at all.** Icon was a generic `pi-inbox`; guide specifically wants
+  a Lucide `skull` glyph here ("reserved for empty states and the about screen"), one of only
+  four places the guide allows the reaper theme in the first place. This app uses PrimeIcons,
+  not Lucide, and PrimeIcons has no skull - initially reused `app-header.scss`'s existing
+  `.mark` shape at a larger size, on the (wrong) assumption that shape was already a deliberate
+  simplification of the guide's own skull-mark spec. It wasn't: the user asked directly whether
+  the header icon had been updated to something else per the guide, which prompted actually
+  re-reading STYLE_GUIDE_NOTES.md's "The mark" section - a genuine, previously-unflagged miss,
+  not a documented decision. See the new "The constructed skull mark" section below for the
+  real fix, which replaced both this empty-state icon and the header wordmark's own icon in
+  the same pass. Body text changed to the guide's exact string ("Drop a .torrent file anywhere
+  on this window, or paste a magnet link.") - checked against actual functionality first (the
+  full-window drop target and the toolbar's magnet-paste field both already exist, so this
+  isn't over-promising). Added the guide's primary `Add torrent` button, wired to
+  `onPrimaryClick()`'s existing file-picker trigger - there was no actionable element in the
+  empty state at all before this.
+- **Empty state, filtered to nothing.** Icon changed from `pi-inbox` to `pi-filter-slash`
+  (PrimeIcons has no `search-x` equivalent; this reads at least as clearly for "your filter
+  matched nothing" and doubles as a visual cue for the new Clear-filters action below). Title/
+  body are now dynamic instead of static "No matches"/"No torrents match the current filter.
+  Try 'All' or clear the search.": `No matches for "<query>"` when a search is active (the
+  guide's own literal example, `No matches for "debain"`, is search-text specific), naming the
+  active status filter instead when there's no search text (`No matches for ""` would read as
+  broken), and - the guide's own "a note that filters are also narrowing the list" - an
+  explicit line naming the status filter only when *both* a search and a status filter are
+  active at once, so "also" never appears with nothing else to add to. Added the guide's
+  secondary `Clear filters` button, resetting both. `STATUS_FILTER_LABELS` (the six filter
+  names) moved from being private to `AppSidebar` into `torrent-filter.service.ts` so this new
+  copy and the sidebar's own nav labels share one source rather than two copies of "Downloading
+  / Seeding / Paused / Error / Harvest" that could drift apart.
+
+**Deliberately left alone, not oversights:**
+
+- The toolbar's search field keeps its actual placeholder, `Filter by name` - the guide's
+  literal `Filter by name, tracker, label` describes tracker- and label-based filtering that
+  this app has never built (`matchesSearchText()` only ever checks `torrent.name`; there is no
+  labeling/tagging feature at all). Adopting that string verbatim would advertise
+  functionality that doesn't exist - flagged, not silently copied, per
+  [[feedback_flag_design_guide_deviations]].
+- Tracker/row/panel error text keeps showing the backend's own raw `lastError` rather than the
+  guide's short stylized causes (`No space`, `Tracker down`, `Timed out`, `DNS failure`, ...) -
+  consistent with task 6's already-made "real info, not restyling" call for this exact field.
+  Recategorizing real backend errors into the guide's fixed vocabulary would need backend
+  changes to classify them and would lose diagnostic precision, well outside a frontend copy
+  pass.
+- The guide's own exact remove-dialog copy (`Remove 3 torrents?`, checkbox `Also delete 14.2 GB
+  of data`, button `Remove torrents`) is multi-select-shaped - a single dialog with a
+  delete-data checkbox, replacing this app's two separate per-torrent flows (a bare `Remove`
+  with no confirmation at all, and a separate confirmed `Remove and delete files…`). Multi-select
+  and the selection bar are explicitly out of scope for this entire restyle pass (see this
+  document's own governing rule at the top) - the guide's literal strings for that flow don't
+  apply to a structurally different, single-torrent-only interaction, and weren't force-fit
+  onto it.
+- Destructive context-menu items (`Remove`, `Remove and delete files…`) aren't styled in
+  `--alarm` yet, per "Destructive menu items sit last, after a rule, in `--alarm`" - the
+  "last, after a rule" half was already true before this pass (task 4/7-era `{ separator: true
+  }` placement); the color half is a small CSS addition, not copy, and reachability through
+  PrimeNG's `ContextMenu` per-item `styleClass` wasn't verified - flagged as a real, deferred
+  gap rather than silently skipped or scope-crept into this pass.
+- Header/fact-grid/tab labels (`Name`/`Size`/`State`/`Done`/`Down`/`Up`/`ETA`,
+  `Torrent`/`Size`/`Done`/`Down`/`Up`/`Ratio`/`Peers`/`Added`, `Files`/`Peers`/`Trackers`/
+  `Pieces`), `Close (Esc)`, the add field's `Clear`, and the trackers tab's collapsed-summary
+  `OK` already matched the guide exactly - checked, not assumed, no changes needed.
+- `Verifying` never embeds a live percentage the way the guide's own `Verifying 40%` example
+  does - already shown in the adjacent Done column for that row, so embedding it a second time
+  in the state label would duplicate rather than add information; an existing display
+  decision, not a copy gap.
+- The trackers tab's own caption doesn't reuse the guide's exact sentence (`Forty-three
+  trackers is a list nobody reads...`) - that sentence names a specific example count baked
+  into the guide's own mockup, which would misreport for any real torrent with a different
+  tracker count; the app's existing generic rewrite is the correct adaptation, not a miss.
+
+## The constructed skull mark (a missed guide instruction, found late)
+
+Found after task 9 shipped: the user asked directly whether the header's top-left icon had
+been updated per the style guide. It hadn't. STYLE_GUIDE_NOTES.md's "The mark" section gives a
+literal, detailed construction - six absolutely-positioned rectangles (cranium, two eye
+sockets, a nasal notch, a toothed jaw via `repeating-linear-gradient`), font-size-driven so it
+scales as one unit, a `--void` custom property for whatever background it sits on (so the
+sockets/notch/jaw read as cut-outs, not colored dots) - and a size ladder (simplify below 20px,
+switch to the wordmark text alone below 14px). `app-header.scss`'s `.mark` had never
+implemented this: it was a single `clip-path: polygon(...)` bowtie/hourglass shape, present
+since an early task, never revisited against this specific section of the guide, and never
+flagged as a deliberate simplification anywhere in this document - task 9's own writeup
+initially (and wrongly) described it as one, an assumption made without re-checking the source
+section, corrected once the user's question prompted actually reading it again.
+
+Fixed by building the guide's literal construction as a small shared component,
+`shared/skull-mark` (`<app-skull-mark>`) - five absolutely-positioned inner `<span>`s per the
+guide's own table, exact position/size values, `background: currentColor` for the solid
+cranium/jaw-teeth and `background: var(--void)` for every cut-out. Shared rather than
+duplicated per call site (unlike most of this restyle's small CSS shapes) because it's five
+parts of position-critical CSS rather than one clip-path line - two use sites now: the header
+wordmark (`--void: var(--color-accent-900)`, the bar's own background) and the torrent-list
+empty state (`--void: var(--color-surface)`, task 9's own icon slot, replacing the ad-hoc
+shape that section's writeup describes). Both call sites set only `font-size` (drives the
+mark's whole size, per the guide's "scales as one unit") and `--void` - the component itself
+has no inputs, everything else is fixed per the guide's construction table.
+
+Not implemented: the guide's own size ladder (simplify below 20px, fall back to the wordmark
+below 14px) - neither current use site renders anywhere near that small (the header mark is
+~17px, the empty-state one ~40px), so there's nothing to trigger it yet; worth adding if a
+future, smaller use site appears rather than building it speculatively now.
+
+Confirmed live by the user - the constructed mark reads correctly at both call sites. The user
+also flagged this as a placeholder they may replace with an actual image asset later if the
+CSS construction doesn't hold up as a longer-term choice - if that happens, swap the `<img>`/
+background-image in directly for `<app-skull-mark>` at each call site rather than trying to
+extend this component to support both a CSS and an image mode; the `--void` mechanism has no
+equivalent for a raster asset.
+
 ## Alternatives considered
 
 - **Replacing Aura outright with a from-scratch preset** - rejected; `definePreset(Aura,

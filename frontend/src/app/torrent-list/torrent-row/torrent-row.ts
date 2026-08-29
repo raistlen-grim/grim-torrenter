@@ -152,7 +152,7 @@ export class TorrentRow {
       { separator: true },
       { label: 'Remove', icon: 'pi pi-trash', disabled, command: () => this.onRemove() },
       {
-        label: 'Remove and delete files',
+        label: 'Remove and delete files…',
         icon: 'pi pi-exclamation-triangle',
         disabled,
         command: () => this.confirmRemoveWithData(),
@@ -232,11 +232,15 @@ export class TorrentRow {
       });
   }
 
+  /** No "Are you sure? This action cannot be undone." (STYLE_GUIDE_NOTES.md's Voice rules
+   * forbid it verbatim) - "permanently deleted" already says what matters, and the danger-
+   * severity Delete button (below) already names the consequence, so a redundant "cannot be
+   * undone" clause is exactly the boilerplate the guide is reacting against. */
   private confirmRemoveWithData(): void {
     const infoHash = this.infoHash();
     this.confirmationService.confirm({
       header: 'Delete downloaded files?',
-      message: `This will permanently delete the downloaded files for "${this.name()}". This cannot be undone.`,
+      message: `Downloaded files for "${this.name()}" will be permanently deleted from disk.`,
       icon: 'pi pi-exclamation-triangle',
       acceptLabel: 'Delete',
       rejectLabel: 'Cancel',

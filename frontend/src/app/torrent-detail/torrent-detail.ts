@@ -161,7 +161,7 @@ export class TorrentDetail {
       { separator: true },
       { label: 'Remove', icon: 'pi pi-trash', disabled, command: () => this.onRemove() },
       {
-        label: 'Remove and delete files',
+        label: 'Remove and delete files…',
         icon: 'pi pi-exclamation-triangle',
         disabled,
         command: () => this.confirmRemoveWithData(),
@@ -221,6 +221,7 @@ export class TorrentDetail {
       });
   }
 
+  /** Same wording, and the same reason, as TorrentRow's own confirmRemoveWithData(). */
   private confirmRemoveWithData(): void {
     const torrent = this.torrent();
     const infoHash = this.infoHash();
@@ -229,7 +230,7 @@ export class TorrentDetail {
     }
     this.confirmationService.confirm({
       header: 'Delete downloaded files?',
-      message: `This will permanently delete the downloaded files for "${torrent.name}". This cannot be undone.`,
+      message: `Downloaded files for "${torrent.name}" will be permanently deleted from disk.`,
       icon: 'pi pi-exclamation-triangle',
       acceptLabel: 'Delete',
       rejectLabel: 'Cancel',

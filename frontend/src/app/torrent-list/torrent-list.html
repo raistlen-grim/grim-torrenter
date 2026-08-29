@@ -150,13 +150,18 @@
         <tr>
           <td colspan="9">
             <div class="empty-state">
-              <i class="pi pi-inbox" aria-hidden="true"></i>
               @if (hasActiveFilter()) {
-                <div class="empty-state-title heading-font">No matches</div>
-                <div class="empty-state-body">No torrents match the current filter. Try "All" or clear the search.</div>
+                <i class="pi pi-filter-slash" aria-hidden="true"></i>
+                <div class="empty-state-title heading-font">{{ noMatchTitle() }}</div>
+                <div class="empty-state-body">{{ noMatchBody() }}</div>
+                <p-button label="Clear filters" [text]="true" (onClick)="clearFilters()" />
               } @else {
+                <app-skull-mark class="empty-state-mark" />
                 <div class="empty-state-title heading-font">Nothing to reap</div>
-                <div class="empty-state-body">Add a .torrent file or paste a magnet link above to get started.</div>
+                <div class="empty-state-body">
+                  Drop a .torrent file anywhere on this window, or paste a magnet link.
+                </div>
+                <p-button label="Add torrent" (onClick)="onPrimaryClick()" />
               }
             </div>
           </td>

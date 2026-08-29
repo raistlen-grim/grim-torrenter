@@ -6,6 +6,7 @@ import { interval, startWith, switchMap } from 'rxjs';
 import { DhtService } from '../../services/dht.service';
 import { TorrentEventsService } from '../../services/torrent-events.service';
 import { FormatRatePipe } from '../../shared/format-rate.pipe';
+import { SkullMark } from '../../shared/skull-mark/skull-mark';
 import { StatusIndicator } from '../../shared/status-indicator/status-indicator';
 
 const DHT_POLL_INTERVAL_MS = 5000;
@@ -22,7 +23,7 @@ const DHT_POLL_INTERVAL_MS = 5000;
  */
 @Component({
   selector: 'app-header',
-  imports: [FormatRatePipe, RouterLink, StatusIndicator],
+  imports: [FormatRatePipe, RouterLink, SkullMark, StatusIndicator],
   templateUrl: './app-header.html',
   styleUrl: './app-header.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,

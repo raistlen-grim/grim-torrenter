@@ -1,7 +1,9 @@
 <footer class="shell-footer tabular-nums">
-  <span>{{ torrentCount() }} torrent{{ torrentCount() === 1 ? '' : 's' }}</span>
+  <span>{{ torrentCountDisplay() }}</span>
   <span><i class="pi pi-arrow-down" aria-hidden="true"></i> {{ totalDownloadRate() | formatRate }}</span>
   <span><i class="pi pi-arrow-up" aria-hidden="true"></i> {{ totalUploadRate() | formatRate }}</span>
   <span>Ratio {{ ratioDisplay() }}</span>
-  <span class="free-space">{{ freeSpaceDisplay() }}</span>
+  <span class="free-space"><i class="pi pi-database" aria-hidden="true"></i> {{ freeSpaceDisplay() }}</span>
+  <span><i class="pi pi-server" aria-hidden="true"></i> {{ heapDisplay() }}</span>
+  <span><i class="pi pi-microchip" aria-hidden="true"></i> {{ cpuDisplay() }}</span>
 </footer>

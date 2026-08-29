@@ -19,11 +19,14 @@
   text-transform: uppercase;
 }
 
+/* STYLE_GUIDE_NOTES.md's constructed skull mark (shared/skull-mark) - font-size-driven, so
+ * this sets the font-size that determines its rendered size (previously a hardcoded
+ * 13px/17px) rather than sizing the mark directly. --void is the one thing every call site
+ * must supply itself (see SkullMark's own comment) - this bar's own background, so the
+ * mark's socket/notch/jaw cut-outs read as gaps in the bar rather than a mismatched color. */
 .mark {
-  width: 13px;
-  height: 17px;
-  background: currentColor;
-  clip-path: polygon(0 0, 100% 0, 50% 50%, 100% 100%, 0 100%, 50% 50%);
+  font-size: 1.0625rem;
+  --void: var(--color-accent-900);
   flex: none;
 }
 

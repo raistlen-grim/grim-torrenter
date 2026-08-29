@@ -107,6 +107,59 @@ public record DiskUsageView(long freeBytes) { }
 Deliberately just the one field — the footer only ever shows "N free," not "N free of M,"
 so a `totalBytes` field would be speculative until something actually displays it.
 
+### `GET /api/system/resource-usage` — JVM heap/CPU in the footer
+
+Added later in the same "small global `/api/system` resource" vein as `disk-usage` above:
+the user wanted container memory/CPU visibility similar to what Spring Boot Actuator exposes,
+without pulling in Actuator's Spring-specific tooling. `ResourceUsageView` mirrors
+`DiskUsageView`'s shape — a plain record, no envelope:
+
+```java
+public record ResourceUsageView(long heapUsedBytes, long heapMaxBytes, double processCpuLoad,
+        int availableProcessors) { }
+```
+
+**No Micrometer/SmallRye Health dependency.** Considered and rejected: this app has no
+external scrape target (no Prometheus/Grafana deployment expected for a single self-hosted
+container) and no existing `/health`-style consumer, so the standard Quarkus observability
+extensions would add a dependency and a `/q/*` management surface for a single UI widget that
+three JDK management-bean calls already answer. Uses
+`com.sun.management.OperatingSystemMXBean` (ships in every mainstream JDK, not a new Maven
+dependency, just not part of the strict Java SE platform API) rather than the plain
+`java.lang.management.OperatingSystemMXBean`, which has no per-process CPU figure at all —
+only a system load average. Both `availableProcessors()` and the CPU load figures are already
+container-quota-aware on modern JDKs (active by default since JDK 10, refined further for
+cgroup v2 in later releases), so the numbers reflect what the container is actually allotted,
+not the host's full core count.
+
+`processCpuLoad` is `-1.0` when the JVM can't determine it — passed straight through as the
+JDK's own sentinel rather than inventing a new "unavailable" convention; the frontend renders
+that as an em dash the same way `ratioDisplay`/`freeSpaceDisplay` already do for their own
+no-data cases.
+
+**Footer icons** (`pi-database` for free space, `pi-server` for heap, `pi-microchip` for CPU)
+were added in the same pass after the user flagged the plain numbers as ambiguous once a
+third stat joined free space — same `<i class="pi ...">` pattern the header's ↓/↑ rate spans
+already used, so no new visual language introduced. `cpuDisplay()` dropped its `% CPU` text
+suffix once the icon existed to label it (matching how the rate spans never spelled out
+"download"/"upload" either); `freeSpaceDisplay()` kept its "free" suffix since the icon alone
+doesn't distinguish free-vs-total space.
+
+**Numbers only, not a graph.** The user asked directly whether the data supported a
+time-series view: it doesn't without new work — the endpoint is a stateless live snapshot on
+every call, nothing is retained server-side, so a graph would mean either a client-side
+rolling buffer (bounded to the current tab session, lost on refresh) or a new backend
+time-series store. Deferred as a separate future decision if wanted; the footer only needed a
+glanceable current value, matching `disk-usage`'s own precedent.
+
+**Stability** ([[0051-stability-as-a-standing-consideration]]): no unbounded growth — the
+endpoint reads live MXBean state and returns it, nothing is buffered or persisted on either
+side. Polled by the frontend on the same 30s cadence as `disk-usage` (`SYSTEM_POLL_INTERVAL_MS`,
+renamed from `DISK_USAGE_POLL_INTERVAL_MS` now that it covers both calls), so no new unbounded
+client-side history either — `toSignal` holds only the latest snapshot, same as `diskUsage`
+already did. Not reachable by remote peers/trackers at all (pure host-JVM introspection, no
+torrent-derived input), so no hostile-input surface. No locking/concurrency involved.
+
 ### Sortable columns (`torrent-list.ts`)
 
 Gains a new **Size** column (`totalLength`, via the existing `FormatBytesPipe`) between
@@ -177,3 +230,8 @@ toolbar action needs; affected rows still visibly update via the next state-chan
 - **PrimeNG's built-in table sort / context-menu integration** — rejected for both features,
   same root cause: the union-typed `TableRow` shape doesn't fit cleanly against APIs that
   expect a flat row object. See each section above.
+- **Micrometer/SmallRye Health for resource usage** — rejected as disproportionate for a
+  single-user, single-container app with no external scrape target; see the
+  `resource-usage` section above.
+- **A memory/CPU usage graph over time** — rejected for now, no backing time-series data
+  exists on either side yet; see the `resource-usage` section above.

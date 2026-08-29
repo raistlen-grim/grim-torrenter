@@ -289,6 +289,21 @@ th {
   opacity: 0.45;
 }
 
+/* README.md's Assets list names a Lucide `skull` glyph for this exact spot ("Glyphs used: ...
+ * skull", "reserved for empty states and the about screen") - shared/skull-mark is this app's
+ * own constructed equivalent (STYLE_GUIDE_NOTES.md's six-rectangle spec; this app uses
+ * PrimeIcons, not Lucide, so there's no literal skull icon-font glyph to reach for instead).
+ * The guide only allows the reaper theme in four places, and this is one of them ("wordmark
+ * ... empty states ... only") - reusing the same constructed mark as the wordmark, not a new
+ * appearance of the theme somewhere it wasn't allowed. font-size sets the mark's rendered size
+ * (it's font-size-driven - see that component's own comment); --void is this table cell's own
+ * background so the mark's cut-outs read as gaps rather than a mismatched color. */
+.empty-state-mark {
+  font-size: 2.5rem;
+  --void: var(--color-surface);
+  opacity: 0.45;
+}
+
 .empty-state-title {
   font-size: 1.25rem;
 }

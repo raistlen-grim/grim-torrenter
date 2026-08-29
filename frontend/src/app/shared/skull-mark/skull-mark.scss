@@ -1,0 +1,67 @@
+:host {
+  display: inline-block;
+  line-height: 0;
+}
+
+/* width: .84em; height: 1em - the guide's own construction table, scaling as one unit off
+ * whatever font-size is in effect at this component's call site (inherited normally, no
+ * input needed - font-size isn't blocked by Angular's view encapsulation any more than any
+ * other inherited CSS property is). */
+.skull-mark {
+  display: block;
+  position: relative;
+  width: 0.84em;
+  height: 1em;
+}
+
+/* Every part below is positioned/sized exactly per the guide's own table - not approximated -
+ * and painted in DOM order (cranium first, everything else after), which is what makes the
+ * sockets/notch/jaw read as cut-outs: each one's --void background paints over the solid
+ * cranium beneath it rather than needing an actual clip-path/mask. */
+.cranium {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 0.64em;
+  background: currentColor;
+}
+
+.socket {
+  position: absolute;
+  top: 0.2em;
+  width: 0.22em;
+  height: 0.26em;
+  background: var(--void);
+}
+
+.socket-left {
+  left: 0.1em;
+}
+
+.socket-right {
+  right: 0.1em;
+}
+
+.notch {
+  position: absolute;
+  left: 50%;
+  top: 0.52em;
+  margin-left: -0.05em;
+  width: 0.1em;
+  height: 0.12em;
+  background: var(--void);
+}
+
+/* The toothed jaw - a repeating gradient standing in for individually-positioned teeth, per
+ * the guide's own construction table (it specifies this exact CSS pattern, not a description
+ * to reinterpret). */
+.jaw {
+  position: absolute;
+  left: 50%;
+  top: 0.64em;
+  margin-left: -0.23em;
+  width: 0.46em;
+  height: 0.24em;
+  background-image: repeating-linear-gradient(90deg, currentColor 0 0.12em, var(--void) 0.12em 0.155em);
+}

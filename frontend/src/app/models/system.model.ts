@@ -8,3 +8,13 @@ export interface DhtStatus {
 export interface DiskUsage {
   freeBytes: number;
 }
+
+/** Matches the backend's ResourceUsageView. processCpuLoad is 0.0-1.0, or -1.0 if the JVM
+ * can't determine it - passed through as the sentinel the JDK itself returns rather than
+ * reinventing an "unavailable" convention. */
+export interface ResourceUsage {
+  heapUsedBytes: number;
+  heapMaxBytes: number;
+  processCpuLoad: number;
+  availableProcessors: number;
+}

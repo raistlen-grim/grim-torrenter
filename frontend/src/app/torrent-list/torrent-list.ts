@@ -24,9 +24,16 @@ import { filter, map } from 'rxjs';
 
 import { TorrentWithRate } from '../models/torrent.model';
 import { TorrentEventsService } from '../services/torrent-events.service';
-import { TorrentFilterService, matchesSearchText, matchesStatusFilter } from '../services/torrent-filter.service';
+import {
+  STATUS_FILTER_LABELS,
+  TorrentFilterService,
+  matchesSearchText,
+  matchesStatusFilter,
+} from '../services/torrent-filter.service';
 import { TorrentService } from '../services/torrent.service';
 import { FormatBytesPipe } from '../shared/format-bytes.pipe';
+import { pluralTorrentCount } from '../shared/plural-torrent-count';
+import { SkullMark } from '../shared/skull-mark/skull-mark';
 import { StatusIndicator } from '../shared/status-indicator/status-indicator';
 import { TorrentRow } from './torrent-row/torrent-row';
 
@@ -170,6 +177,7 @@ function resolveAddState(rawValue: string, torrents: readonly TorrentWithRate[])
     InputIconModule,
     InputTextModule,
     RouterOutlet,
+    SkullMark,
     StatusIndicator,
     TableModule,
     ToastModule,
@@ -222,6 +230,39 @@ export class TorrentList {
   readonly hasActiveFilter = computed(
     () => this.filter.statusFilter() !== 'all' || this.filter.searchText().trim() !== '',
   );
+
+  /** README.md's Copy section: `No matches for "debain"` - the literal example is search-text
+   * specific, so that's the only case that gets the exact quoted-query form; a status-only
+   * filter (no search text) with zero matches falls back to naming the filter instead, since
+   * `No matches for ""` would read as broken. */
+  readonly noMatchTitle = computed(() => {
+    const query = this.filter.searchText().trim();
+    if (query !== '') {
+      return `No matches for "${query}"`;
+    }
+    return `No ${STATUS_FILTER_LABELS[this.filter.statusFilter()]} torrents`;
+  });
+
+  /** "a note that filters are also narrowing the list" (STYLE_GUIDE_NOTES.md's empty-state
+   * spec) - only said when a search AND a status filter are both active; either alone gets
+   * its own single-cause phrasing instead, so "also" never appears with nothing else to add
+   * to. */
+  readonly noMatchBody = computed(() => {
+    const query = this.filter.searchText().trim();
+    const statusFilter = this.filter.statusFilter();
+    if (query !== '' && statusFilter !== 'all') {
+      return `The ${STATUS_FILTER_LABELS[statusFilter]} filter is also narrowing the list.`;
+    }
+    if (query !== '') {
+      return 'Try a different search, or clear it.';
+    }
+    return 'Try a different filter, or view all torrents.';
+  });
+
+  clearFilters(): void {
+    this.filter.statusFilter.set('all');
+    this.filter.searchText.set('');
+  }
 
   /** Pending uploads first, so a newly-clicked upload appears at the top rather than
    * wherever the sort happens to place it - and unaffected by the status/search filter,
@@ -310,7 +351,7 @@ export class TorrentList {
       return;
     }
     targets.forEach((t) => this.torrentService.pause(t.infoHash).subscribe());
-    this.messageService.add({ severity: 'info', summary: 'Pausing', detail: `${targets.length} torrent(s)` });
+    this.messageService.add({ severity: 'info', summary: 'Pausing', detail: pluralTorrentCount(targets.length) });
   }
 
   resumeAll(): void {
@@ -319,7 +360,7 @@ export class TorrentList {
       return;
     }
     targets.forEach((t) => this.torrentService.resume(t.infoHash).subscribe());
-    this.messageService.add({ severity: 'info', summary: 'Resuming', detail: `${targets.length} torrent(s)` });
+    this.messageService.add({ severity: 'info', summary: 'Resuming', detail: pluralTorrentCount(targets.length) });
   }
 
   // --- Add control (ADD_CONTROL.md / ADDENDUM_02: one bonded field + primary, not the
