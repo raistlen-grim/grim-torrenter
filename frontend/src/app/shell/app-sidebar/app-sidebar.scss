@@ -60,6 +60,19 @@
   font-size: 0.75rem;
 }
 
+/* Same tone tokens app-status-indicator uses (design_docs/0033) - accent color at full
+ * strength for "healthy," the one reserved alarm color for "failed," not a literal red/green
+ * pair. See design_docs/0059. */
+.nav-count-alarm {
+  opacity: 1;
+  color: var(--alarm);
+}
+
+.nav-status-ok {
+  color: var(--p-primary-color);
+  font-size: 0.8rem;
+}
+
 /* Separates the status-filter nav above from Events/Settings below, and (margin-top: auto)
  * pins that trailing group to the bottom of the sidebar rather than letting it trail
  * directly under a short filter list - applied to the first item in the group (Events), not

@@ -2,7 +2,7 @@ import { HttpClient } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
 import { Observable } from 'rxjs';
 
-import { DiskUsage, ResourceUsage } from '../models/system.model';
+import { DiskUsage, ResourceUsage, ServiceStatus } from '../models/system.model';
 
 @Injectable({ providedIn: 'root' })
 export class SystemService {
@@ -14,5 +14,9 @@ export class SystemService {
 
   resourceUsage(): Observable<ResourceUsage> {
     return this.http.get<ResourceUsage>('/api/system/resource-usage');
+  }
+
+  services(): Observable<ServiceStatus[]> {
+    return this.http.get<ServiceStatus[]>('/api/system/services');
   }
 }

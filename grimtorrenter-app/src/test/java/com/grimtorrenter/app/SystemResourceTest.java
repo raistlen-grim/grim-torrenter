@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.greaterThan;
+import static org.hamcrest.Matchers.hasItems;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @QuarkusTest
@@ -45,5 +46,16 @@ class SystemResourceTest {
         Number heapMax = response.extract().path("heapMaxBytes");
         assertTrue(heapUsed.longValue() > 0, "heapUsedBytes should be positive");
         assertTrue(heapMax.longValue() > 0, "heapMaxBytes should be positive");
+    }
+
+    /** Asserts names/shape only, not a specific state - whether each service reports RUNNING
+     * or DISABLED depends on the test profile's own DHT/incoming-connections settings, which
+     * this test shouldn't need to know about. See design_docs/0059. */
+    @Test
+    void servicesReportsDhtAndPeerServer() {
+        given()
+                .when().get("/api/system/services")
+                .then().statusCode(200)
+                .body("name", hasItems("dht", "peerServer"));
     }
 }

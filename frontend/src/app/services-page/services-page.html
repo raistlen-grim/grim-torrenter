@@ -1,0 +1,16 @@
+<h1 class="heading-font">Services</h1>
+
+<ul class="service-list">
+  @for (service of services(); track service.name) {
+    <li class="service-card">
+      <app-status-indicator
+        [icon]="statusDisplay(service).icon"
+        [label]="statusDisplay(service).label"
+        [tone]="statusDisplay(service).tone"
+      />
+      @if (service.state === 'RUNNING') {
+        <i class="pi pi-check-circle service-status-ok" aria-hidden="true"></i>
+      }
+    </li>
+  }
+</ul>

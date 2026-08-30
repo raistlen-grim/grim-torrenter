@@ -18,3 +18,13 @@ export interface ResourceUsage {
   processCpuLoad: number;
   availableProcessors: number;
 }
+
+/** Matches the backend's TorrentEngine.ServiceState. See design_docs/0059. */
+export type ServiceState = 'RUNNING' | 'DISABLED' | 'FAILED';
+
+/** Matches the backend's ServiceStatusView. name is a stable identifier ("dht"/"peerServer"),
+ * mapped to a display label/icon in shared/status-display.ts. See design_docs/0059. */
+export interface ServiceStatus {
+  name: string;
+  state: ServiceState;
+}

@@ -1,6 +1,8 @@
 package com.grimtorrenter.app;
 
+import com.grimtorrenter.engine.engine.TorrentEngine;
 import com.sun.management.OperatingSystemMXBean;
+import jakarta.inject.Inject;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
@@ -12,6 +14,7 @@ import java.io.UncheckedIOException;
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryMXBean;
 import java.nio.file.Files;
+import java.util.List;
 
 /** Global, torrent-independent host state - same "separate small resource" shape as
  * DhtResource, since this isn't scoped to any one torrent either. See design_docs/0043.
@@ -24,6 +27,9 @@ public class SystemResource {
 
     @ConfigProperty(name = "grimtorrenter.download-directory", defaultValue = "downloads")
     String downloadDirectory;
+
+    @Inject
+    TorrentEngine torrentEngine;
 
     /** Creates the directory itself first rather than assuming TorrentEngine already has -
      * it only creates it as an incidental side effect of persisting a DHT node id marker
@@ -64,5 +70,14 @@ public class SystemResource {
         var os = (OperatingSystemMXBean) ManagementFactory.getOperatingSystemMXBean();
         return new ResourceUsageView(heap.getUsed(), heap.getMax(), os.getProcessCpuLoad(),
                 os.getAvailableProcessors());
+    }
+
+    /** Engine-wide singleton subsystems only (DHT, the inbound peer server) - per-torrent
+     * status stays on the torrent itself. See design_docs/0059. */
+    @GET
+    @Path("/services")
+    @Produces(MediaType.APPLICATION_JSON)
+    public List<ServiceStatusView> services() {
+        return torrentEngine.serviceStatuses().stream().map(ServiceStatusView::from).toList();
     }
 }

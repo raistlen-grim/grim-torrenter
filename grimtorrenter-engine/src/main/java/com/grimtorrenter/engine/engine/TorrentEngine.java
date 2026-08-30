@@ -141,10 +141,18 @@ public final class TorrentEngine {
      * design_docs/0028); construction failure leaves this null and every DHT-dependent
      * code path below just skips DHT rather than failing the whole engine. */
     private final DhtNode dhtNode;
+    /** True only when DHT was requested (enableDht) but createDhtNode() still returned null -
+     * distinguishes "never asked for" (DISABLED) from "asked for, bind failed" (FAILED) for
+     * serviceStatuses() below, since dhtNode alone can't tell those two apart. See
+     * design_docs/0059. */
+    private final boolean dhtBindFailed;
     /** Nullable - inbound connections are an enhancement over outbound-only operation, not
      * a hard dependency (see design_docs/0038); construction failure (e.g. the port is
      * already in use) leaves this null rather than failing the whole engine. */
     private final PeerServer peerServer;
+    /** Same "requested but failed" distinction as dhtBindFailed above, for the peer server.
+     * See design_docs/0059. */
+    private final boolean peerServerBindFailed;
     /** Shared across every TorrentSession/PeerConnection this engine creates - see
      * design_docs/0042. Never null; the lower-arity constructors default to an unlimited,
      * engine-private SettingsStore so every pre-existing caller/test is unaffected. */
@@ -313,9 +321,11 @@ public final class TorrentEngine {
         this.ourListenPort = ourListenPort;
         this.listener = listener;
         this.ourPeerId = PeerId.generate();
-        this.dhtNode = enableDht ? createDhtNode(baseDownloadDirectory, ourListenPort) : null;
+        this.dhtNode = enableDht ? createDhtNode(baseDownloadDirectory, ourListenPort, eventStore) : null;
+        this.dhtBindFailed = enableDht && this.dhtNode == null;
         this.encryptionMode = () -> settingsStore.current().encryptionMode();
-        this.peerServer = acceptIncomingConnections ? createPeerServer(ourListenPort) : null;
+        this.peerServer = acceptIncomingConnections ? createPeerServer(ourListenPort, eventStore) : null;
+        this.peerServerBindFailed = acceptIncomingConnections && this.peerServer == null;
         this.rateLimiters = RateLimiters.from(settingsStore);
         this.fileHandlePool = fileHandlePool;
         this.pieceVerificationLimiter = new Semaphore(maxConcurrentPieceVerifications);
@@ -539,11 +549,12 @@ public final class TorrentEngine {
         }
     }
 
-    private PeerServer createPeerServer(int port) {
+    private PeerServer createPeerServer(int port, EventStore eventStore) {
         try {
             return new PeerServer(port, this::findIncomingConnectionHandler, encryptionMode, sessions::keySet);
         } catch (IOException e) {
             LOG.log(System.Logger.Level.WARNING, "Could not start peer server - continuing without inbound connections", e);
+            eventStore.record(new LibraryEvent(Instant.now(), EventType.PEER_SERVER_UNAVAILABLE, null, null, null));
             return null;
         }
     }
@@ -560,7 +571,7 @@ public final class TorrentEngine {
      * message already implies). Bootstrapping the routing table is real network I/O
      * against an unknown number of hosts, so it runs on its own background thread rather
      * than delaying this constructor. */
-    private static DhtNode createDhtNode(Path baseDownloadDirectory, int ourListenPort) {
+    private static DhtNode createDhtNode(Path baseDownloadDirectory, int ourListenPort, EventStore eventStore) {
         try {
             NodeId nodeId = loadOrGenerateDhtNodeId(baseDownloadDirectory);
             DhtNode node = new DhtNode(nodeId, ourListenPort);
@@ -568,6 +579,7 @@ public final class TorrentEngine {
             return node;
         } catch (RuntimeException e) {
             LOG.log(System.Logger.Level.WARNING, "Could not start DHT node - continuing without it", e);
+            eventStore.record(new LibraryEvent(Instant.now(), EventType.DHT_UNAVAILABLE, null, null, null));
             return null;
         }
     }
@@ -610,6 +622,34 @@ public final class TorrentEngine {
      * fetched only while something's actually looking at it). */
     public DhtStatus dhtStatus() {
         return dhtNode != null ? new DhtStatus(true, dhtNode.routingTable().size()) : new DhtStatus(false, 0);
+    }
+
+    /** Engine-wide singleton subsystems only (DHT, the inbound peer server) - per-torrent
+     * status stays on the torrent itself, not here. See design_docs/0059. */
+    public enum ServiceState {
+        RUNNING, DISABLED, FAILED
+    }
+
+    /** name is a stable identifier ("dht"/"peerServer"), matched by name against a frontend
+     * display map - same closed-set-mapped-by-key shape EventType's own frontend map already
+     * uses. See design_docs/0059. */
+    public record ServiceStatus(String name, ServiceState state) {
+    }
+
+    /** DHT and the peer server only bind once, at construction - no retry - so FAILED is
+     * stable for the whole process lifetime; a caller doesn't need to poll this expecting a
+     * RUNNING->FAILED or FAILED->RUNNING transition mid-process. See design_docs/0059. */
+    public List<ServiceStatus> serviceStatuses() {
+        return List.of(
+                new ServiceStatus("dht", serviceState(dhtNode != null, dhtBindFailed)),
+                new ServiceStatus("peerServer", serviceState(peerServer != null, peerServerBindFailed)));
+    }
+
+    private static ServiceState serviceState(boolean running, boolean failed) {
+        if (running) {
+            return ServiceState.RUNNING;
+        }
+        return failed ? ServiceState.FAILED : ServiceState.DISABLED;
     }
 
     /**

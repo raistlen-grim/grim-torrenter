@@ -184,6 +184,40 @@ class TorrentEngineTest {
         }
     }
 
+    /** Known gap: this only covers RUNNING/DISABLED - there's no cheap, deterministic way to
+     * force a real DHT/peer-server bind failure in a unit test today, so serviceStatuses()'s
+     * FAILED branch (and the DHT_UNAVAILABLE/PEER_SERVER_UNAVAILABLE event recording that goes
+     * with it) has no automated coverage yet. See design_docs/0059. */
+    @Test
+    void serviceStatusesReportDisabledWhenNotEnabled(@TempDir Path tempDir) {
+        TorrentEngine engine = new TorrentEngine(tempDir, 6881, new NoOpListener());
+
+        List<TorrentEngine.ServiceStatus> statuses = engine.serviceStatuses();
+
+        assertEquals(
+                List.of(
+                        new TorrentEngine.ServiceStatus("dht", TorrentEngine.ServiceState.DISABLED),
+                        new TorrentEngine.ServiceStatus("peerServer", TorrentEngine.ServiceState.DISABLED)),
+                statuses);
+    }
+
+    @Test
+    void serviceStatusesReportRunningWhenEnabled(@TempDir Path tempDir) {
+        TorrentEngine engine = new TorrentEngine(tempDir, 0, new NoOpListener(), true);
+        try {
+            List<TorrentEngine.ServiceStatus> statuses = engine.serviceStatuses();
+
+            assertEquals(
+                    new TorrentEngine.ServiceStatus("dht", TorrentEngine.ServiceState.RUNNING),
+                    statuses.get(0));
+            assertEquals(
+                    new TorrentEngine.ServiceStatus("peerServer", TorrentEngine.ServiceState.DISABLED),
+                    statuses.get(1));
+        } finally {
+            engine.shutdown();
+        }
+    }
+
     /** End-to-end: a real external client dials the engine's own bound peer-server port
      * (constructed with port 0 - ephemeral - same convention as
      * dhtStatusReportsEnabledWhenDhtIsEnabled) and gets adopted by the right session,

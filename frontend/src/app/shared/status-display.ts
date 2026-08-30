@@ -1,4 +1,5 @@
 import { EventType } from '../models/events.model';
+import { ServiceState, ServiceStatus } from '../models/system.model';
 import { TorrentState, TrackerState } from '../models/torrent.model';
 import { StatusTone } from './status-indicator/status-indicator';
 
@@ -37,7 +38,10 @@ export function trackerStateDisplay(state: TrackerState): StatusDisplay {
  * SEEDING_LIMIT_REACHED is 'dim' rather than 'alarm' - it's an expected, user-configured
  * outcome (a limit doing exactly what it was set to do), not a problem. SERVER_STARTED is
  * 'active' - a genuinely notable timeline marker (e.g. correlating other events against an
- * auto-updater like Watchtower recreating the container), not routine noise. */
+ * auto-updater like Watchtower recreating the container), not routine noise.
+ * DHT_UNAVAILABLE/PEER_SERVER_UNAVAILABLE (design_docs/0059) are 'alarm' - the same condition
+ * the Services page shows live, just with a timestamp; same icon as SERVICE_DISPLAY below for
+ * that same reason. */
 const EVENT_TYPE_DISPLAY: Record<EventType, StatusDisplay> = {
   ADDED: { icon: 'pi-plus-circle', label: 'Added', tone: 'active' },
   COMPLETED: { icon: 'pi-check-circle', label: 'Completed', tone: 'active' },
@@ -45,8 +49,34 @@ const EVENT_TYPE_DISPLAY: Record<EventType, StatusDisplay> = {
   REMOVED: { icon: 'pi-trash', label: 'Removed', tone: 'dim' },
   SEEDING_LIMIT_REACHED: { icon: 'pi-pause', label: 'Seeding limit reached', tone: 'dim' },
   SERVER_STARTED: { icon: 'pi-server', label: 'Server started', tone: 'active' },
+  DHT_UNAVAILABLE: { icon: 'pi-sitemap', label: 'DHT unavailable', tone: 'alarm' },
+  PEER_SERVER_UNAVAILABLE: { icon: 'pi-sign-in', label: 'Peer server unavailable', tone: 'alarm' },
 };
 
 export function eventTypeDisplay(type: EventType): StatusDisplay {
   return EVENT_TYPE_DISPLAY[type];
+}
+
+/** Engine-wide singleton subsystems only (DHT, the inbound peer server) - see
+ * design_docs/0059. name is matched against TorrentEngine's own stable identifiers
+ * ("dht"/"peerServer"); an unrecognized name falls back to itself as the label rather than
+ * throwing, so a future backend-only addition degrades gracefully instead of breaking the
+ * page. */
+const SERVICE_DISPLAY: Record<string, { label: string; icon: string }> = {
+  dht: { label: 'DHT', icon: 'pi-sitemap' },
+  peerServer: { label: 'Peer Server', icon: 'pi-sign-in' },
+};
+
+/** RUNNING/DISABLED/FAILED map onto the same 'active'/'dim'/'alarm' ink-weight vocabulary
+ * every other status display in this app already uses (see StatusTone's own Javadoc) -
+ * DISABLED is 'dim' like STOPPED/Paused, a deliberately inert state, not a problem. */
+const SERVICE_STATE_TONE: Record<ServiceState, StatusTone> = {
+  RUNNING: 'active',
+  DISABLED: 'dim',
+  FAILED: 'alarm',
+};
+
+export function serviceStatusDisplay(status: ServiceStatus): StatusDisplay {
+  const display = SERVICE_DISPLAY[status.name] ?? { label: status.name, icon: 'pi-question-circle' };
+  return { icon: display.icon, label: display.label, tone: SERVICE_STATE_TONE[status.state] };
 }

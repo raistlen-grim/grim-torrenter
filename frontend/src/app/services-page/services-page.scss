@@ -1,0 +1,31 @@
+:host {
+  display: block;
+}
+
+.service-list {
+  list-style: none;
+  margin: var(--space-4) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.service-card {
+  display: flex;
+  align-items: center;
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.service-card:last-child {
+  border-bottom: none;
+}
+
+/* Same accent-color "healthy" token app-sidebar.scss's own .nav-status-ok uses (design_docs/
+ * 0059) - an explicit checkmark for RUNNING rows, not just relying on app-status-indicator's
+ * ink-weight alone to read as "good" at a glance. */
+.service-status-ok {
+  margin-left: auto;
+  color: var(--p-primary-color);
+  font-size: 0.9rem;
+}

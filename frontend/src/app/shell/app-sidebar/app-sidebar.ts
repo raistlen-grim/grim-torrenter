@@ -1,6 +1,10 @@
 import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
+import { toSignal } from '@angular/core/rxjs-interop';
 import { RouterLink, RouterLinkActive } from '@angular/router';
+import { interval, startWith, switchMap } from 'rxjs';
 
+import { ServiceStatus } from '../../models/system.model';
+import { SystemService } from '../../services/system.service';
 import { TorrentEventsService } from '../../services/torrent-events.service';
 import { STATUS_FILTER_LABELS, StatusFilter, TorrentFilterService, matchesStatusFilter } from '../../services/torrent-filter.service';
 
@@ -22,6 +26,8 @@ const FILTER_OPTIONS: FilterOption[] = [
   { value: 'harvest', label: STATUS_FILTER_LABELS.harvest, icon: 'pi-check-circle' },
 ];
 
+const SERVICES_POLL_INTERVAL_MS = 30_000;
+
 /**
  * The status-filter nav. Every item is a routerLink="/" that also selects the filter, so
  * picking one from the detail or settings view navigates back to the (now-filtered) list -
@@ -38,6 +44,7 @@ const FILTER_OPTIONS: FilterOption[] = [
 })
 export class AppSidebar {
   private readonly events = inject(TorrentEventsService);
+  private readonly system = inject(SystemService);
   readonly filter = inject(TorrentFilterService);
 
   readonly options = FILTER_OPTIONS;
@@ -55,4 +62,22 @@ export class AppSidebar {
   select(value: StatusFilter): void {
     this.filter.statusFilter.set(value);
   }
+
+  /** DHT/peer-server bind failures are stable for the whole process lifetime (see
+   * design_docs/0059), so this cadence is about freshness-on-first-load, not chasing a
+   * genuinely live transition - same 30s cadence AppFooter already uses for its own
+   * system-stats polling. */
+  /** Not private - app-sidebar.html reads services().length directly, to tell "no failures
+   * because everything's healthy" apart from "no failures because the first poll hasn't
+   * resolved yet" (still the [] initialValue) - the latter shouldn't flash a false all-clear
+   * checkmark. */
+  readonly services = toSignal(
+    interval(SERVICES_POLL_INTERVAL_MS).pipe(
+      startWith(0),
+      switchMap(() => this.system.services()),
+    ),
+    { initialValue: [] as ServiceStatus[] },
+  );
+
+  readonly failedServiceCount = computed(() => this.services().filter((s) => s.state === 'FAILED').length);
 }
