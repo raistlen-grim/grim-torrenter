@@ -153,6 +153,37 @@ from its own internal template can't be reached by a scoped selector in the cons
 component's own stylesheet, the identical issue `[inputStyleClass]` on `p-inputnumber` already
 hit for the rate-limit fields.
 
+## Addendum: magnet metadata fetch never actually respected this setting (found 2026-08-30)
+
+Found while debugging a user's magnet-add connectivity issue (unrelated - traced to their own
+network, see `design_docs/0060`'s own debugging trail): `MetadataFetcher.fetch()` (the BEP 9
+`ut_metadata` exchange magnet links use to learn a torrent's info-dict, `design_docs/0028`)
+called `PeerConnection.connect()`'s five-arg convenience overload, which chains through a
+six-arg overload that silently hardcodes `EncryptionMode.DISABLED` - regardless of whatever
+mode was actually configured in `Settings.encryptionMode()`. That overload's own Javadoc says
+it exists "for every caller that predates MSE and doesn't need it (tests, mainly)" -
+`MetadataFetcher` was never meant to be one of those callers, it just fell through the
+convenience-overload chain by accident when this feature shipped. Every magnet add has been
+connecting in plaintext this whole time, even with the default `PREFERRED` mode - real
+torrent downloads (`TorrentSession.attemptConnect()`) always correctly passed the live
+`encryptionMode.get()` value; only this one path missed it.
+
+**Fixed**: `MetadataFetcher.fetch()` now takes an explicit `EncryptionMode` parameter and calls
+`PeerConnection.connect()`'s full seven-arg form directly (still passing
+`RateLimiters.unlimited()` - that part of the original design was correct and unrelated, a
+one-shot metadata exchange never transfers real piece data). Its one production caller,
+`TorrentEngine.fetchMetadataFromCandidatesThenAdd()`, now passes `encryptionMode.get()`, the
+same live-read pattern `TorrentSession` already used. `MetadataFetcherTest`'s seven call sites
+were updated to pass `EncryptionMode.DISABLED` explicitly - that test's fake peer fixture only
+ever speaks a plain handshake, and MSE negotiation/fallback behavior is already covered by
+`PeerConnectionTest`, not something this test needs to also exercise. `TorrentEngineMagnetTest`'s
+`addMagnetFetchesMetadataAndAddsTheTorrent` needed the same explicit-`DISABLED` treatment for
+the same reason - its fixture only accepts one connection (`ServerSocket.accept()` called
+once), and would have silently broken under the real `PREFERRED` default: `PeerConnection`
+would try MSE first, the fake peer can't answer it (only knows how to parse a plain
+handshake), consuming the fixture's one-shot accept with nothing left to answer the
+subsequent plaintext-fallback connection attempt.
+
 ## Testing
 
 - `Rc4CipherTest`: published RC4 test vectors, round-trip, `discard()` behavior, stream

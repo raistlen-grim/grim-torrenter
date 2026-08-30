@@ -41,4 +41,45 @@
       styleClass="encryption-mode-select"
     />
   </div>
+
+  <div class="setting-row">
+    <div class="setting-label">
+      <label for="trackerlessDhtReannounceIntervalSeconds">Trackerless DHT re-query</label>
+      <p class="setting-description">
+        How often a torrent with no trackers re-queries DHT for fresh peers while running. Takes
+        effect the next time that torrent starts, not instantly.
+      </p>
+    </div>
+    <div class="retention-control">
+      <p-inputnumber
+        inputId="trackerlessDhtReannounceIntervalSeconds"
+        formControlName="trackerlessDhtReannounceIntervalSeconds"
+        [min]="1"
+        [showButtons]="false"
+        inputStyleClass="retention-input-field"
+      />
+      <span>seconds</span>
+    </div>
+  </div>
+
+  <div class="setting-row">
+    <div class="setting-label">
+      <label for="dhtRefreshIntervalSeconds">DHT routing table refresh</label>
+      <p class="setting-description">
+        How often a background check re-queries whichever DHT bucket has gone longest without activity, so
+        the DHT node count fills in over time instead of staying near wherever it started. Takes effect the
+        next time the app restarts.
+      </p>
+    </div>
+    <div class="retention-control">
+      <p-inputnumber
+        inputId="dhtRefreshIntervalSeconds"
+        formControlName="dhtRefreshIntervalSeconds"
+        [min]="1"
+        [showButtons]="false"
+        inputStyleClass="retention-input-field"
+      />
+      <span>seconds</span>
+    </div>
+  </div>
 </fieldset>

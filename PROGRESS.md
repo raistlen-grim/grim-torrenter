@@ -28,12 +28,13 @@ complete**, per the phased scope in [[0009-phased-scope]]:
   ([[0029-optimistic-upload-feedback]]).
 - **Mainline DHT (BEP 5)** — node ID, k-bucket routing table, KRPC over
   UDP (ping/find_node/get_peers/announce_peer), bootstrap, iterative node
-  lookup ([[0028-magnet-links-and-dht]]). Wired into `TorrentEngine` for
-  trackerless magnets (peer discovery for a magnet with no usable
-  tracker, and re-seeding a trackerless torrent's known peers on
-  restore), **and as a backstop for regular (tracker-bearing) torrents
-  whose trackers are all currently unreachable**
-  ([[0036-dht-backstop-for-tracker-bearing-torrents]]). A `GET
+  lookup ([[0028-magnet-links-and-dht]]). Wired into `TorrentSession` for
+  trackerless magnets — peer discovery on `start()` *and* a periodic
+  re-query while running (live-tunable interval, default 300s), mirroring
+  **the same backstop mechanism built for regular (tracker-bearing)
+  torrents whose trackers are all currently unreachable**
+  ([[0036-dht-backstop-for-tracker-bearing-torrents]], including its own
+  2026-08-30 addendum for the trackerless periodic re-query). A `GET
   /api/dht/status` endpoint exposes node count.
 - Full per-torrent detail view: tabbed Pieces/Files/Peers/Trackers, each
   a self-contained on-demand endpoint
@@ -193,6 +194,159 @@ complete**, per the phased scope in [[0009-phased-scope]]:
   ([[0056-watch-folder]])
   - **Deferred**: magnet-link files (e.g. a `.magnet` text-file convention) and a configurable
     poll interval — `.torrent` files only and a fixed 30-second cadence for this first pass.
+- **Service status** (picked from `TODO.md`, 2026-08-30) — DHT and the inbound peer server
+  failing to bind at startup previously only logged a `WARNING`, with no way for a user to know
+  short of reading server logs. A new **Services** sidebar page lists both as a fixed
+  RUNNING/DISABLED/FAILED checklist (`GET /api/system/services`, backed by a new
+  `TorrentEngine.serviceStatuses()`), scoped deliberately to engine-wide singleton subsystems
+  only — per-torrent status stays on the torrent itself. The same bind-failure catch block that
+  drives this also records a normal library event (`DHT_UNAVAILABLE`/
+  `PEER_SERVER_UNAVAILABLE`), so the same failure shows up with a timestamp in the Events tab.
+  A sidebar nav badge shows the live failed-service count (hidden when zero); once loaded and
+  all-clear, both the nav item and each `RUNNING` row on the Services page show an explicit
+  accent-colored checkmark, not a literal green — this app's style guide deliberately avoids a
+  red/green severity palette in favor of one reserved alarm color plus ink weight
+  ([[0032-style-guide-and-primeng-theme]]), flagged and confirmed with the user before
+  building it that way. DHT/peer server only ever bind once at construction (no retry), so
+  "failed" is stable for the process lifetime — no live health-polling loop or
+  begin/end event pairing was needed. ([[0059-service-status]])
+  - Same pass, ahead of Services: a **JVM heap/CPU footer widget** — `GET
+    /api/system/resource-usage` (`com.sun.management.OperatingSystemMXBean`, no new
+    dependency) polled into the existing footer alongside disk free space, each stat behind
+    its own icon (`pi-database`/`pi-server`/`pi-microchip`) once three numbers made the plain
+    text ambiguous. Numbers only, not a graph — the endpoint is a stateless snapshot with
+    nothing retained server-side, so a time series would mean either a client-side rolling
+    buffer or new backend storage, deferred as a separate decision. ([[0043-app-shell-and-filtering]]'s
+    own addendum)
+  - **Known gap**: no cheap, deterministic way to force a real DHT/peer-server bind failure in
+    a unit test today, so `serviceStatuses()`'s `FAILED` branch and the event recording it
+    triggers have no automated coverage yet — same shape as the existing
+    `TorrentEventListener` `ERROR`-mapping gap noted above.
+- **Row selected highlight** (picked from `TODO.md`, 2026-08-30) — the row whose torrent the
+  detail drawer currently has open now gets the style guide's full "Selected row" token (a 2px
+  accent left edge plus an 8% accent wash, never a fully filled row), driven from the same
+  `route.firstChild`/`NavigationEnd` pattern `TorrentList`'s existing `isDetailOpen` signal
+  already uses, so it can't drift from the drawer's real open/closed state. The wash alone
+  (the first cut, taken from `TODO.md`'s shorter paraphrase rather than the full
+  `STYLE_GUIDE_NOTES.md` token) read ambiguously close to an in-progress torrent's own
+  similarly-accent-washed progress underlay — the left edge, added once the user flagged it
+  live, is what actually disambiguates the two. ([[0043-app-shell-and-filtering]]'s own
+  addendum)
+- **Magnet-add reliability, feedback, and a real MSE bug — a single long debugging session
+  (2026-08-30)**, started from a user report that adding a magnet did nothing. Three real
+  fixes came out of it, in the order they were found:
+  1. **`MetadataFetcher` never actually respected the configured `EncryptionMode`** — it went
+     through a `PeerConnection.connect()` convenience overload that silently hardcoded
+     `EncryptionMode.DISABLED`, so every magnet metadata fetch connected in plaintext even
+     with the default `PREFERRED` mode. Genuinely unrelated to the user's actual symptom (the
+     block turned out to be connect-level, before any payload — encrypted or not — was ever
+     sent), but a real, independently-worth-fixing gap; found and fixed along the way.
+     ([[0052-message-stream-encryption]]'s own addendum)
+  2. **Total silence on failure.** `TorrentEngine.addMagnet()` returns as soon as a background
+     metadata fetch *starts*, not once it succeeds — a total failure (no reachable peer) was
+     only ever logged server-side. Added a new `EventType.MAGNET_ADD_FAILED` library event,
+     recorded at every failure point, plus a transient pending row in the torrent list
+     (extending [[0029-optimistic-upload-feedback]]'s existing mechanism to magnets, which had
+     never picked it up) that resolves — success or a toast naming the failure — once the real
+     outcome is known, instead of the field just silently clearing either way.
+     ([[0060-magnet-add-failure-feedback]])
+  3. **The actual root cause, found via a live side-by-side with qBittorrent's own peer list**:
+     GrimTorrenter was trying far too few peers to reliably beat ordinary swarm churn (most
+     candidates in any real swarm are routinely unreachable at any given moment) — not a
+     network-level block, the leading theory for most of the session until qBittorrent's own
+     ~76-peer list (several on port 6881 itself) ruled that out directly. Reworked into a
+     concurrent, retried, live-tunable design: candidates within a round now race via
+     `ExecutorService.invokeAny()` instead of trying sequentially; `fetchMagnetMetadataViaTracker
+     ThenAdd()`/`ViaDhtThenAdd()` are now bounded retry loops (re-announcing/re-querying DHT for
+     fresh candidates) across an overall time budget, not a single batch; and all three tuning
+     numbers (time budget, candidates per round, concurrency ceiling) are now live `Settings`
+     fields (a new `LiveResizableSemaphore` makes even the concurrency cap resizable without a
+     restart), editable from a new Magnet fetching settings group — confirmed live: the user's
+     stalled magnet started downloading once rebuilt. ([[0028-magnet-links-and-dht]]'s own
+     2026-08-30 addendum)
+  - Also surfaced and fixed a real, unrelated flake in `ManyTorrentsRestoreLoadTest`'s own
+    `PeakTrackingSemaphore` while running the full suite — see its own entry above.
+  - **Two follow-on gaps identified**, both noticed via the same qBittorrent comparison: ongoing
+    DHT peer discovery for an active torrent was one-shot, not periodic (unlike tracker
+    reannounce) — **now fixed, see the periodic DHT re-query entry below** — and GrimTorrenter
+    has no LSD (BEP 14) at all, still open, logged to `TODO.md`.
+- **Periodic DHT re-query for genuinely trackerless torrents (2026-08-30)** — closes the
+  one-shot-DHT-lookup gap surfaced above. Previously, a trackerless torrent's peer discovery
+  was: one `dhtNode.findPeers(...)` call at add-time (`TorrentEngine.seedFromDhtIfTrackerless()`,
+  now removed), then nothing further — the `NoOpTrackerClient` standing in for "no tracker"
+  reported a deliberately huge (365-day) interval specifically so `reannounce()`'s own
+  scheduling was a no-op for it. `TorrentSession` already had the machinery to do this properly
+  for a *related* case — `startViaDhtBackstop()`/`reannounceViaDhtBackstop()`
+  ([[0036-dht-backstop-for-tracker-bearing-torrents]]), built for a tracker-bearing torrent
+  whose tracker is currently down — just never wired up for genuinely trackerless torrents.
+  Added parallel `startViaDht()`/`reannounceViaDht()` methods (same shape, different failure
+  semantics: no prior tracker success to consider "failed"), driven by a new live
+  `Settings.trackerlessDhtReannounceIntervalSeconds` field (default 300s/5 minutes, exposed in
+  the existing Network settings group) instead of reusing the fixed 1800s backstop interval —
+  the user's own call, given how much faster qBittorrent's peer count grows; 300s balances that
+  against DHT query-etiquette (re-querying the same info hash too often is poor citizenship, and
+  the real qBittorrent-speed gap is mostly explained by a much richer routing table, not query
+  frequency — see the DHT-sparseness item above). `dhtBackstopActive` is deliberately left
+  untouched by the new path — a trackerless torrent doing DHT lookups is its normal operating
+  mode, not a degradation. ([[0036-dht-backstop-for-tracker-bearing-torrents]]'s own 2026-08-30
+  addendum)
+- **DHT routing-table health: periodic bucket refresh + a real replacement policy (2026-08-30)**
+  — closes the 21-vs-379-node gap identified in the same qBittorrent comparison. Checked
+  directly against libtorrent-rasterbar's own `routing_table.cpp` rather than guessing from the
+  BEP 5 spec alone. Two structural gaps this doc's own k-bucket section had already flagged as
+  deliberately deferred: bootstrap's one self-lookup only ever explores the neighborhood near
+  our own node id, and a full bucket never evicted a stale contact for a better one (the
+  ping-then-evict contract existed and was tested, just never wired up). Turned both on:
+  `DhtNode.seen()` now actually pings a full bucket's stale contact (off the receive-loop
+  thread) and evicts it if unreachable; a new `RoutingTable.mostOverdueBucket()`/
+  `randomIdInBucket()` pair drives a periodic `DhtNode.refreshRoutingTable()` tick — reusing
+  `NodeLookup` exactly as this doc's own bootstrap section anticipated — on a new live
+  `Settings.dhtRefreshIntervalSeconds` field (default 300s, engine-wide via
+  `maintenanceScheduler`, a new row in the Network settings group). Persistence across restarts
+  deliberately deferred to `TODO.md` — this fixes "stays sparse while running," not cold-start
+  speed.
+  - **Follow-up fix #1, same day**: the very next real run regressed to 1 DHT node — traced not
+    to the replacement policy (initially suspected) but to a gap the fix itself didn't cover:
+    this network's reachability to two of the three well-known bootstrap hosts is impaired,
+    leaving bootstrap with only one contact, and `refreshRoutingTable()`'s per-bucket refresh
+    can't recover from that — `NodeLookup` always seeds itself from what's already known, so it
+    just re-queries the same starved handful forever. Fixed: below `MIN_HEALTHY_NODE_COUNT` (8)
+    known nodes, `refreshRoutingTable()` now re-runs full bootstrap instead of a narrow bucket
+    refresh, giving a poor first attempt a real repeated second chance every
+    `dhtRefreshIntervalSeconds` — confirmed helping (1 → 2 nodes), just slowly.
+  - **Follow-up fix #2, same day**: a second DEBUG capture showed the *identical* two hosts
+    failing again — not flaky, a deterministic, persistent gap for this network, confirmed a
+    third time via a direct manual KRPC ping test. Retrying the same 3 hosts could only ever get
+    1 real vote. Added two more hosts to `Bootstrap.DEFAULT_HOSTS` (now 5, was 3):
+    `dht.libtorrent.org` (a different port, 25401 — real bootstrap hosts don't agree on one;
+    confirmed reachable, libtorrent's own host, likely why qBittorrent had hundreds of nodes on
+    this same network) and `dht.aelitis.com` (from the actual list libtorrent/qBittorrent
+    configures, supplied by the user — didn't respond from this network either, kept anyway for
+    the same "may work elsewhere, never hurts" reasoning already applied to the two already-
+    struggling defaults). `router.bitcomet.com`, also from that list, no longer resolves at all
+    — confirmed independently by the user too, left out as permanently-dead weight.
+  - **Follow-up fix #3, same day**: both fixes above still depend on the same handful of
+    hardcoded hosts being reachable *right now*, every restart. Raised by the user directly,
+    and already logged as a deliberately-deferred item — built the same day instead of waiting.
+    Routing-table contacts now persist to a new `.grimtorrenter-dht-nodes` marker file (plain
+    `ip,port` lines, no id — the real one always comes back fresh in the verification ping),
+    loaded as a warm-start on `createDhtNode()` and saved on the periodic refresh tick plus on
+    shutdown. Staleness is resolved for free: a persisted contact is only trusted once it
+    actually answers a real ping, exactly like any hardcoded bootstrap host already is — no
+    separate verification pass needed. Pinged **concurrently** (`DhtNode.bootstrap(List)`, a
+    new overload), unlike `Bootstrap.seedFrom()`'s own sequential loop over the 5 hardcoded
+    hosts — a persisted list could be far larger, so a warm start costs roughly one timeout
+    regardless of how many contacts were saved, not time scaling with the count.
+  - **Follow-up fix #4, same day**: the two DHT marker files (node id, and now the persisted
+    routing table) sat directly at the download directory's root — visible clutter next to a
+    user's actual torrent folders, unlike every per-torrent marker which correctly lives inside
+    that torrent's own subdirectory. Raised by the user directly. Moved into the existing
+    `grimtorrenter.config-directory` (already used by `settings.json`/`events/`) — `TorrentEngine`
+    gained a new `configDirectory` constructor parameter, added the same way `watchDirectory`
+    was ([[0056-watch-folder]]'s own precedent): a new widest constructor, the previous one
+    delegating with `configDirectory` defaulted to `baseDownloadDirectory` so every existing
+    caller/test is unaffected.
+  ([[0028-magnet-links-and-dht]]'s own 2026-08-30 addendum)
 
 **Not yet built** (the rest of Phase 3):
 
@@ -262,6 +416,13 @@ torrent's files were opened once and held open for its whole lifetime, even whil
   time. Fixed by launching all 40 `restoreAsync()` calls from their own threads behind a shared
   start gate, so they genuinely race for the shared pool/semaphore at once
   ([[0054-seeding-limits]]).
+- **Fixed a second, different flake in the same test's `PeakTrackingSemaphore`** (2026-08-30,
+  found as a spurious failure during unrelated magnet-fetch work) - its peak-tracking
+  increment lived inside an `AtomicInteger.updateAndGet()` lambda, which can be re-invoked
+  under real CAS contention; a side-effecting increment there could fire more than once per
+  actual `acquire()`, inflating the observed peak above what the real `Semaphore` ever
+  permitted. The bound itself was never actually violated - only miscounted. Fixed by
+  incrementing once outside the lambda ([[0049-many-torrents-load-test]]'s own addendum).
 
 ## Known gaps / TODO
 
@@ -285,16 +446,26 @@ torrent's files were opened once and held open for its whole lifetime, even whil
 Phase 2 is fully complete; Phase 3 has Peer Exchange, rate limiting (with a daily off-hours
 schedule and a burst allowance), a real settings page, and MSE done — every item from the
 original Phase 3 list is now built; the engine stability/scale audit is fully closed out;
-seeding limits, library events, and the watch folder (all picked from `TODO.md`) are done:
+seeding limits, library events, the watch folder, service status, the row-selected highlight,
+magnet-add reliability/feedback, periodic DHT re-query for trackerless torrents, and DHT
+routing-table health (all picked from `TODO.md`) are done:
 
-1. The pending-action-vs-2s-snapshot-lag gap noted above, if it proves to
+1. DHT routing-table persistence across restarts (`TODO.md`) — the periodic-refresh fix above
+   closes "stays sparse while running," this would additionally close "starts cold every
+   restart." Deliberately deferred, real scope of its own (storage format, staleness policy).
+2. The DHT service-status "healthy vs. sparse routing table" distinction noted above — the
+   routing-table-health fix means a low count is no longer expected to persist indefinitely,
+   but the status endpoint still can't distinguish "still filling in" from "genuinely stuck."
+3. The remaining `TODO.md` items: a notification service (still fully unscoped), running a
+   user-configured script automatically on torrent completion, LSD (BEP 14, minor), and the
+   `@primeng/themes` migration.
+4. The pending-action-vs-2s-snapshot-lag gap noted above, if it proves to
    matter in practice.
-2. The remaining item on `TODO.md` (a notification service), whenever picked up.
-3. Library events' two deferred event types ([[0055-library-events]]'s own "Deferred from this
+5. Library events' two deferred event types ([[0055-library-events]]'s own "Deferred from this
    pass" section) — tracker unreachable/recovered, and a distinctly-labeled magnet-resolved —
    if they prove to matter in practice.
-4. The watch folder's two deferred items ([[0056-watch-folder]]'s own "Alternatives considered"
+6. The watch folder's two deferred items ([[0056-watch-folder]]'s own "Alternatives considered"
    section) — magnet-link files and a configurable poll interval — if either proves to matter.
-5. The rate-limiting settings group's remaining natural additions (per-torrent overrides,
+7. The rate-limiting settings group's remaining natural additions (per-torrent overrides,
    multi-rule schedule) — pushed to the back of the backlog (2026-08-25), marginal real-world
    value relative to the items above.

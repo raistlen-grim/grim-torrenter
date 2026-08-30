@@ -1,9 +1,13 @@
 {
   "acceptIncomingConnections" : true,
   "dhtEnabled" : true,
+  "dhtRefreshIntervalSeconds" : 30,
   "downloadRateLimitBytesPerSec" : 0,
   "encryptionMode" : "PREFERRED",
   "eventLogRetentionDays" : 30,
+  "magnetFetchCandidatesPerRound" : 50,
+  "magnetFetchConcurrencyLimit" : 64,
+  "magnetFetchTimeBudgetSeconds" : 90,
   "rateLimitBurstSeconds" : 0,
   "rateLimitScheduleEnabled" : false,
   "rateLimitScheduleEnd" : "07:00",
@@ -14,6 +18,8 @@
   "seedRatioLimitEnabled" : false,
   "seedTimeLimitEnabled" : false,
   "seedTimeLimitMinutes" : 0,
+  "theme" : "SYSTEM",
+  "trackerlessDhtReannounceIntervalSeconds" : 300,
   "uploadRateLimitBytesPerSec" : 0,
   "watchFolderEnabled" : true,
   "watchFolderRetentionDays" : 7

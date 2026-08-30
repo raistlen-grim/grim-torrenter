@@ -160,6 +160,38 @@ client-side history either — `toSignal` holds only the latest snapshot, same a
 already did. Not reachable by remote peers/trackers at all (pure host-JVM introspection, no
 torrent-derived input), so no hostile-input surface. No locking/concurrency involved.
 
+### Row selected highlight (`torrent-list.ts`/`torrent-row.ts`)
+
+Picked from `TODO.md`: nothing in the list previously indicated which row the open detail
+drawer ([[0044-torrent-detail-drawer]]) belonged to. The style guide already specs a "Selected
+row" token, in full (`STYLE_GUIDE_NOTES.md`, not just `TODO.md`'s shorter background-only
+paraphrase — see "First cut missed part of the token" below): `inset 2px 0 0 0
+var(--color-accent)` left edge **plus** an 8% accent wash, never a fully filled row.
+Originally spec'd for multi-select checkboxes — out of scope for the whole restyle pass — but
+the same treatment applies naturally to "this row's infoHash matches the open
+`torrents/:infoHash` route" in this app's simpler no-multi-select model, exactly as `TODO.md`
+already anticipated.
+
+`TorrentList` gained a `selectedInfoHash` signal, same `router.events` +
+`NavigationEnd`-filtered pattern `isDetailOpen` already uses (read from
+`route.firstChild?.snapshot.paramMap.get('infoHash')` rather than a separately-maintained
+signal, so it can't drift from the drawer's actual open/closed state) — passed down to each
+`TorrentRow` as a new `selected` input, applied via a `row-selected` host class alongside the
+existing `row-pending` one. The CSS rule is declared after the existing `:host(:hover)` rule
+so a selected row keeps both cues even while hovered, rather than the plain hover tint winning
+on equal specificity.
+
+**First cut missed part of the token.** The initial implementation applied only the 8% accent
+wash, taken from `TODO.md`'s own shorter paraphrase of the guide rather than re-checking
+`STYLE_GUIDE_NOTES.md` itself. Live, the user flagged that a partially-downloaded torrent's own
+`.progress-underlay` (a very similar 11% accent wash, no edge) made a selected in-progress row
+read ambiguously close to "this row is partway downloaded." The left-edge bar — present in the
+full token all along — is what actually disambiguates "selected" from "in progress" at a
+glance; adding it (matching the same "2px accent left edge, never a filled row" language
+`app-sidebar.scss`'s own `.nav-item.active` already uses) resolved it. Consistent with this
+project's own "verify deviations, don't assume" habit — worth re-checking the primary source
+before treating a paraphrase as complete, even one written down in `TODO.md`.
+
 ### Sortable columns (`torrent-list.ts`)
 
 Gains a new **Size** column (`totalLength`, via the existing `FormatBytesPipe`) between

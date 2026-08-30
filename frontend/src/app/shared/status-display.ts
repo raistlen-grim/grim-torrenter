@@ -41,7 +41,10 @@ export function trackerStateDisplay(state: TrackerState): StatusDisplay {
  * auto-updater like Watchtower recreating the container), not routine noise.
  * DHT_UNAVAILABLE/PEER_SERVER_UNAVAILABLE (design_docs/0059) are 'alarm' - the same condition
  * the Services page shows live, just with a timestamp; same icon as SERVICE_DISPLAY below for
- * that same reason. */
+ * that same reason. MAGNET_ADD_FAILED (design_docs/0060) is likewise 'alarm' - the real
+ * failure reason lives in the event's own message field (torrentName is always null for this
+ * type, see EventType's own Javadoc), which the Events page template already renders as
+ * plain text. */
 const EVENT_TYPE_DISPLAY: Record<EventType, StatusDisplay> = {
   ADDED: { icon: 'pi-plus-circle', label: 'Added', tone: 'active' },
   COMPLETED: { icon: 'pi-check-circle', label: 'Completed', tone: 'active' },
@@ -51,6 +54,7 @@ const EVENT_TYPE_DISPLAY: Record<EventType, StatusDisplay> = {
   SERVER_STARTED: { icon: 'pi-server', label: 'Server started', tone: 'active' },
   DHT_UNAVAILABLE: { icon: 'pi-sitemap', label: 'DHT unavailable', tone: 'alarm' },
   PEER_SERVER_UNAVAILABLE: { icon: 'pi-sign-in', label: 'Peer server unavailable', tone: 'alarm' },
+  MAGNET_ADD_FAILED: { icon: 'pi-link', label: 'Magnet add failed', tone: 'alarm' },
 };
 
 export function eventTypeDisplay(type: EventType): StatusDisplay {

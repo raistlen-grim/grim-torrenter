@@ -36,7 +36,34 @@ export type ThemePreference = 'SYSTEM' | 'LIGHT' | 'DARK';
  * preference (design_docs/0032's "Manual theme switcher" section) - the only field here with
  * no engine relevance at all,
  * stored the same way as everything else anyway (a deliberate choice over browser
- * localStorage, so it follows the user across devices/browsers hitting this instance). */
+ * localStorage, so it follows the user across devices/browsers hitting this instance).
+ * magnetFetchTimeBudgetSeconds/magnetFetchCandidatesPerRound/magnetFetchConcurrencyLimit tune
+ * how hard a magnet add tries to find a peer with the metadata (design_docs/0028's addendum) -
+ * live, read fresh by the backend at the start of each magnet-add attempt, so (like
+ * encryptionMode) a change here takes effect on the next attempt, not retroactively. Same
+ * no-unlimited-value, silently-normalized-below-1 treatment as eventLogRetentionDays/
+ * watchFolderRetentionDays, for the same reason - not a lever for "never give up" or "no
+ * concurrency bound at all." Defaults (90s / 50 / 64) work out of the box; exposed as
+ * user-editable mainly for an advanced user, or someone actively diagnosing a connectivity
+ * issue, to tune without a rebuild/restart.
+ * trackerlessDhtReannounceIntervalSeconds (design_docs/0036's own addendum) governs how often
+ * a genuinely trackerless torrent re-queries DHT for fresh peers while running, mirroring what
+ * a real tracker's own announce interval already does - live, but read once per torrent
+ * start() (a live-scheduled task's period can't change mid-flight), so a change here takes
+ * effect on that torrent's next start(), not retroactively. Default 300s (5 minutes) -
+ * deliberately not much shorter: re-querying DHT for the same info hash too often is poor DHT
+ * citizenship, and the real bottleneck behind a slow-growing peer count is usually
+ * routing-table richness, not query frequency. Same no-unlimited-value,
+ * silently-normalized-below-1 treatment as the other tunable fields above.
+ * dhtRefreshIntervalSeconds (design_docs/0028's own 2026-08-30 addendum) is that
+ * routing-table-richness fix: how often a background tick re-queries whichever DHT bucket has
+ * gone longest without activity, reaching parts of the id space a one-time startup bootstrap
+ * lookup never touches. Live, but drives an engine-wide scheduled task rather than a per-torrent
+ * one, so a change here takes effect on the engine's next construction/restart, not
+ * retroactively. Default 300s (5 minutes) - each tick is one lightweight lookup against a single
+ * bucket, so a shorter-than-trackerlessDhtReannounceIntervalSeconds-style default is reasonable
+ * DHT etiquette here. Same no-unlimited-value, silently-normalized-below-1 treatment as the
+ * other tunable fields above. */
 export interface Settings {
   dhtEnabled: boolean;
   acceptIncomingConnections: boolean;
@@ -57,4 +84,9 @@ export interface Settings {
   watchFolderEnabled: boolean;
   watchFolderRetentionDays: number;
   theme: ThemePreference;
+  magnetFetchTimeBudgetSeconds: number;
+  magnetFetchCandidatesPerRound: number;
+  magnetFetchConcurrencyLimit: number;
+  trackerlessDhtReannounceIntervalSeconds: number;
+  dhtRefreshIntervalSeconds: number;
 }

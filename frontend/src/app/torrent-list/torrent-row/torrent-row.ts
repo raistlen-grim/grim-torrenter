@@ -54,6 +54,7 @@ import { SeedingLimitsDialog } from './seeding-limits-dialog/seeding-limits-dial
   host: {
     tabindex: '0',
     '[class.row-pending]': 'pendingAction() !== null',
+    '[class.row-selected]': 'selected()',
     '(contextmenu)': 'onContextMenu($event)',
     '(click)': 'navigateToDetail()',
     '(keydown.enter)': 'navigateToDetail()',
@@ -75,6 +76,14 @@ export class TorrentRow {
    * opened"). Driven from TorrentList's own isDetailOpen(), not this row's own state, since
    * every row sheds together regardless of which one is selected. */
   readonly compact = input(false);
+
+  /** True when this row's torrent is the one the open detail drawer belongs to - driven from
+   * TorrentList's own selectedInfoHash(), not derived locally, so every row agrees on which
+   * one (if any) is selected without each re-deriving it from the route itself. Style guide's
+   * "Row selected" token - see design_docs/0032's README and TODO.md's own description of it.
+   * No multi-select in this app's model, so this is a single-row highlight, not a selection
+   * set. */
+  readonly selected = input(false);
 
   /** Set the instant Pause/Resume/Remove is clicked, cleared on response (success or
    * failure) via finalize - drives both the clicked button's own loading/disabled state

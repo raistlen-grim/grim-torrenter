@@ -1,10 +1,12 @@
 package com.grimtorrenter.engine.metadata;
 
 import com.grimtorrenter.engine.metainfo.InfoHash;
+import com.grimtorrenter.engine.mse.EncryptionMode;
 import com.grimtorrenter.engine.peer.PeerConnection;
 import com.grimtorrenter.engine.peer.PeerConnectionListener;
 import com.grimtorrenter.engine.peerwire.Extended;
 import com.grimtorrenter.engine.peerwire.PeerMessage;
+import com.grimtorrenter.engine.ratelimit.RateLimiters;
 import com.grimtorrenter.engine.tracker.PeerAddress;
 import com.grimtorrenter.engine.tracker.PeerId;
 
@@ -27,6 +29,14 @@ import java.util.concurrent.TimeUnit;
  * when to give up is TorrentEngine's job once magnet links are wired into it, not
  * this class's - same separation of concerns as PeerConnection only ever knowing
  * about the one connection it is.
+ *
+ * <p>Uses {@code PeerConnection.connect()}'s full-arg overload directly (passing
+ * {@code RateLimiters.unlimited()} - a one-shot metadata exchange never transfers real piece
+ * data, so rate limiting was never applicable here) rather than a shorter convenience
+ * overload - that overload chain silently defaulted encryption to {@code DISABLED}
+ * regardless of the engine's actual configured mode, a real gap found and fixed
+ * 2026-08-30 (design_docs/0052's own addendum): magnet metadata fetches were always
+ * connecting in plaintext even with MSE set to PREFERRED/REQUIRED elsewhere.
  */
 public final class MetadataFetcher {
 
@@ -39,10 +49,11 @@ public final class MetadataFetcher {
     private MetadataFetcher() {
     }
 
-    public static byte[] fetch(PeerAddress address, InfoHash infoHash, PeerId ourPeerId) throws IOException {
+    public static byte[] fetch(PeerAddress address, InfoHash infoHash, PeerId ourPeerId,
+                                EncryptionMode encryptionMode) throws IOException {
         FetchListener listener = new FetchListener();
-        try (PeerConnection connection = PeerConnection.connect(
-                address, infoHash, ourPeerId, listener, Map.of(EXTENSION_NAME, OUR_EXTENSION_ID))) {
+        try (PeerConnection connection = PeerConnection.connect(address, infoHash, ourPeerId, listener,
+                Map.of(EXTENSION_NAME, OUR_EXTENSION_ID), RateLimiters.unlimited(), encryptionMode)) {
 
             if (!listener.awaitHandshake(HANDSHAKE_TIMEOUT_MS)) {
                 throw new MetadataFetchException("Peer " + address + " never sent an extended handshake");

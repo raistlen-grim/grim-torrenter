@@ -89,7 +89,17 @@ class ManyTorrentsRestoreLoadTest {
         @Override
         public void acquireUninterruptibly() {
             super.acquireUninterruptibly();
-            peak.updateAndGet(p -> Math.max(p, current.incrementAndGet()));
+            // current.incrementAndGet() must NOT live inside the updateAndGet() lambda below -
+            // that lambda is a compare-and-swap retry loop and can be re-invoked multiple times
+            // under real contention (AtomicInteger.updateAndGet()'s own Javadoc requires the
+            // function be side-effect-free), so a side-effecting increment inside it could fire
+            // more than once per actual acquire(), inflating the observed peak above what the
+            // real Semaphore ever permitted. A real bug found this way (2026-08-30) - see
+            // design_docs/0049's own test, unrelated feature work surfaced it as a spurious
+            // failure. Incrementing once here, outside the lambda, keeps the lambda itself a
+            // pure function of its input, safe to retry any number of times.
+            int now = current.incrementAndGet();
+            peak.updateAndGet(p -> Math.max(p, now));
         }
 
         @Override

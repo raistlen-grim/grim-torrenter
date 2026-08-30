@@ -18,6 +18,23 @@
   background: color-mix(in srgb, var(--color-text) 4%, transparent);
 }
 
+/* Style guide's "Selected row" token in full (STYLE_GUIDE_NOTES.md: "inset 2px 0 0 0
+ * var(--color-accent) left edge plus an 8% accent wash - never a fully filled row"), applied
+ * to whichever row's torrent the detail drawer currently has open - originally spec'd for
+ * multi-select checkboxes (excluded from the style-guide restyle pass, design_docs/0032), but
+ * the same treatment reads naturally as "this is the one you opened" in this app's simpler
+ * no-multi-select model. The left-edge bar matters, not just the wash: an in-progress
+ * torrent's own .progress-underlay below is a very similar accent wash (11%, no edge), so the
+ * wash alone reads ambiguously close to "this row is partway downloaded" - the edge is what
+ * actually distinguishes "selected" at a glance, same "2px accent left edge, never a filled
+ * row" language app-sidebar.scss's own .nav-item.active already uses. Declared after
+ * :host(:hover) so a selected row keeps both cues even while hovered, rather than the plain
+ * hover tint winning on equal specificity. See design_docs/0043's own addendum on this. */
+:host(.row-selected) {
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+  box-shadow: inset 2px 0 0 0 var(--color-accent);
+}
+
 :host(.row-pending) {
   opacity: 0.6;
   transition: opacity 0.15s ease;

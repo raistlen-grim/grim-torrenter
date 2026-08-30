@@ -1,0 +1,66 @@
+<fieldset [formGroup]="form()">
+  <legend class="heading-font">Magnet fetching</legend>
+  <p class="group-hint">
+    How hard a magnet add tries to find a peer with the torrent's metadata before giving up.
+    Sensible defaults out of the box - tune these if you're diagnosing a connectivity issue or
+    want a different trade-off between speed and thoroughness.
+  </p>
+
+  <div class="setting-row">
+    <div class="setting-label">
+      <label for="magnetFetchTimeBudgetSeconds">Keep trying for</label>
+      <p class="setting-description">
+        Overall time budget for one magnet add before it's given up on. Takes effect on the
+        next magnet add, not retroactively.
+      </p>
+    </div>
+    <div class="retention-control">
+      <p-inputnumber
+        inputId="magnetFetchTimeBudgetSeconds"
+        formControlName="timeBudgetSeconds"
+        [min]="1"
+        [showButtons]="false"
+        inputStyleClass="retention-input-field"
+      />
+      <span>seconds</span>
+    </div>
+  </div>
+
+  <div class="setting-row">
+    <div class="setting-label">
+      <label for="magnetFetchCandidatesPerRound">Peers per round</label>
+      <p class="setting-description">
+        How many candidate peers to ask trackers for, and try at once, each round.
+      </p>
+    </div>
+    <div class="retention-control">
+      <p-inputnumber
+        inputId="magnetFetchCandidatesPerRound"
+        formControlName="candidatesPerRound"
+        [min]="1"
+        [showButtons]="false"
+        inputStyleClass="retention-input-field"
+      />
+      <span>peers</span>
+    </div>
+  </div>
+
+  <div class="setting-row">
+    <div class="setting-label">
+      <label for="magnetFetchConcurrencyLimit">Concurrency limit</label>
+      <p class="setting-description">
+        Maximum simultaneous connection attempts across every magnet add happening at once.
+      </p>
+    </div>
+    <div class="retention-control">
+      <p-inputnumber
+        inputId="magnetFetchConcurrencyLimit"
+        formControlName="concurrencyLimit"
+        [min]="1"
+        [showButtons]="false"
+        inputStyleClass="retention-input-field"
+      />
+      <span>connections</span>
+    </div>
+  </div>
+</fieldset>

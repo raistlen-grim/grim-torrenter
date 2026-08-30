@@ -114,4 +114,61 @@ class RoutingTableTest {
 
         assertEquals(List.of(near, mid), table.closestNodes(OUR_ID, 2));
     }
+
+    /** Every generated id must land in exactly the requested bucket - checked against the
+     * same distanceTo/bitLength computation RoutingTable's own private bucketIndex() uses
+     * internally, since that's the one thing randomIdInBucket() promises. Several bucket
+     * indices (including both ends, 0 and 159) and several draws each, since the low bits
+     * are randomized and a boundary-bit-position bug would only show up for some indices. */
+    @Test
+    void randomIdInBucketLandsInTheRequestedBucket() {
+        RoutingTable table = new RoutingTable(OUR_ID);
+        for (int bucketIndex : new int[] {0, 1, 7, 8, 79, 152, 158, 159}) {
+            for (int attempt = 0; attempt < 20; attempt++) {
+                NodeId id = table.randomIdInBucket(bucketIndex);
+                int actual = OUR_ID.distanceTo(id).bitLength() - 1;
+                assertEquals(bucketIndex, actual,
+                        "bucketIndex " + bucketIndex + " produced id in bucket " + actual);
+            }
+        }
+    }
+
+    /** A never-touched bucket (still its initial Instant.EPOCH) is always more overdue than
+     * one markRefreshed() has touched, however recently. */
+    @Test
+    void mostOverdueBucketPrefersANeverTouchedBucketOverARecentlyTouchedOne() {
+        RoutingTable table = new RoutingTable(OUR_ID);
+        table.markRefreshed(0);
+        table.markRefreshed(1);
+
+        assertEquals(2, table.mostOverdueBucket());
+    }
+
+    /** insert() touches its own bucket's refresh timestamp as a side effect - real activity
+     * is itself evidence that bucket doesn't need a separate background refresh soon. Value
+     * 16 lands in bucket 4 - see fullBucketReturnsLeastRecentlySeenContactInsteadOfAdding's
+     * own comment on why last-byte values 16-23 share a bucket. */
+    @Test
+    void insertTouchesItsOwnBucketsRefreshTimestamp() {
+        RoutingTable table = new RoutingTable(OUR_ID);
+        table.insert(nodeWithLastByte(16, 6881));
+
+        // Bucket 0 is still untouched (Instant.EPOCH), so it's more overdue than bucket 4,
+        // which insert() above just refreshed.
+        assertEquals(0, table.mostOverdueBucket());
+    }
+
+    @Test
+    void allNodesReturnsEveryInsertedContactAcrossEveryBucket() {
+        RoutingTable table = new RoutingTable(OUR_ID);
+        NodeInfo near = nodeWithLastByte(0x01, 1);
+        NodeInfo mid = nodeWithLastByte(0x10, 2);
+        NodeInfo far = nodeWithLastByte(0x40, 3);
+        table.insert(near);
+        table.insert(mid);
+        table.insert(far);
+
+        assertEquals(List.of(near, mid, far).size(), table.allNodes().size());
+        assertTrue(table.allNodes().containsAll(List.of(near, mid, far)));
+    }
 }

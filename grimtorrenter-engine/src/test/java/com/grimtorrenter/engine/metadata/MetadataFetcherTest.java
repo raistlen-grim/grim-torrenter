@@ -6,6 +6,7 @@ import com.grimtorrenter.engine.bencode.BString;
 import com.grimtorrenter.engine.bencode.BValue;
 import com.grimtorrenter.engine.bencode.BencodeEncoder;
 import com.grimtorrenter.engine.metainfo.InfoHash;
+import com.grimtorrenter.engine.mse.EncryptionMode;
 import com.grimtorrenter.engine.peerwire.Extended;
 import com.grimtorrenter.engine.peerwire.Handshake;
 import com.grimtorrenter.engine.peerwire.PeerWireCodec;
@@ -31,7 +32,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  * Uses a raw ServerSocket as a fake remote peer (same approach as PeerConnectionTest),
  * driving the full handshake + BEP10 extended handshake + ut_metadata exchange manually
  * so this tests MetadataFetcher's orchestration on top of already-tested layers
- * (PeerConnection, UtMetadataCodec).
+ * (PeerConnection, UtMetadataCodec). Every fetch() call passes EncryptionMode.DISABLED - the
+ * fake peer here only ever speaks a plain handshake, and MSE negotiation/fallback behavior is
+ * PeerConnection's own concern, already covered by its own tests (design_docs/0052).
  */
 class MetadataFetcherTest {
 
@@ -170,7 +173,7 @@ class MetadataFetcherTest {
         Thread fakePeer = startFakePeer(infoHash, true, infoDictBytes.length, infoDictBytes, null);
         fakePeer.start();
 
-        byte[] fetched = MetadataFetcher.fetch(address, infoHash, ourPeerId());
+        byte[] fetched = MetadataFetcher.fetch(address, infoHash, ourPeerId(), EncryptionMode.DISABLED);
 
         assertArrayEquals(infoDictBytes, fetched);
         fakePeer.join(2000);
@@ -185,7 +188,7 @@ class MetadataFetcherTest {
         Thread fakePeer = startFakePeer(infoHash, true, infoDictBytes.length, infoDictBytes, null);
         fakePeer.start();
 
-        byte[] fetched = MetadataFetcher.fetch(address, infoHash, ourPeerId());
+        byte[] fetched = MetadataFetcher.fetch(address, infoHash, ourPeerId(), EncryptionMode.DISABLED);
 
         assertArrayEquals(infoDictBytes, fetched);
         fakePeer.join(2000);
@@ -205,7 +208,7 @@ class MetadataFetcherTest {
         Thread fakePeer = startFakePeer(infoHash, false, infoDictBytes.length, null, null);
         fakePeer.start();
 
-        assertThrows(MetadataFetchException.class, () -> MetadataFetcher.fetch(address, infoHash, ourPeerId()));
+        assertThrows(MetadataFetchException.class, () -> MetadataFetcher.fetch(address, infoHash, ourPeerId(), EncryptionMode.DISABLED));
         fakePeer.join(2000);
     }
 
@@ -217,7 +220,7 @@ class MetadataFetcherTest {
         Thread fakePeer = startFakePeer(infoHash, true, null, null, null);
         fakePeer.start();
 
-        assertThrows(MetadataFetchException.class, () -> MetadataFetcher.fetch(address, infoHash, ourPeerId()));
+        assertThrows(MetadataFetchException.class, () -> MetadataFetcher.fetch(address, infoHash, ourPeerId(), EncryptionMode.DISABLED));
         fakePeer.join(2000);
     }
 
@@ -229,7 +232,7 @@ class MetadataFetcherTest {
         Thread fakePeer = startFakePeer(infoHash, true, infoDictBytes.length, infoDictBytes, 0);
         fakePeer.start();
 
-        assertThrows(MetadataFetchException.class, () -> MetadataFetcher.fetch(address, infoHash, ourPeerId()));
+        assertThrows(MetadataFetchException.class, () -> MetadataFetcher.fetch(address, infoHash, ourPeerId(), EncryptionMode.DISABLED));
         fakePeer.join(2000);
     }
 
@@ -243,7 +246,7 @@ class MetadataFetcherTest {
         fakePeer.start();
 
         assertThrows(MetadataFetchException.class,
-                () -> MetadataFetcher.fetch(address, requestedInfoHash, ourPeerId()));
+                () -> MetadataFetcher.fetch(address, requestedInfoHash, ourPeerId(), EncryptionMode.DISABLED));
         fakePeer.join(2000);
     }
 }

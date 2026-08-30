@@ -49,6 +49,13 @@ public class TorrentEngineProducer {
     @ConfigProperty(name = "grimtorrenter.watch-directory", defaultValue = "watch")
     String watchDirectory;
 
+    /** Same property JsonSettingsStore/JsonLinesEventStore already read for settings.json/
+     * events/ - engine-wide bookkeeping (currently just the two DHT marker files) belongs in
+     * the same place, not the download directory a user actually browses. See
+     * design_docs/0028's own 2026-08-30 addendum. */
+    @ConfigProperty(name = "grimtorrenter.config-directory", defaultValue = "config")
+    String configDirectory;
+
     @Inject
     TorrentEventListener eventListener;
 
@@ -82,6 +89,7 @@ public class TorrentEngineProducer {
                 : Runtime.getRuntime().availableProcessors();
         return new TorrentEngine(Path.of(downloadDirectory), listenPort, eventListener,
                 settings.dhtEnabled(), settings.acceptIncomingConnections(), settingsStore,
-                new FileHandlePool(maxOpenFiles), verificationPermits, eventStore, Path.of(watchDirectory));
+                new FileHandlePool(maxOpenFiles), verificationPermits, eventStore, Path.of(watchDirectory),
+                Path.of(configDirectory));
     }
 }

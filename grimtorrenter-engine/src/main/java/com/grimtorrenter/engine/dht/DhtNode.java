@@ -26,6 +26,9 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Function;
@@ -68,6 +71,12 @@ public final class DhtNode implements AutoCloseable {
     private static final long ERROR_BAD_TOKEN = 203;
     private static final Duration PEER_EXPIRY = Duration.ofMinutes(30);
     private static final Duration SECRET_ROTATION_INTERVAL = Duration.ofMinutes(5);
+    /** Same 5s convention Bootstrap/PeerLookup/TorrentSession's own DHT query timeouts
+     * already use - how long to wait for a full bucket's stale contact to answer a
+     * replacement ping before evicting it. See design_docs/0028's own 2026-08-30 addendum. */
+    private static final Duration REPLACEMENT_PING_TIMEOUT = Duration.ofSeconds(5);
+    /** Same 5s convention, for the single find_node lookup a periodic bucket refresh issues. */
+    private static final Duration REFRESH_QUERY_TIMEOUT = Duration.ofSeconds(5);
 
     private final NodeId ourId;
     private final DatagramSocket socket;
@@ -116,6 +125,24 @@ public final class DhtNode implements AutoCloseable {
         return routingTable;
     }
 
+    /** Every known contact's address, for persisting the routing table across restarts (see
+     * design_docs/0028's own 2026-08-30 addendum) - no id, no other metadata. The id isn't
+     * needed to re-ping a persisted contact on the next start, and dropping it sidesteps any
+     * concern about trusting a stale/wrong id: the real, current one always comes back fresh
+     * in that ping's own response, the same as any other newly-heard-from contact. */
+    public List<InetSocketAddress> knownContacts() {
+        return routingTable.allNodes().stream()
+                .map(node -> new InetSocketAddress(node.address(), node.port()))
+                .toList();
+    }
+
+    /** Below this many known nodes, refreshRoutingTable() re-runs full bootstrap instead of
+     * a narrow single-bucket refresh - see that method's own Javadoc for why. Reuses
+     * RoutingTable.BUCKET_SIZE as a natural "at least one healthy bucket's worth" cutoff,
+     * not because it means anything more specific than "clearly still too sparse to be
+     * worth a targeted refresh." */
+    private static final int MIN_HEALTHY_NODE_COUNT = RoutingTable.BUCKET_SIZE;
+
     /** Populates our routing table from cold start (BEP 5's well-known bootstrap nodes,
      * then an iterative find_node lookup for our own id - see Bootstrap/NodeLookup). Safe
      * to call with no network access: a bootstrap node that doesn't respond is skipped,
@@ -123,6 +150,88 @@ public final class DhtNode implements AutoCloseable {
      * throwing. */
     public void bootstrap() {
         Bootstrap.run(this);
+    }
+
+    /** Same as {@link #bootstrap()}, but pings additionalContacts first (a warm start from a
+     * previously-persisted routing table - see design_docs/0028's own 2026-08-30 addendum) -
+     * a head start alongside the hardcoded well-known hosts, not a replacement for them.
+     * Pinged <b>concurrently</b> (one virtual thread per contact), unlike
+     * {@code Bootstrap.seedFrom()}'s own sequential loop over just 5 hardcoded hosts - a
+     * persisted list can be far larger, and pinging it sequentially would scale wall-clock
+     * time with its size instead of staying roughly one timeout's worth regardless. Same
+     * round-of-concurrent-queries shape {@code NodeLookup}/{@code TorrentEngine.raceOneRound()}
+     * already establish elsewhere in this codebase. Each contact is verified the same way any
+     * bootstrap host is - only trusted (reaches the routing table via {@link #seen}) if it
+     * actually answers; an unreachable one costs one timeout and is silently skipped, same
+     * tolerance {@code Bootstrap.seedFrom()} already has. */
+    public void bootstrap(List<InetSocketAddress> additionalContacts) {
+        if (!additionalContacts.isEmpty()) {
+            try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+                List<Future<?>> pings = additionalContacts.stream()
+                        .<Future<?>>map(address -> executor.submit(() -> pingQuietly(address)))
+                        .toList();
+                for (Future<?> ping : pings) {
+                    try {
+                        ping.get();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    } catch (ExecutionException e) {
+                        // pingQuietly() never throws - unreachable in practice.
+                    }
+                }
+            }
+        }
+        bootstrap();
+    }
+
+    private void pingQuietly(InetSocketAddress address) {
+        try {
+            ping(address, REPLACEMENT_PING_TIMEOUT);
+        } catch (DhtException e) {
+            LOG.log(System.Logger.Level.DEBUG, "Persisted DHT contact " + address + " did not respond", e);
+        }
+    }
+
+    /** Runs one periodic routing-table-maintenance tick.
+     *
+     * <p><b>Below {@link #MIN_HEALTHY_NODE_COUNT} known nodes, re-runs full {@link #bootstrap()}</b>
+     * instead of a narrow single-bucket refresh - a real, observed failure mode (2026-08-30):
+     * bootstrap only successfully contacts a fraction of BEP 5's well-known hosts on some
+     * networks/runs (flaky reachability to those specific hosts, seen independently of this
+     * feature), and if that leaves the table with only a handful of contacts, the self-lookup
+     * that follows has almost nothing to expand from and can terminate having found barely
+     * more than what bootstrap itself supplied. The bucket-refresh path below is powerless to
+     * recover from that on its own: NodeLookup always seeds itself from whatever's already in
+     * the routing table, so repeatedly refreshing individual buckets from a near-empty table
+     * just re-queries the same one or two known contacts for different targets, not a genuine
+     * second chance at reaching the wider network. Re-running bootstrap gives exactly that -
+     * another real attempt at contacting the well-known hosts, which may simply succeed this
+     * time (transient DNS/network hiccups, not a permanent block, are the common case).
+     *
+     * <p>Otherwise, picks the bucket that's gone longest without activity
+     * ({@link RoutingTable#mostOverdueBucket()} - a never-touched bucket always comes first)
+     * and runs a find_node lookup for a random id inside that bucket's own range
+     * ({@link RoutingTable#randomIdInBucket}). Bootstrap's own self-lookup only ever explores
+     * the neighborhood near our id; calling this on a schedule (see TorrentEngine's
+     * maintenanceScheduler) is what actually reaches every other bucket over time, the same
+     * way a real DHT client's periodic bucket refresh does. See design_docs/0028's own
+     * 2026-08-30 addendum.
+     *
+     * <p>Safe to call with an empty or barely-populated routing table (same as bootstrap()) -
+     * the lookup just starts from whatever's known and may find nothing, same as any other
+     * empty-table lookup. Blocking - intended to be called from its own thread (a scheduled
+     * tick spawns a virtual thread for this, never runs it inline), same reasoning as
+     * bootstrap() itself. */
+    public void refreshRoutingTable() {
+        if (routingTable.size() < MIN_HEALTHY_NODE_COUNT) {
+            bootstrap();
+            return;
+        }
+        int bucketIndex = routingTable.mostOverdueBucket();
+        NodeId target = routingTable.randomIdInBucket(bucketIndex);
+        NodeLookup.run(this, target, REFRESH_QUERY_TIMEOUT);
+        routingTable.markRefreshed(bucketIndex);
     }
 
     /**
@@ -426,12 +535,33 @@ public final class DhtNode implements AutoCloseable {
         }
     }
 
-    /** Records that we've directly heard from id at from. The full BEP 5 "ping the
-     * bucket's oldest contact before evicting it" replacement policy (RoutingTable#insert's
-     * returned Optional) isn't acted on yet - a full bucket simply doesn't grow past k for
-     * now; see design_docs/0028. */
+    /** Records that we've directly heard from id at from. When its bucket is already full,
+     * routingTable.insert() hands back that bucket's least-recently-seen contact instead of
+     * adding candidate - this is BEP 5's own "ping the oldest contact before evicting it"
+     * replacement policy (design_docs/0028's own 2026-08-30 addendum turned it on; the
+     * pieces - ping(), RoutingTable#evict - had existed since the routing table itself was
+     * first built, just never wired together). The ping runs on its own virtual thread,
+     * never inline here - seen() is only ever called from the single receive-loop thread
+     * (via handleQuery/handleResponse), which must keep processing other packets rather
+     * than block for up to REPLACEMENT_PING_TIMEOUT on every full-bucket insert. */
     private void seen(NodeId id, InetSocketAddress from) {
-        routingTable.insert(new NodeInfo(id, from.getAddress(), from.getPort()));
+        NodeInfo candidate = new NodeInfo(id, from.getAddress(), from.getPort());
+        routingTable.insert(candidate).ifPresent(stale -> replaceIfUnreachable(stale, candidate));
+    }
+
+    private void replaceIfUnreachable(NodeInfo stale, NodeInfo candidate) {
+        Thread.ofVirtual().start(() -> {
+            try {
+                ping(new InetSocketAddress(stale.address(), stale.port()), REPLACEMENT_PING_TIMEOUT);
+                // Still alive - refresh it (moves it to most-recently-seen); candidate is
+                // simply not added this round, matching BEP 5.
+                routingTable.insert(stale);
+            } catch (DhtException e) {
+                // Unreachable - make room for candidate instead.
+                routingTable.evict(stale.id());
+                routingTable.insert(candidate);
+            }
+        });
     }
 
     @Override

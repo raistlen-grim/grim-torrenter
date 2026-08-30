@@ -16,7 +16,9 @@ import java.net.InetSocketAddress;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
+import java.util.function.BooleanSupplier;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -236,5 +238,174 @@ class DhtNodeTest {
 
         assertThrows(DhtException.class,
                 () -> nodeA.announcePeer(addressOf(nodeB), infoHash, 12345, false, bogusToken, TIMEOUT));
+    }
+
+    /** Polls up to 7s (comfortably past DhtNode's own 5s REPLACEMENT_PING_TIMEOUT) - the
+     * ping-then-evict-or-refresh replacement policy runs on its own virtual thread, never
+     * inline within seen(), so its effect on the routing table isn't visible immediately
+     * after the query that triggered it returns. */
+    private static void awaitTrue(BooleanSupplier condition) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 7000;
+        while (!condition.getAsBoolean() && System.currentTimeMillis() < deadline) {
+            Thread.sleep(50);
+        }
+    }
+
+    /** design_docs/0028's own 2026-08-30 addendum: a full bucket's least-recently-seen
+     * contact gets pinged before eviction, not discarded outright. Fills one of nodeA's
+     * buckets with 8 contacts nobody's listening on (loopback port 1, same "nothing bound
+     * here" convention queryToUnreachableAddressTimesOut above uses), then has a real live
+     * node (nodeB, same bucket - see RoutingTableTest's own comment on last-byte values
+     * 16-23 sharing a bucket) ping nodeA, triggering seen() with that bucket already full.
+     * The stale contact's ping should time out, so it gets evicted and nodeB takes its
+     * place. */
+    @Test
+    void fullBucketEvictsAnUnreachableStaleContactForARealCandidate() throws InterruptedException {
+        nodeA = new DhtNode(NODE_A_ID, 0);
+        for (int value = 16; value < 24; value++) {
+            nodeA.routingTable().insert(new NodeInfo(idWithLastByte(value), InetAddress.getLoopbackAddress(), 1));
+        }
+
+        NodeId candidateId = idWithLastByte(24);
+        nodeB = new DhtNode(candidateId, 0);
+        nodeB.ping(addressOf(nodeA), TIMEOUT);
+
+        awaitTrue(() -> nodeA.routingTable().closestNodes(candidateId, RoutingTable.BUCKET_SIZE).stream()
+                .anyMatch(node -> node.id().equals(candidateId)));
+
+        List<NodeInfo> bucketContents = nodeA.routingTable().closestNodes(candidateId, RoutingTable.BUCKET_SIZE);
+        assertEquals(RoutingTable.BUCKET_SIZE, bucketContents.size());
+        assertTrue(bucketContents.stream().anyMatch(node -> node.id().equals(candidateId)));
+        assertTrue(bucketContents.stream().noneMatch(node -> node.id().equals(idWithLastByte(16))));
+    }
+
+    /** Symmetric case: the stale contact answers the replacement ping, so it's refreshed
+     * (kept) and the new candidate is simply not added this round - matching BEP 5. */
+    @Test
+    void fullBucketKeepsAStaleContactThatAnswersTheReplacementPing() throws InterruptedException {
+        nodeA = new DhtNode(NODE_A_ID, 0);
+        DhtNode staleButLive = new DhtNode(idWithLastByte(16), 0);
+        try {
+            nodeA.routingTable().insert(
+                    new NodeInfo(staleButLive.ourId(), InetAddress.getLoopbackAddress(), staleButLive.port()));
+            for (int value = 17; value < 24; value++) {
+                nodeA.routingTable().insert(
+                        new NodeInfo(idWithLastByte(value), InetAddress.getLoopbackAddress(), 1));
+            }
+
+            NodeId candidateId = idWithLastByte(24);
+            nodeB = new DhtNode(candidateId, 0);
+            nodeB.ping(addressOf(nodeA), TIMEOUT);
+
+            // The stale contact is genuinely reachable, so its replacement ping resolves
+            // quickly - no need to wait anywhere near REPLACEMENT_PING_TIMEOUT.
+            Thread.sleep(500);
+
+            List<NodeInfo> bucketContents =
+                    nodeA.routingTable().closestNodes(idWithLastByte(16), RoutingTable.BUCKET_SIZE);
+            assertTrue(bucketContents.stream().anyMatch(node -> node.id().equals(idWithLastByte(16))));
+            assertTrue(bucketContents.stream().noneMatch(node -> node.id().equals(candidateId)));
+        } finally {
+            staleButLive.close();
+        }
+    }
+
+    /** design_docs/0028's own 2026-08-30 addendum: refreshRoutingTable() reaches a node
+     * that's only known indirectly, through a bridge - the same multi-hop shape a real
+     * bucket refresh needs to actually fill in sparse parts of the id space. On a fresh
+     * table, mostOverdueBucket() is deterministically bucket 0 (see RoutingTableTest), and
+     * randomIdInBucket(0) is deterministic too (bucket 0 differs from ourId only in the
+     * least significant bit, with no lower bits left to randomize) - so with
+     * NODE_A_ID = idWithLastByte(1), the refresh target is always exactly idWithLastByte(0),
+     * no randomness to account for. bridgeNode knows target directly (inserted, bypassing
+     * the network - same technique findNodeReturnsTheRespondersClosestKnownContacts above
+     * uses); nodeA only knows bridgeNode. A single find_node hop through bridgeNode should
+     * surface target as a candidate, nodeA queries it directly, and its response's own
+     * sender reaches nodeA's routing table via seen() - the standard "sender only" hygiene
+     * rule (design_docs/0028), same as every other DHT test in this package relies on.
+     *
+     * <p>Padded with 7 more directly-inserted contacts in an unrelated bucket (last-byte
+     * values 64-70, bitLength 7 -> bucket 6, distinct from target's bucket 0 and bridgeNode's
+     * bucket 2) purely to clear MIN_HEALTHY_NODE_COUNT (8) - otherwise refreshRoutingTable()
+     * would take the sparse-table bootstrap-retry branch below instead of the per-bucket
+     * refresh path this test means to exercise. They're never pinged (their own bucket is
+     * nowhere near full), so they don't affect the assertions below. */
+    @Test
+    void refreshRoutingTableDiscoversARealNodeThroughAKnownBridge() {
+        nodeA = new DhtNode(NODE_A_ID, 0);
+        NodeId target = idWithLastByte(0);
+
+        DhtNode targetNode = new DhtNode(target, 0);
+        DhtNode bridgeNode = new DhtNode(idWithLastByte(5), 0);
+        try {
+            bridgeNode.routingTable().insert(
+                    new NodeInfo(targetNode.ourId(), InetAddress.getLoopbackAddress(), targetNode.port()));
+            nodeA.routingTable().insert(
+                    new NodeInfo(bridgeNode.ourId(), InetAddress.getLoopbackAddress(), bridgeNode.port()));
+            for (int value = 64; value < 71; value++) {
+                nodeA.routingTable().insert(new NodeInfo(idWithLastByte(value), InetAddress.getLoopbackAddress(), 1));
+            }
+
+            nodeA.refreshRoutingTable();
+
+            List<NodeInfo> closest = nodeA.routingTable().closestNodes(target, 1);
+            assertEquals(1, closest.size());
+            assertEquals(target, closest.get(0).id());
+        } finally {
+            targetNode.close();
+            bridgeNode.close();
+        }
+    }
+
+    /** design_docs/0028's own 2026-08-30 addendum: a real, observed failure mode - if
+     * bootstrap only ever partially succeeds (a network's flaky reachability to the
+     * well-known hosts, not a bug), the table can be left with too few contacts for a
+     * targeted single-bucket refresh to ever meaningfully recover from (NodeLookup always
+     * seeds itself from what's already known). Below MIN_HEALTHY_NODE_COUNT,
+     * refreshRoutingTable() re-runs full bootstrap instead - this only smoke-tests that the
+     * sparse-table branch is reachable and doesn't throw, same "tolerated, real internet
+     * access" acceptance TorrentEngineMagnetTest's own DHT-enabled tests already document,
+     * since real bootstrap success/failure here is inherently network-dependent. */
+    @Test
+    void refreshRoutingTableReRunsBootstrapWhenTheTableIsStillSparse() {
+        nodeA = new DhtNode(NODE_A_ID, 0);
+        assertTrue(nodeA.routingTable().size() < RoutingTable.BUCKET_SIZE);
+
+        assertDoesNotThrow(nodeA::refreshRoutingTable);
+    }
+
+    /** design_docs/0028's own 2026-08-30 addendum: the warm-start overload used to seed from
+     * a previously-persisted routing table - a real, reachable contact is pinged and, once it
+     * answers, reaches nodeA's routing table via seen() exactly like any other directly-heard-
+     * from node (no special-casing for "this came from a persisted list" - the verification
+     * ping is what actually establishes trust). */
+    @Test
+    void bootstrapWithAdditionalContactsPingsAndAddsAReachableOne() {
+        nodeA = new DhtNode(NODE_A_ID, 0);
+        nodeB = new DhtNode(NODE_B_ID, 0);
+
+        nodeA.bootstrap(List.of(addressOf(nodeB)));
+
+        assertTrue(nodeA.routingTable().closestNodes(NODE_B_ID, 1)
+                .contains(new NodeInfo(NODE_B_ID, InetAddress.getLoopbackAddress(), nodeB.port())));
+    }
+
+    /** Symmetric case: an unreachable persisted contact (same "nothing bound here" convention
+     * used elsewhere in this file) is tolerated - no exception, and it never reaches the
+     * routing table itself, same as any bootstrap host that doesn't answer. Doesn't assert the
+     * whole table stays empty - this overload always falls through to the real bootstrap()
+     * afterward (same "tolerated real internet access" acceptance already documented
+     * elsewhere), which could legitimately add real, unrelated contacts of its own; a loopback
+     * address on port 1 could never coincide with one of those, so checking for that specific
+     * (address, port) is still a precise, non-flaky check. */
+    @Test
+    void bootstrapWithAdditionalContactsToleratesAnUnreachableOne() {
+        nodeA = new DhtNode(NODE_A_ID, 0);
+        InetSocketAddress unreachable = new InetSocketAddress(InetAddress.getLoopbackAddress(), 1);
+
+        assertDoesNotThrow(() -> nodeA.bootstrap(List.of(unreachable)));
+
+        assertTrue(nodeA.routingTable().allNodes().stream()
+                .noneMatch(node -> node.address().equals(InetAddress.getLoopbackAddress()) && node.port() == 1));
     }
 }

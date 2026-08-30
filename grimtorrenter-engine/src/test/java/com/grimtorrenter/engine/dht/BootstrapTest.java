@@ -44,7 +44,7 @@ class BootstrapTest {
 
         joiningNode = new DhtNode(idWithLastByte(99), 0);
 
-        Bootstrap.run(joiningNode, List.of("localhost"), bootstrapNode.port(), TIMEOUT);
+        Bootstrap.run(joiningNode, List.of(new BootstrapHost("localhost", bootstrapNode.port())), TIMEOUT);
 
         assertTrue(joiningNode.routingTable().size() >= 1);
         assertTrue(joiningNode.routingTable().closestNodes(idWithLastByte(1), 1)
@@ -56,8 +56,21 @@ class BootstrapTest {
         joiningNode = new DhtNode(idWithLastByte(1), 0);
 
         // Nothing bound on this port on loopback.
-        Bootstrap.run(joiningNode, List.of("localhost"), 1, SHORT_TIMEOUT);
+        Bootstrap.run(joiningNode, List.of(new BootstrapHost("localhost", 1)), SHORT_TIMEOUT);
 
         assertEquals(0, joiningNode.routingTable().size());
+    }
+
+    /** design_docs/0028's own 2026-08-30 addendum (the follow-up fix section) - five hosts,
+     * not the original three, and dht.libtorrent.org genuinely uses a different port (25401)
+     * than the other four's shared 6881, confirmed live rather than assumed. */
+    @Test
+    void defaultHostsIncludesFiveRedundantBootstrapHostsWithTheirOwnPorts() {
+        assertEquals(5, Bootstrap.DEFAULT_HOSTS.size());
+        assertTrue(Bootstrap.DEFAULT_HOSTS.contains(new BootstrapHost("router.bittorrent.com", 6881)));
+        assertTrue(Bootstrap.DEFAULT_HOSTS.contains(new BootstrapHost("dht.transmissionbt.com", 6881)));
+        assertTrue(Bootstrap.DEFAULT_HOSTS.contains(new BootstrapHost("router.utorrent.com", 6881)));
+        assertTrue(Bootstrap.DEFAULT_HOSTS.contains(new BootstrapHost("dht.libtorrent.org", 25401)));
+        assertTrue(Bootstrap.DEFAULT_HOSTS.contains(new BootstrapHost("dht.aelitis.com", 6881)));
     }
 }

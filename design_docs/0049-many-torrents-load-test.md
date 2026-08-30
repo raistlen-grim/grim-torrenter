@@ -67,6 +67,25 @@ under audit - the verification burst - without pulling in unrelated machinery (f
 peers) that [[0047-bounded-file-handle-pool]]/[[0048-piece-verification-throttling]]'s own
 unit tests don't need either.
 
+## Addendum: a second `PeakTrackingSemaphore` flake (2026-08-30)
+
+Found as a spurious failure while unrelated feature work (a magnet-metadata-fetch change,
+`[[0028-magnet-links-and-dht]]`'s own addendum) happened to run the full test suite:
+`PeakTrackingSemaphore.acquireUninterruptibly()` called
+`current.incrementAndGet()` *inside* the lambda passed to `peak.updateAndGet(...)`. That
+lambda is a compare-and-swap retry loop - `AtomicInteger.updateAndGet()`'s own Javadoc
+requires the function be side-effect-free, since it can be re-invoked more than once per call
+under real contention. A side-effecting increment inside it isn't side-effect-free: under the
+genuine 40-threads-racing-for-4-permits contention this test deliberately creates, a single
+logical `acquireUninterruptibly()` call could increment `current` more than once if the CAS
+retried, inflating the observed peak above what the real, correctly-bounding `Semaphore`
+underneath ever actually permitted. The real concurrency bound was never actually violated -
+only miscounted. **Fixed** by incrementing once, outside the lambda, into a local captured by
+the now-pure comparison lambda. Different bug, same root shape as the first flake this test
+already had (see this doc's own history) - a timing-sensitive assertion in test
+instrumentation, not production code, surfacing only under real scheduling variance rather
+than every run.
+
 ## Alternatives considered
 
 - **Drive this through a real `TorrentEngine.restore()`** instead of calling

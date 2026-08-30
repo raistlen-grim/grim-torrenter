@@ -38,11 +38,6 @@ legend {
   max-width: 48ch;
 }
 
-/* p-select would otherwise stretch to fill the row, squeezing .setting-label - the actual
- * width rule lives globally, in styles.scss's .encryption-mode-select, since [styleClass]
- * lands outside this component's emulated view encapsulation (same reason .rate-input-field
- * lives there too - see that class's own comment). */
-
 .setting-label label {
   font-weight: 600;
 }

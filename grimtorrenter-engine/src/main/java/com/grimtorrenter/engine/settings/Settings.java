@@ -95,6 +95,47 @@ import com.grimtorrenter.engine.mse.EncryptionMode;
  * round-trip as every other setting" was the explicit point of storing it server-side instead
  * of in browser localStorage. Defaults to SYSTEM (follow the OS/browser preference) - see
  * ThemePreference's own Javadoc.
+ *
+ * <p>magnetFetchTimeBudgetSeconds/magnetFetchCandidatesPerRound/magnetFetchConcurrencyLimit
+ * tune how hard a magnet add tries to find a peer with the metadata (design_docs/0028's
+ * addendum) - genuinely live, read fresh by TorrentEngine at the start of each magnet-add
+ * attempt (so, like encryptionMode, a change here takes effect on the *next* attempt, not
+ * retroactively mid-flight). Defaults (90s / 50 / 64) are meant to work out of the box;
+ * exposed as user-editable mainly so an advanced user - or someone actively diagnosing a
+ * connectivity issue - can tune them without a rebuild/restart. Same **no** "0/negative means
+ * unlimited" treatment as eventLogRetentionDays/watchFolderRetentionDays and for the same
+ * reason: silently normalized back to each real default by the compact constructor below, not
+ * rejected at the REST boundary, and not a lever for "never give up" or "no concurrency bound
+ * at all."
+ *
+ * <p>trackerlessDhtReannounceIntervalSeconds (design_docs/0036's own addendum) governs how
+ * often a genuinely trackerless torrent re-queries DHT for fresh peers while running -
+ * mirrors what a real tracker's own announce interval already does for a tracker-bearing
+ * torrent, just user-tunable rather than tracker-dictated, since there's no tracker here to
+ * dictate it. Read once per `start()` (same "fixed for this torrent's run, re-read on the
+ * next start()" precedent a real tracker's own interval already follows - a live-scheduled
+ * task's period can't be changed mid-flight without cancelling and rebuilding it). Default
+ * 300s (5 minutes) - deliberately not shortened to "every few seconds": DHT re-querying the
+ * same info hash that often is poor DHT citizenship (real clients typically use a
+ * multi-minute cadence, similar to tracker announce intervals) and risks well-behaved remote
+ * nodes deprioritizing overly-frequent queries; the actual bottleneck this doesn't fix is
+ * routing-table richness, a separate concern. Same **no** "0/negative means unlimited"
+ * treatment as the fields above, for the same reason.
+ *
+ * <p>dhtRefreshIntervalSeconds (design_docs/0028's own 2026-08-30 addendum) is the "routing-
+ * table richness" fix trackerlessDhtReannounceIntervalSeconds's own Javadoc above defers to -
+ * how often a background tick re-queries whichever DHT routing-table bucket has gone longest
+ * without activity, reaching parts of the 160-bit id space a one-time startup bootstrap lookup
+ * never touches (that lookup only explores the neighborhood near our own node id). Unlike
+ * trackerlessDhtReannounceIntervalSeconds, this drives an engine-wide scheduled task
+ * (TorrentEngine's maintenanceScheduler) rather than a per-torrent one, so a live change here
+ * takes effect on the engine's next construction/restart, not retroactively - the same
+ * "a ScheduledExecutorService's period can't change mid-flight" limitation, just at engine
+ * scope instead of per-torrent scope. Default 300s (5 minutes) - each tick only issues one
+ * find_node lookup against a single bucket, much lighter than a full get_peers reannounce, so
+ * a shorter-than-libtorrent-typical (~15 minute) default is reasonable DHT etiquette while
+ * still visibly filling in the table faster after a fresh start. Same **no** "0/negative means
+ * unlimited" treatment as the fields above, for the same reason.
  */
 public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
                         long uploadRateLimitBytesPerSec, long downloadRateLimitBytesPerSec,
@@ -105,7 +146,11 @@ public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
                         boolean seedTimeLimitEnabled, long seedTimeLimitMinutes,
                         int eventLogRetentionDays,
                         boolean watchFolderEnabled, int watchFolderRetentionDays,
-                        ThemePreference theme) {
+                        ThemePreference theme,
+                        int magnetFetchTimeBudgetSeconds, int magnetFetchCandidatesPerRound,
+                        int magnetFetchConcurrencyLimit,
+                        int trackerlessDhtReannounceIntervalSeconds,
+                        int dhtRefreshIntervalSeconds) {
 
     private static final int DEFAULT_EVENT_LOG_RETENTION_DAYS = 30;
     private static final int DEFAULT_WATCH_FOLDER_RETENTION_DAYS = 7;
@@ -115,6 +160,26 @@ public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
      * disabled, same spirit as DEFAULT_SCHEDULE_START/END above. */
     private static final double DEFAULT_SEED_RATIO_LIMIT = 2.0;
     private static final long DEFAULT_SEED_TIME_LIMIT_MINUTES = 24 * 60;
+    /** design_docs/0028's addendum. Overall wall-clock budget for one magnet-add's whole
+     * metadata-fetch phase (tracker or DHT path) - a bounded retry loop, not a single batch,
+     * keeps re-announcing/re-querying and racing fresh candidates until this elapses or one
+     * succeeds. */
+    private static final int DEFAULT_MAGNET_FETCH_TIME_BUDGET_SECONDS = 90;
+    /** How many peer candidates one round of the retry loop above races concurrently - also
+     * drives the tracker announce's own num_want, so raising this actually asks trackers for
+     * more too, not just using more of a fixed-size response. */
+    private static final int DEFAULT_MAGNET_FETCH_CANDIDATES_PER_ROUND = 50;
+    /** Engine-wide cap (LiveResizableSemaphore) on simultaneous in-flight metadata-fetch
+     * connection attempts across every magnet-add happening at once - bounds total socket
+     * fan-out regardless of how many magnets or rounds are concurrently in progress. */
+    private static final int DEFAULT_MAGNET_FETCH_CONCURRENCY_LIMIT = 64;
+    /** design_docs/0036's own addendum - see this record's own class-level Javadoc for the
+     * DHT-etiquette reasoning behind 300s rather than something much shorter. */
+    private static final int DEFAULT_TRACKERLESS_DHT_REANNOUNCE_INTERVAL_SECONDS = 300;
+    /** design_docs/0028's own 2026-08-30 addendum - see this record's own class-level Javadoc
+     * for why 300s is reasonable here despite being much shorter than libtorrent's own ~15
+     * minute bucket-refresh cadence. */
+    private static final int DEFAULT_DHT_REFRESH_INTERVAL_SECONDS = 300;
 
     /** Backfills encryptionMode to PREFERRED when null - the common case being a settings.json
      * persisted before this field existed, which Jackson otherwise deserializes with this
@@ -136,11 +201,110 @@ public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
         if (theme == null) {
             theme = ThemePreference.SYSTEM;
         }
+        // Never "unlimited" for the same reason eventLogRetentionDays/watchFolderRetentionDays
+        // aren't - see design_docs/0028's addendum. A user can still set any of these
+        // generously high (that's the point of them being editable), just not to a degenerate
+        // value that would mean "never give up" or "no concurrency bound at all."
+        if (magnetFetchTimeBudgetSeconds <= 0) {
+            magnetFetchTimeBudgetSeconds = DEFAULT_MAGNET_FETCH_TIME_BUDGET_SECONDS;
+        }
+        if (magnetFetchCandidatesPerRound <= 0) {
+            magnetFetchCandidatesPerRound = DEFAULT_MAGNET_FETCH_CANDIDATES_PER_ROUND;
+        }
+        if (magnetFetchConcurrencyLimit <= 0) {
+            magnetFetchConcurrencyLimit = DEFAULT_MAGNET_FETCH_CONCURRENCY_LIMIT;
+        }
+        if (trackerlessDhtReannounceIntervalSeconds <= 0) {
+            trackerlessDhtReannounceIntervalSeconds = DEFAULT_TRACKERLESS_DHT_REANNOUNCE_INTERVAL_SECONDS;
+        }
+        if (dhtRefreshIntervalSeconds <= 0) {
+            dhtRefreshIntervalSeconds = DEFAULT_DHT_REFRESH_INTERVAL_SECONDS;
+        }
+    }
+
+    /** Same as the canonical constructor above but without dhtRefreshIntervalSeconds - for
+     * every caller that predates this addition (every secondary constructor below, plus any
+     * direct twenty-three-arg caller), defaulting it (the compact constructor above normalizes
+     * 0 to the real default, so passing 0 here is equivalent to passing the default
+     * explicitly). Same "add a sibling overload, touch zero existing call sites" pattern used
+     * for every prior field addition to this record. See design_docs/0028's own 2026-08-30
+     * addendum. */
+    public Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
+                     long uploadRateLimitBytesPerSec, long downloadRateLimitBytesPerSec,
+                     boolean rateLimitScheduleEnabled, String rateLimitScheduleStart, String rateLimitScheduleEnd,
+                     long scheduledUploadRateLimitBytesPerSec, long scheduledDownloadRateLimitBytesPerSec,
+                     EncryptionMode encryptionMode, long rateLimitBurstSeconds,
+                     boolean seedRatioLimitEnabled, double seedRatioLimit,
+                     boolean seedTimeLimitEnabled, long seedTimeLimitMinutes,
+                     int eventLogRetentionDays,
+                     boolean watchFolderEnabled, int watchFolderRetentionDays,
+                     ThemePreference theme,
+                     int magnetFetchTimeBudgetSeconds, int magnetFetchCandidatesPerRound,
+                     int magnetFetchConcurrencyLimit,
+                     int trackerlessDhtReannounceIntervalSeconds) {
+        this(dhtEnabled, acceptIncomingConnections, uploadRateLimitBytesPerSec, downloadRateLimitBytesPerSec,
+                rateLimitScheduleEnabled, rateLimitScheduleStart, rateLimitScheduleEnd,
+                scheduledUploadRateLimitBytesPerSec, scheduledDownloadRateLimitBytesPerSec, encryptionMode,
+                rateLimitBurstSeconds, seedRatioLimitEnabled, seedRatioLimit, seedTimeLimitEnabled,
+                seedTimeLimitMinutes, eventLogRetentionDays, watchFolderEnabled, watchFolderRetentionDays, theme,
+                magnetFetchTimeBudgetSeconds, magnetFetchCandidatesPerRound, magnetFetchConcurrencyLimit,
+                trackerlessDhtReannounceIntervalSeconds, 0);
+    }
+
+    /** Same as the canonical constructor above but without trackerlessDhtReannounceIntervalSeconds
+     * - for every caller that predates this addition (every secondary constructor below, plus
+     * any direct twenty-two-arg caller), defaulting it (the compact constructor above
+     * normalizes 0 to the real default, so passing 0 here is equivalent to passing the default
+     * explicitly). Same "add a sibling overload, touch zero existing call sites" pattern used
+     * for every prior field addition to this record. See design_docs/0036's own addendum. */
+    public Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
+                     long uploadRateLimitBytesPerSec, long downloadRateLimitBytesPerSec,
+                     boolean rateLimitScheduleEnabled, String rateLimitScheduleStart, String rateLimitScheduleEnd,
+                     long scheduledUploadRateLimitBytesPerSec, long scheduledDownloadRateLimitBytesPerSec,
+                     EncryptionMode encryptionMode, long rateLimitBurstSeconds,
+                     boolean seedRatioLimitEnabled, double seedRatioLimit,
+                     boolean seedTimeLimitEnabled, long seedTimeLimitMinutes,
+                     int eventLogRetentionDays,
+                     boolean watchFolderEnabled, int watchFolderRetentionDays,
+                     ThemePreference theme,
+                     int magnetFetchTimeBudgetSeconds, int magnetFetchCandidatesPerRound,
+                     int magnetFetchConcurrencyLimit) {
+        this(dhtEnabled, acceptIncomingConnections, uploadRateLimitBytesPerSec, downloadRateLimitBytesPerSec,
+                rateLimitScheduleEnabled, rateLimitScheduleStart, rateLimitScheduleEnd,
+                scheduledUploadRateLimitBytesPerSec, scheduledDownloadRateLimitBytesPerSec, encryptionMode,
+                rateLimitBurstSeconds, seedRatioLimitEnabled, seedRatioLimit, seedTimeLimitEnabled,
+                seedTimeLimitMinutes, eventLogRetentionDays, watchFolderEnabled, watchFolderRetentionDays, theme,
+                magnetFetchTimeBudgetSeconds, magnetFetchCandidatesPerRound, magnetFetchConcurrencyLimit, 0);
+    }
+
+    /** Same as the canonical constructor above but without the three magnetFetch* fields - for
+     * every caller that predates this addition (every secondary constructor below, plus any
+     * direct nineteen-arg caller), defaulting all three (the compact constructor above
+     * normalizes 0 to each real default, so passing 0 here is equivalent to passing the
+     * default explicitly). Same "add a sibling overload, touch zero existing call sites"
+     * pattern used for every prior field addition to this record. See design_docs/0028's
+     * addendum. */
+    public Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
+                     long uploadRateLimitBytesPerSec, long downloadRateLimitBytesPerSec,
+                     boolean rateLimitScheduleEnabled, String rateLimitScheduleStart, String rateLimitScheduleEnd,
+                     long scheduledUploadRateLimitBytesPerSec, long scheduledDownloadRateLimitBytesPerSec,
+                     EncryptionMode encryptionMode, long rateLimitBurstSeconds,
+                     boolean seedRatioLimitEnabled, double seedRatioLimit,
+                     boolean seedTimeLimitEnabled, long seedTimeLimitMinutes,
+                     int eventLogRetentionDays,
+                     boolean watchFolderEnabled, int watchFolderRetentionDays,
+                     ThemePreference theme) {
+        this(dhtEnabled, acceptIncomingConnections, uploadRateLimitBytesPerSec, downloadRateLimitBytesPerSec,
+                rateLimitScheduleEnabled, rateLimitScheduleStart, rateLimitScheduleEnd,
+                scheduledUploadRateLimitBytesPerSec, scheduledDownloadRateLimitBytesPerSec, encryptionMode,
+                rateLimitBurstSeconds, seedRatioLimitEnabled, seedRatioLimit, seedTimeLimitEnabled,
+                seedTimeLimitMinutes, eventLogRetentionDays, watchFolderEnabled, watchFolderRetentionDays, theme,
+                0, 0, 0);
     }
 
     /** Same as the canonical constructor above but without theme - for every caller that
-     * predates the theme switcher's addition of it (every secondary constructor below, plus any direct
-     * eighteen-arg caller, e.g. WatchFolderTest's settingsWithWatchFolder()), defaulting to
+     * predates the theme switcher's addition of it (every secondary constructor below, plus any
+     * direct eighteen-arg caller, e.g. WatchFolderTest's settingsWithWatchFolder()), defaulting to
      * ThemePreference.SYSTEM. Same "add a sibling overload, touch zero existing call sites"
      * pattern used for every prior field addition to this record. See design_docs/0032's "Manual theme switcher" section. */
     public Settings(boolean dhtEnabled, boolean acceptIncomingConnections,

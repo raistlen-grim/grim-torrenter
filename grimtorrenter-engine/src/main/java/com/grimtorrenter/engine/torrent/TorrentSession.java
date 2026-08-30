@@ -126,6 +126,14 @@ public final class TorrentSession implements AutoCloseable {
      * DISABLED via create()/restoreAsync()'s own lower-arity overloads. See
      * design_docs/0052. */
     private final Supplier<EncryptionMode> encryptionMode;
+    /** Read once, at the point enterDownloading() schedules the periodic reannounce for a
+     * genuinely trackerless torrent (startViaDht()) - not re-read mid-flight, same "fixed for
+     * this torrent's run, re-read on the next start()" precedent a real tracker's own
+     * response.interval() already follows (a ScheduledExecutorService's fixed-delay period
+     * can't be changed once scheduled without cancelling and rebuilding it). Never null;
+     * callers that don't care get a fixed 300s default via create()/restoreAsync()'s own
+     * lower-arity overloads. See design_docs/0036's own addendum. */
+    private final Supplier<Long> trackerlessReannounceIntervalSeconds;
 
     /** This torrent's override of the global seeding-limit defaults - never null, defaults to
      * SeedingLimitOverride.INHERIT (both metrics follow the global default) via create()/
@@ -192,7 +200,7 @@ public final class TorrentSession implements AutoCloseable {
                             TorrentSessionListener listener, DhtNode dhtNode, RateLimiters rateLimiters,
                             Semaphore pieceVerificationLimiter, Supplier<EncryptionMode> encryptionMode,
                             SeedingLimitOverride seedingLimitOverride, TorrentState initialState,
-                            Instant addedAt) {
+                            Instant addedAt, Supplier<Long> trackerlessReannounceIntervalSeconds) {
         this.metadata = metadata;
         this.trackerClient = trackerClient;
         this.storage = storage;
@@ -207,6 +215,7 @@ public final class TorrentSession implements AutoCloseable {
         this.seedingLimitOverride = seedingLimitOverride;
         this.state = initialState;
         this.addedAt = addedAt;
+        this.trackerlessReannounceIntervalSeconds = trackerlessReannounceIntervalSeconds;
     }
 
     /** Same as the eight-arg overload below but with no rate limiting - for every caller
@@ -280,6 +289,9 @@ public final class TorrentSession implements AutoCloseable {
                 Instant.now());
     }
 
+    /** Same as the fifteen-arg overload below but with a fixed 300s trackerless-reannounce
+     * interval - for every caller that predates design_docs/0036's own addendum (tests,
+     * mainly). */
     public static TorrentSession create(TorrentMetadata metadata, TrackerClient trackerClient,
                                          Path downloadDirectory, PeerId ourPeerId, int ourListenPort,
                                          TorrentSessionListener listener, DhtNode dhtNode,
@@ -288,11 +300,25 @@ public final class TorrentSession implements AutoCloseable {
                                          Supplier<EncryptionMode> encryptionMode,
                                          SeedingLimitOverride seedingLimitOverride,
                                          Instant addedAt) throws IOException {
+        return create(metadata, trackerClient, downloadDirectory, ourPeerId, ourListenPort, listener, dhtNode,
+                rateLimiters, fileHandlePool, pieceVerificationLimiter, encryptionMode, seedingLimitOverride,
+                addedAt, () -> 300L);
+    }
+
+    public static TorrentSession create(TorrentMetadata metadata, TrackerClient trackerClient,
+                                         Path downloadDirectory, PeerId ourPeerId, int ourListenPort,
+                                         TorrentSessionListener listener, DhtNode dhtNode,
+                                         RateLimiters rateLimiters, FileHandlePool fileHandlePool,
+                                         Semaphore pieceVerificationLimiter,
+                                         Supplier<EncryptionMode> encryptionMode,
+                                         SeedingLimitOverride seedingLimitOverride,
+                                         Instant addedAt,
+                                         Supplier<Long> trackerlessReannounceIntervalSeconds) throws IOException {
         TorrentStorage storage = TorrentStorage.create(metadata, downloadDirectory, fileHandlePool);
         PieceManager pieceManager = new PieceManager(metadata);
         return new TorrentSession(metadata, trackerClient, storage, pieceManager, ourPeerId, ourListenPort,
                 listener, dhtNode, rateLimiters, pieceVerificationLimiter, encryptionMode, seedingLimitOverride,
-                TorrentState.STOPPED, addedAt);
+                TorrentState.STOPPED, addedAt, trackerlessReannounceIntervalSeconds);
     }
 
     /** Same as the nine-arg overload below but with no rate limiting - see create()'s own
@@ -389,6 +415,9 @@ public final class TorrentSession implements AutoCloseable {
      * design_docs/0032); a genuinely new torrent (addTorrent()'s own use of this method, for
      * the reused-directory "removed with keep files, now re-added" case) always has a real
      * value. */
+    /** Same as the sixteen-arg overload below but with a fixed 300s trackerless-reannounce
+     * interval - for every caller that predates design_docs/0036's own addendum (tests,
+     * mainly). */
     public static TorrentSession restoreAsync(TorrentMetadata metadata, TrackerClient trackerClient,
                                                Path downloadDirectory, PeerId ourPeerId, int ourListenPort,
                                                TorrentSessionListener listener, DhtNode dhtNode,
@@ -398,11 +427,27 @@ public final class TorrentSession implements AutoCloseable {
                                                SeedingLimitOverride seedingLimitOverride,
                                                Instant addedAt,
                                                boolean autoStart) throws IOException {
+        return restoreAsync(metadata, trackerClient, downloadDirectory, ourPeerId, ourListenPort, listener,
+                dhtNode, rateLimiters, fileHandlePool, pieceVerificationLimiter, encryptionMode,
+                seedingLimitOverride, addedAt, () -> 300L, autoStart);
+    }
+
+    public static TorrentSession restoreAsync(TorrentMetadata metadata, TrackerClient trackerClient,
+                                               Path downloadDirectory, PeerId ourPeerId, int ourListenPort,
+                                               TorrentSessionListener listener, DhtNode dhtNode,
+                                               RateLimiters rateLimiters, FileHandlePool fileHandlePool,
+                                               Semaphore pieceVerificationLimiter,
+                                               Supplier<EncryptionMode> encryptionMode,
+                                               SeedingLimitOverride seedingLimitOverride,
+                                               Instant addedAt,
+                                               Supplier<Long> trackerlessReannounceIntervalSeconds,
+                                               boolean autoStart) throws IOException {
         TorrentStorage storage = TorrentStorage.create(metadata, downloadDirectory, fileHandlePool);
         PieceManager pieceManager = new PieceManager(metadata);
         TorrentSession session = new TorrentSession(metadata, trackerClient, storage, pieceManager,
                 ourPeerId, ourListenPort, listener, dhtNode, rateLimiters, pieceVerificationLimiter,
-                encryptionMode, seedingLimitOverride, TorrentState.VERIFYING, addedAt);
+                encryptionMode, seedingLimitOverride, TorrentState.VERIFYING, addedAt,
+                trackerlessReannounceIntervalSeconds);
         Thread.ofVirtual().start(() -> session.verifyThenSettle(autoStart));
         return session;
     }
@@ -458,9 +503,21 @@ public final class TorrentSession implements AutoCloseable {
 
     /** Every start is treated as fully fresh in itself - no verification of pre-existing disk
      * data happens here. Pre-existing completion state, when there is any, comes only from
-     * restoreAsync()'s background recheck. See design_docs/0017 and design_docs/0026. */
+     * restoreAsync()'s background recheck. See design_docs/0017 and design_docs/0026.
+     *
+     * <p>A genuinely trackerless torrent (trackerClient is a NoOpTrackerClient - see
+     * createTrackerClient) skips the tracker announce entirely rather than calling it anyway:
+     * NoOpTrackerClient.announce() never throws and reports a deliberately huge interval so
+     * its own reannounce loop would otherwise never fire - going through startViaDht() instead
+     * gets it the same periodic DHT re-query a tracker-bearing torrent already gets via
+     * startViaDhtBackstop()/reannounceViaDhtBackstop() below. See design_docs/0036's own
+     * addendum. */
     public synchronized void start() {
         if (state != TorrentState.STOPPED) {
+            return;
+        }
+        if (trackerClient instanceof NoOpTrackerClient) {
+            startViaDht();
             return;
         }
         TrackerResponse response;
@@ -476,14 +533,34 @@ public final class TorrentSession implements AutoCloseable {
         enterDownloading(response.peers(), Math.max(response.interval(), 30));
     }
 
+    /** Genuinely trackerless (no tracker to have failed) - unlike startViaDhtBackstop() below,
+     * dhtNode == null or a failed/empty lookup is never ERROR here, just "enter DOWNLOADING
+     * with zero peers so far": there's no prior working state to consider "failed," the same
+     * way a regular tracker responding with zero peers isn't ERROR either. Deliberately does
+     * NOT set dhtBackstopActive - that flag's own Javadoc reserves it for a tracker-bearing
+     * torrent whose tracker is currently down, a genuine degradation; a trackerless torrent
+     * doing DHT lookups is its normal operating mode, already covered by the separate
+     * usesDht()/isTrackerless() signal. See design_docs/0036's own addendum. */
+    private void startViaDht() {
+        List<PeerAddress> peers = List.of();
+        if (dhtNode != null) {
+            try {
+                peers = dhtNode.findPeers(metadata.infoHash(), ourListenPort, false, DHT_QUERY_TIMEOUT);
+            } catch (RuntimeException e) {
+                LOG.log(System.Logger.Level.DEBUG, "DHT lookup failed for trackerless torrent "
+                        + metadata.infoHash(), e);
+            }
+        }
+        enterDownloading(peers, trackerlessReannounceIntervalSeconds.get());
+    }
+
     /** Every tracker failed (MultiTrackerClient's own BEP 12 tier fallback exhausted, see
      * design_docs/0022) - rather than going straight to ERROR, falls back to a DHT peer
      * lookup, the same motivation as multi-tracker fallback itself: a torrent's tracker(s)
      * being completely unreachable shouldn't strand the torrent when another
      * peer-discovery path is available. Only ever reached for a real (non-NoOp)
-     * TrackerClient - NoOpTrackerClient.announce() never throws, so a genuinely trackerless
-     * torrent never enters this method; it already has its own DHT path
-     * (TorrentEngine.seedFromDhtIfTrackerless). See design_docs/0036.
+     * TrackerClient - a genuinely trackerless torrent takes the startViaDht() path above
+     * instead, straight from start(). See design_docs/0036.
      *
      * <p>An empty-but-successful DHT lookup still counts as success here (same as a tracker
      * responding with zero peers already does on the normal path) - it means DHT itself is
@@ -611,10 +688,18 @@ public final class TorrentSession implements AutoCloseable {
     }
 
     /** Package-private (not private) so tests can trigger exactly one reannounce cycle
-     * directly, rather than waiting out the real scheduled interval (30s minimum) - same
-     * rationale as TorrentEngine.selectTrackerTiers's own package-private-for-testing note. */
+     * directly, rather than waiting out the real scheduled interval (30s minimum, or
+     * trackerlessReannounceIntervalSeconds for a trackerless torrent) - same rationale as
+     * TorrentEngine.selectTrackerTiers's own package-private-for-testing note. Trackerless
+     * torrents skip the no-op tracker announce entirely (it would find nothing - see start()'s
+     * own comment) and go straight to a fresh DHT lookup instead. See design_docs/0036's own
+     * addendum. */
     void reannounce() {
         if (state != TorrentState.DOWNLOADING && state != TorrentState.SEEDING) {
+            return;
+        }
+        if (trackerClient instanceof NoOpTrackerClient) {
+            reannounceViaDht();
             return;
         }
         try {
@@ -630,10 +715,27 @@ public final class TorrentSession implements AutoCloseable {
         }
     }
 
+    /** Genuinely trackerless counterpart to reannounceViaDhtBackstop() below - same
+     * runs-on-its-own-virtual-thread reasoning, but never touches dhtBackstopActive (see
+     * startViaDht()'s own comment for why). See design_docs/0036's own addendum. */
+    private void reannounceViaDht() {
+        if (dhtNode == null) {
+            return;
+        }
+        Thread.ofVirtual().start(() -> {
+            try {
+                List<PeerAddress> peers = dhtNode.findPeers(metadata.infoHash(), ourListenPort, false, DHT_QUERY_TIMEOUT);
+                addKnownPeers(peers);
+            } catch (RuntimeException e) {
+                LOG.log(System.Logger.Level.DEBUG, "DHT re-query failed for trackerless torrent "
+                        + metadata.infoHash(), e);
+            }
+        });
+    }
+
     /** Runs on its own virtual thread rather than blocking the session's single scheduler
      * thread (shared with the keepalive/choking timers) for the lookup's multi-second
-     * duration - same reasoning as TorrentEngine.seedFromDhtIfTrackerless's background
-     * lookup. addKnownPeers() is safe to call regardless of what state the session is in by
+     * duration. addKnownPeers() is safe to call regardless of what state the session is in by
      * the time this completes. See design_docs/0036. */
     private void reannounceViaDhtBackstop() {
         if (dhtNode == null) {

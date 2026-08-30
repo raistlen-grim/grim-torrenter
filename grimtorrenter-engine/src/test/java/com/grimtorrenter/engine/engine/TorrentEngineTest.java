@@ -4,6 +4,9 @@ import com.grimtorrenter.engine.bencode.BDictionary;
 import com.grimtorrenter.engine.bencode.BInteger;
 import com.grimtorrenter.engine.bencode.BString;
 import com.grimtorrenter.engine.bencode.BencodeEncoder;
+import com.grimtorrenter.engine.dht.DhtNode;
+import com.grimtorrenter.engine.dht.NodeId;
+import com.grimtorrenter.engine.dht.NodeInfo;
 import com.grimtorrenter.engine.events.EventType;
 import com.grimtorrenter.engine.events.InMemoryEventStore;
 import com.grimtorrenter.engine.events.LibraryEvent;
@@ -179,6 +182,87 @@ class TorrentEngineTest {
 
             assertTrue(status.enabled());
             assertTrue(status.nodeCount() >= 0);
+        } finally {
+            engine.shutdown();
+        }
+    }
+
+    /** Smoke-tests the maintenanceScheduler wiring itself (design_docs/0028's own 2026-08-30
+     * addendum) - DhtNode.refreshRoutingTable()'s own actual bucket-refresh/replacement
+     * behavior is already thoroughly covered at that lower level (DhtNodeTest), same
+     * "don't re-test what a lower layer already proves" spirit as
+     * addMagnetDoesNotThrowSynchronouslyWhenNoUsableTrackerButDhtEnabled. Package-private,
+     * not private, purely so this can be called directly rather than waiting on the real
+     * dhtRefreshIntervalSeconds-second scheduler tick - same spirit as
+     * checkSeedingLimitsStopsASeedingTorrentThatHasReachedItsRatioLimit's own direct call. */
+    @Test
+    void refreshDhtRoutingTableRunsWithoutThrowingWhenDhtIsEnabled(@TempDir Path tempDir) throws InterruptedException {
+        TorrentEngine engine = new TorrentEngine(tempDir, 0, new NoOpListener(), true);
+        try {
+            engine.refreshDhtRoutingTable();
+            // The refresh itself runs on its own virtual thread (never inline on the
+            // maintenance scheduler) - give it a moment to actually run before shutdown.
+            Thread.sleep(200);
+        } finally {
+            engine.shutdown();
+        }
+    }
+
+    /** design_docs/0028's own 2026-08-30 addendum - a real save-then-reload round trip. A
+     * contact gets into the first engine's routing table the same way every other dht-package
+     * test seeds one (directly, bypassing the network - dhtNode() is package-private purely
+     * for this kind of test access), saveDhtRoutingTable() persists it, then a *second* engine
+     * pointed at the same baseDownloadDirectory loads and re-pings it on its own "start" -
+     * proving the warm-start path actually reaches the routing table, not just that the file
+     * gets written. */
+    @Test
+    void dhtRoutingTableSurvivesASaveThenAFreshEngineLoadingIt(@TempDir Path tempDir) throws Exception {
+        DhtNode persistedContact = new DhtNode(NodeId.random(), 0);
+        TorrentEngine engineOne = new TorrentEngine(tempDir, 0, new NoOpListener(), true);
+        try {
+            engineOne.dhtNode().routingTable().insert(
+                    new NodeInfo(persistedContact.ourId(), InetAddress.getLoopbackAddress(), persistedContact.port()));
+
+            engineOne.saveDhtRoutingTable();
+        } finally {
+            engineOne.shutdown();
+        }
+
+        TorrentEngine engineTwo = new TorrentEngine(tempDir, 0, new NoOpListener(), true);
+        try {
+            long deadline = System.currentTimeMillis() + 7000;
+            while (engineTwo.dhtStatus().nodeCount() < 1 && System.currentTimeMillis() < deadline) {
+                Thread.sleep(50);
+            }
+
+            assertTrue(engineTwo.dhtStatus().nodeCount() >= 1);
+        } finally {
+            engineTwo.shutdown();
+            persistedContact.close();
+        }
+    }
+
+    /** design_docs/0028's own 2026-08-30 addendum (the config-directory follow-up) - the
+     * two DHT marker files are engine-wide bookkeeping, not torrent data, so they belong in
+     * configDirectory, not baseDownloadDirectory (the directory a user actually browses).
+     * Uses the widest constructor directly with two genuinely different directories to prove
+     * the split, rather than relying on the lower-arity constructors (which default
+     * configDirectory to baseDownloadDirectory, matching every pre-existing caller's
+     * unaffected behavior - see dhtRoutingTableSurvivesASaveThenAFreshEngineLoadingIt above,
+     * which deliberately keeps that default). ".grimtorrenter-dht-nodes" matches
+     * TorrentEngine's own private DHT_KNOWN_NODES_MARKER_FILENAME constant. */
+    @Test
+    void dhtRoutingTableIsPersistedUnderConfigDirectoryNotDownloadDirectory(@TempDir Path tempDir) {
+        Path downloadDir = tempDir.resolve("downloads");
+        Path configDir = tempDir.resolve("config");
+        TorrentEngine engine = new TorrentEngine(downloadDir, 0, new NoOpListener(), true, false,
+                new InMemorySettingsStore(Settings.defaults()), FileHandlePool.unbounded(), Integer.MAX_VALUE,
+                new InMemoryEventStore(), tempDir.resolve("watch"), configDir);
+        try {
+            engine.saveDhtRoutingTable();
+
+            assertTrue(Files.exists(configDir.resolve(".grimtorrenter-dht-nodes")));
+            assertFalse(Files.exists(downloadDir.resolve(".grimtorrenter-dht-nodes")));
         } finally {
             engine.shutdown();
         }

@@ -43,8 +43,12 @@ import com.grimtorrenter.engine.tracker.TrackerResponse;
 import com.grimtorrenter.engine.tracker.UdpTrackerClient;
 
 import java.io.IOException;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.UnknownHostException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.FileTime;
 import java.time.Duration;
 import java.time.Instant;
@@ -55,6 +59,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -62,7 +67,11 @@ import java.util.Optional;
 import java.util.OptionalDouble;
 import java.util.OptionalInt;
 import java.util.OptionalLong;
+import java.util.Set;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Semaphore;
@@ -103,6 +112,13 @@ public final class TorrentEngine {
      * bucketed us stay valid across restarts. See design_docs/0028. */
     private static final String DHT_NODE_ID_MARKER_FILENAME = ".grimtorrenter-dht-node-id";
 
+    /** One "ip,port" line per known DHT contact - plain text, same "no JSON library at this
+     * layer" convention as every other marker file here. Loaded on startup as a warm-start
+     * head start for bootstrap (each contact is re-verified with a real ping before being
+     * trusted, same as any hardcoded bootstrap host - see DhtNode.bootstrap(List)), saved
+     * periodically and on shutdown. See design_docs/0028's own 2026-08-30 addendum. */
+    private static final String DHT_KNOWN_NODES_MARKER_FILENAME = ".grimtorrenter-dht-nodes";
+
     /** This torrent's SeedingLimitOverride, plain key=value lines (grimtorrenter-engine has
      * zero production dependencies, no JSON library available at this layer - same reasoning
      * as every other marker file here). Deliberately never deleted by removeTorrent(infoHash,
@@ -124,13 +140,20 @@ public final class TorrentEngine {
     private static final String WATCH_FOLDER_SOURCE = "watch folder";
     private static final long WATCH_FOLDER_SCAN_INTERVAL_SECONDS = 30;
 
-    private static final int MAGNET_NUM_WANT = 50;
-    /** Tried sequentially, not concurrently - see design_docs/0028 for the accepted
-     * worst-case-latency trade-off this implies. */
-    private static final int MAX_METADATA_FETCH_PEER_ATTEMPTS = 8;
     private static final Duration DHT_QUERY_TIMEOUT = Duration.ofSeconds(5);
 
     private final Path baseDownloadDirectory;
+    /** Where engine-wide (not per-torrent) bookkeeping lives - currently just the two DHT
+     * marker files (DHT_NODE_ID_MARKER_FILENAME, DHT_KNOWN_NODES_MARKER_FILENAME). Defaults
+     * to baseDownloadDirectory for every caller/test that predates this split (the ten-arg
+     * constructor below); production wiring (grimtorrenter-app's TorrentEngineProducer)
+     * passes grimtorrenter.config-directory instead - the same directory JsonSettingsStore/
+     * JsonLinesEventStore already use for settings.json/events/, keeping this kind of
+     * bookkeeping out of the download directory a user actually browses. Per-torrent markers
+     * (info hash, state, seeding-limit override) are unaffected - they correctly live inside
+     * each torrent's own subdirectory already, not here. See design_docs/0028's own
+     * 2026-08-30 addendum. */
+    private final Path configDirectory;
     private final PeerId ourPeerId;
     private final int ourListenPort;
     private final TorrentSessionListener listener;
@@ -167,9 +190,29 @@ public final class TorrentEngine {
      * virtual thread). See design_docs/0048. Never null; the lower-arity constructors default
      * to an effectively-unbounded Semaphore so every pre-existing caller/test is unaffected. */
     private final Semaphore pieceVerificationLimiter;
+    /** Bounds simultaneous in-flight magnet metadata-fetch connection attempts across every
+     * magnet-add happening at once, engine-wide - not per-magnet, per-round. Sized from
+     * settingsStore.current().magnetFetchConcurrencyLimit() at construction, then resized to
+     * the live value at the start of each magnet-add attempt (see fetchMagnetMetadataViaTracker
+     * ThenAdd()/ViaDhtThenAdd()) - a Semaphore's initial permit count alone can't stay live the
+     * way a Supplier-read value can, so this uses LiveResizableSemaphore instead of a plain one.
+     * See design_docs/0028's addendum. */
+    private final LiveResizableSemaphore metadataFetchLimiter;
     /** Read live from settingsStore on every connection attempt/accept, not snapshotted
      * here - see EncryptionMode's own Javadoc for why. See design_docs/0052. */
     private final Supplier<EncryptionMode> encryptionMode;
+    /** Same live-read-per-use shape as encryptionMode above - passed straight through to every
+     * TorrentSession this engine creates or restores, which reads it once per start() to
+     * schedule its own periodic DHT re-query when genuinely trackerless. See design_docs/0036's
+     * own addendum. */
+    private final Supplier<Long> trackerlessReannounceIntervalSeconds;
+    /** Read once, at construction time, to schedule refreshDhtRoutingTable()'s tick on
+     * maintenanceScheduler below - unlike trackerlessReannounceIntervalSeconds above, this
+     * drives an engine-wide scheduled task rather than a per-torrent one, so a live change
+     * here takes effect on the engine's next construction/restart, not retroactively (same
+     * "a ScheduledExecutorService's period can't change mid-flight" limitation, just at
+     * engine scope). See design_docs/0028's own 2026-08-30 addendum. */
+    private final long dhtRefreshIntervalSeconds;
     /** Kept as a field (not just a constructor-local capture) since checkSeedingLimits()
      * reads it fresh on every scheduled tick, not from a single lambda built once at
      * construction. See design_docs/0054. */
@@ -191,19 +234,22 @@ public final class TorrentEngine {
      * from maintenanceScheduler's single thread (or a test calling scanWatchFolder() directly,
      * never concurrently with the real scheduler in the same test). See design_docs/0056. */
     private volatile Map<String, WatchCandidateSnapshot> watchFolderSnapshot = Map.of();
-    /** Ticks every SEEDING_LIMIT_CHECK_INTERVAL_SECONDS/WATCH_FOLDER_SCAN_INTERVAL_SECONDS,
-     * running checkSeedingLimits() and scanWatchFolder() - two cheap, independent periodic
-     * engine-maintenance concerns sharing one thread rather than each getting its own
-     * (originally named seedingLimitScheduler, generalized when the watch folder needed a
-     * second periodic task - design_docs/0056). checkSeedingLimits() checks every
-     * currently-SEEDING session against its effective seeding limit and reuses pauseTorrent()
-     * outright for the actual stop - see that method's own Javadoc for why reusing that
-     * method, not calling TorrentSession.stop() directly, was the deliberate choice there.
-     * Daemon threads, unlike TorrentSession's own per-session scheduler - this one runs
-     * unconditionally for every engine instance (no opt-in flag, matching RateLimiters),
-     * including the many short-lived test-constructed engines that never call shutdown(); a
-     * non-daemon thread here would leak a live, never-reclaimed thread per such instance. See
-     * design_docs/0054. */
+    /** Ticks every SEEDING_LIMIT_CHECK_INTERVAL_SECONDS/WATCH_FOLDER_SCAN_INTERVAL_SECONDS/
+     * dhtRefreshIntervalSeconds, running checkSeedingLimits(), scanWatchFolder(), and (when DHT
+     * is enabled) refreshDhtRoutingTable() - independent periodic engine-maintenance concerns
+     * sharing one thread rather than each getting its own (originally named
+     * seedingLimitScheduler, generalized when the watch folder needed a second periodic task -
+     * design_docs/0056; refreshDhtRoutingTable() added as a third in design_docs/0028's own
+     * 2026-08-30 addendum - that one spawns its own virtual thread rather than running inline,
+     * since unlike the other two it can take several real seconds, and mustn't delay them on
+     * this shared thread). checkSeedingLimits() checks every currently-SEEDING session against
+     * its effective seeding limit and reuses pauseTorrent() outright for the actual stop - see
+     * that method's own Javadoc for why reusing that method, not calling TorrentSession.stop()
+     * directly, was the deliberate choice there. Daemon threads, unlike TorrentSession's own
+     * per-session scheduler - this one runs unconditionally for every engine instance (no
+     * opt-in flag, matching RateLimiters), including the many short-lived test-constructed
+     * engines that never call shutdown(); a non-daemon thread here would leak a live,
+     * never-reclaimed thread per such instance. See design_docs/0054. */
     private final ScheduledExecutorService maintenanceScheduler =
             Executors.newSingleThreadScheduledExecutor(TorrentEngine::newDaemonThread);
 
@@ -301,6 +347,21 @@ public final class TorrentEngine {
                 fileHandlePool, maxConcurrentPieceVerifications, eventStore, Path.of("watch"));
     }
 
+    /** Same as the eleven-arg overload below but with configDirectory defaulted to
+     * baseDownloadDirectory - preserves every pre-existing caller/test's exact current
+     * behavior (the two DHT marker files stay wherever they already were) unless a caller
+     * explicitly opts into a separate directory. Kept so every pre-existing caller/test is
+     * unaffected by this addition; production wiring (grimtorrenter-app's
+     * TorrentEngineProducer) passes grimtorrenter.config-directory instead. See
+     * design_docs/0028's own 2026-08-30 addendum. */
+    public TorrentEngine(Path baseDownloadDirectory, int ourListenPort, TorrentSessionListener listener,
+                          boolean enableDht, boolean acceptIncomingConnections, SettingsStore settingsStore,
+                          FileHandlePool fileHandlePool, int maxConcurrentPieceVerifications, EventStore eventStore,
+                          Path watchDirectory) {
+        this(baseDownloadDirectory, ourListenPort, listener, enableDht, acceptIncomingConnections, settingsStore,
+                fileHandlePool, maxConcurrentPieceVerifications, eventStore, watchDirectory, baseDownloadDirectory);
+    }
+
     /**
      * fileHandlePool bounds this engine's total open torrent-data file handles across every
      * TorrentSession it creates or restores - see design_docs/0047. maxConcurrentPieceVerifications
@@ -311,24 +372,31 @@ public final class TorrentEngine {
      * properties. eventStore records library-management events (design_docs/0055) - see this
      * class's own eventStore field Javadoc. watchDirectory is the auto-add watch folder
      * (design_docs/0056) - deploy-time config like baseDownloadDirectory, gated live by
-     * Settings.watchFolderEnabled rather than by construction.
+     * Settings.watchFolderEnabled rather than by construction. configDirectory is where
+     * engine-wide bookkeeping (currently just the two DHT marker files) lives - see this
+     * class's own configDirectory field Javadoc.
      */
     public TorrentEngine(Path baseDownloadDirectory, int ourListenPort, TorrentSessionListener listener,
                           boolean enableDht, boolean acceptIncomingConnections, SettingsStore settingsStore,
                           FileHandlePool fileHandlePool, int maxConcurrentPieceVerifications, EventStore eventStore,
-                          Path watchDirectory) {
+                          Path watchDirectory, Path configDirectory) {
         this.baseDownloadDirectory = baseDownloadDirectory;
+        this.configDirectory = configDirectory;
         this.ourListenPort = ourListenPort;
         this.listener = listener;
         this.ourPeerId = PeerId.generate();
-        this.dhtNode = enableDht ? createDhtNode(baseDownloadDirectory, ourListenPort, eventStore) : null;
+        this.dhtNode = enableDht ? createDhtNode(configDirectory, ourListenPort, eventStore) : null;
         this.dhtBindFailed = enableDht && this.dhtNode == null;
         this.encryptionMode = () -> settingsStore.current().encryptionMode();
+        this.trackerlessReannounceIntervalSeconds =
+                () -> (long) settingsStore.current().trackerlessDhtReannounceIntervalSeconds();
+        this.dhtRefreshIntervalSeconds = settingsStore.current().dhtRefreshIntervalSeconds();
         this.peerServer = acceptIncomingConnections ? createPeerServer(ourListenPort, eventStore) : null;
         this.peerServerBindFailed = acceptIncomingConnections && this.peerServer == null;
         this.rateLimiters = RateLimiters.from(settingsStore);
         this.fileHandlePool = fileHandlePool;
         this.pieceVerificationLimiter = new Semaphore(maxConcurrentPieceVerifications);
+        this.metadataFetchLimiter = new LiveResizableSemaphore(settingsStore.current().magnetFetchConcurrencyLimit());
         this.settingsStore = settingsStore;
         this.eventStore = eventStore;
         this.watchDirectory = watchDirectory;
@@ -336,6 +404,10 @@ public final class TorrentEngine {
                 SEEDING_LIMIT_CHECK_INTERVAL_SECONDS, SEEDING_LIMIT_CHECK_INTERVAL_SECONDS, TimeUnit.SECONDS);
         this.maintenanceScheduler.scheduleWithFixedDelay(this::scanWatchFolder,
                 WATCH_FOLDER_SCAN_INTERVAL_SECONDS, WATCH_FOLDER_SCAN_INTERVAL_SECONDS, TimeUnit.SECONDS);
+        if (this.dhtNode != null) {
+            this.maintenanceScheduler.scheduleWithFixedDelay(this::refreshDhtRoutingTable,
+                    this.dhtRefreshIntervalSeconds, this.dhtRefreshIntervalSeconds, TimeUnit.SECONDS);
+        }
         // Exactly one TorrentEngine per running process in production (TorrentEngineProducer's
         // @ApplicationScoped bean, constructed once), so recording this here is equivalent to
         // "the app started" - lets a timeline of events be correlated against process restarts
@@ -394,6 +466,26 @@ public final class TorrentEngine {
         }
 
         return Optional.empty();
+    }
+
+    /** Spawns a virtual thread to run one DhtNode.refreshRoutingTable() tick, then
+     * saveDhtRoutingTable() - never runs either inline on maintenanceScheduler's own thread,
+     * since a NodeLookup can take several seconds (bounded by its own MAX_ROUNDS/per-query
+     * timeout) and this scheduler is shared with checkSeedingLimits()/scanWatchFolder() above;
+     * blocking it would delay both of those on their own schedule. The save piggybacks on this
+     * same tick/cadence rather than getting a separate timer - both are routing-table
+     * maintenance, and saveDhtRoutingTable() itself is cheap regardless of whether this
+     * particular tick's refresh found anything new. Only ever scheduled when dhtNode != null
+     * (see the constructor). See design_docs/0028's own 2026-08-30 addendum.
+     *
+     * <p>Package-private, not private, purely so a test can call this directly rather than
+     * waiting on the real dhtRefreshIntervalSeconds-second scheduler tick - same spirit as
+     * checkSeedingLimits()/scanWatchFolder() above. */
+    void refreshDhtRoutingTable() {
+        Thread.ofVirtual().start(() -> {
+            dhtNode.refreshRoutingTable();
+            saveDhtRoutingTable();
+        });
     }
 
     /**
@@ -570,12 +662,15 @@ public final class TorrentEngine {
      * (confirmed with the user - matches what real clients do and what the peerwire Port
      * message already implies). Bootstrapping the routing table is real network I/O
      * against an unknown number of hosts, so it runs on its own background thread rather
-     * than delaying this constructor. */
-    private static DhtNode createDhtNode(Path baseDownloadDirectory, int ourListenPort, EventStore eventStore) {
+     * than delaying this constructor. configDirectory, not baseDownloadDirectory - see this
+     * class's own configDirectory field Javadoc (design_docs/0028's own 2026-08-30
+     * addendum). */
+    private static DhtNode createDhtNode(Path configDirectory, int ourListenPort, EventStore eventStore) {
         try {
-            NodeId nodeId = loadOrGenerateDhtNodeId(baseDownloadDirectory);
+            NodeId nodeId = loadOrGenerateDhtNodeId(configDirectory);
             DhtNode node = new DhtNode(nodeId, ourListenPort);
-            Thread.ofVirtual().start(node::bootstrap);
+            List<InetSocketAddress> persistedContacts = loadPersistedDhtContacts(configDirectory);
+            Thread.ofVirtual().start(() -> node.bootstrap(persistedContacts));
             return node;
         } catch (RuntimeException e) {
             LOG.log(System.Logger.Level.WARNING, "Could not start DHT node - continuing without it", e);
@@ -586,8 +681,8 @@ public final class TorrentEngine {
 
     /** Falls back to a freshly generated (and re-persisted) id if the marker is missing
      * or unreadable, rather than failing DHT startup over a corrupt marker file. */
-    private static NodeId loadOrGenerateDhtNodeId(Path baseDownloadDirectory) {
-        Path marker = baseDownloadDirectory.resolve(DHT_NODE_ID_MARKER_FILENAME);
+    private static NodeId loadOrGenerateDhtNodeId(Path configDirectory) {
+        Path marker = configDirectory.resolve(DHT_NODE_ID_MARKER_FILENAME);
         if (Files.exists(marker)) {
             try {
                 return new NodeId(Files.readString(marker).strip());
@@ -597,12 +692,77 @@ public final class TorrentEngine {
         }
         NodeId generated = NodeId.random();
         try {
-            Files.createDirectories(baseDownloadDirectory);
+            Files.createDirectories(configDirectory);
             Files.writeString(marker, generated.hex());
         } catch (IOException e) {
             LOG.log(System.Logger.Level.WARNING, "Could not persist DHT node id - it will regenerate next restart", e);
         }
         return generated;
+    }
+
+    /** Empty (not fatal) if the marker is missing, or on any read/parse failure - a warm
+     * start is a head start, never something DHT startup depends on. Each contact is
+     * re-verified with a real ping before being trusted (DhtNode.bootstrap(List)'s own job),
+     * so a stale or malformed line here costs at worst one skipped/failed ping, never bad
+     * data reaching the routing table directly. See design_docs/0028's own 2026-08-30
+     * addendum. */
+    private static List<InetSocketAddress> loadPersistedDhtContacts(Path configDirectory) {
+        Path marker = configDirectory.resolve(DHT_KNOWN_NODES_MARKER_FILENAME);
+        if (!Files.exists(marker)) {
+            return List.of();
+        }
+        try {
+            List<InetSocketAddress> contacts = new ArrayList<>();
+            for (String line : Files.readAllLines(marker)) {
+                parseKnownContactLine(line).ifPresent(contacts::add);
+            }
+            return contacts;
+        } catch (IOException e) {
+            LOG.log(System.Logger.Level.WARNING, "Could not read persisted DHT contacts", e);
+            return List.of();
+        }
+    }
+
+    private static Optional<InetSocketAddress> parseKnownContactLine(String line) {
+        int comma = line.indexOf(',');
+        if (comma < 0) {
+            return Optional.empty();
+        }
+        try {
+            InetAddress address = InetAddress.getByName(line.substring(0, comma));
+            int port = Integer.parseInt(line.substring(comma + 1));
+            return Optional.of(new InetSocketAddress(address, port));
+        } catch (UnknownHostException | NumberFormatException e) {
+            return Optional.empty();
+        }
+    }
+
+    /** Writes dhtNode's current known contacts out, atomically (write to a temp file, then
+     * Files.move(..., ATOMIC_MOVE)) so a save racing a process exit can never leave a
+     * torn/partial file behind. No-ops if DHT is disabled; write failures are logged and
+     * otherwise ignored - the next successful save (or, worst case, the next restart's
+     * ordinary bootstrap) simply catches up, same tolerance every other marker file here
+     * already has. Package-private, not private, purely so a test can call this directly
+     * rather than waiting on the real dhtRefreshIntervalSeconds-second scheduler tick - same
+     * spirit as checkSeedingLimits()/scanWatchFolder() above. See design_docs/0028's own
+     * 2026-08-30 addendum. */
+    void saveDhtRoutingTable() {
+        if (dhtNode == null) {
+            return;
+        }
+        Path marker = configDirectory.resolve(DHT_KNOWN_NODES_MARKER_FILENAME);
+        StringBuilder content = new StringBuilder();
+        for (InetSocketAddress contact : dhtNode.knownContacts()) {
+            content.append(contact.getAddress().getHostAddress()).append(',').append(contact.getPort()).append('\n');
+        }
+        try {
+            Files.createDirectories(configDirectory);
+            Path tempFile = Files.createTempFile(configDirectory, DHT_KNOWN_NODES_MARKER_FILENAME, ".tmp");
+            Files.writeString(tempFile, content.toString());
+            Files.move(tempFile, marker, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException e) {
+            LOG.log(System.Logger.Level.WARNING, "Could not persist DHT routing table", e);
+        }
     }
 
     /** alreadyExisted lets a caller (e.g. the REST layer) tell "just added" apart from
@@ -696,10 +856,12 @@ public final class TorrentEngine {
                 TorrentSession created = resolution.preExisting()
                         ? TorrentSession.restoreAsync(metadata, trackerClient, torrentDirectory,
                                 ourPeerId, ourListenPort, listener, dhtNode, rateLimiters, fileHandlePool,
-                                pieceVerificationLimiter, encryptionMode, seedingLimitOverride, addedAt, true)
+                                pieceVerificationLimiter, encryptionMode, seedingLimitOverride, addedAt,
+                                trackerlessReannounceIntervalSeconds, true)
                         : TorrentSession.create(metadata, trackerClient, torrentDirectory, ourPeerId,
                                 ourListenPort, listener, dhtNode, rateLimiters, fileHandlePool,
-                                pieceVerificationLimiter, encryptionMode, seedingLimitOverride, addedAt);
+                                pieceVerificationLimiter, encryptionMode, seedingLimitOverride, addedAt,
+                                trackerlessReannounceIntervalSeconds);
                 if (!resolution.preExisting()) {
                     created.start();
                 }
@@ -707,7 +869,6 @@ public final class TorrentEngine {
                 writeStateMarker(torrentDirectory, STATE_RUNNING);
                 writeAddedAtMarker(torrentDirectory, addedAt);
                 directories.put(infoHash, torrentDirectory);
-                seedFromDhtIfTrackerless(created, trackerClient, infoHash);
                 return created;
             } catch (IOException e) {
                 creationFailure.set(e);
@@ -726,28 +887,6 @@ public final class TorrentEngine {
     }
 
     /**
-     * A torrent with no trackers at all - a trackerless magnet resolved via DHT, or a
-     * plain .torrent upload that genuinely lists none - has no other way to find peers.
-     * Runs a background DHT peer lookup and feeds whatever it finds straight into the new
-     * session. A no-op if DHT is unavailable this process, or the torrent does have a real
-     * tracker (trackerClient is only ever a NoOpTrackerClient in the no-trackers case -
-     * see createTrackerClient). See design_docs/0028.
-     */
-    private void seedFromDhtIfTrackerless(TorrentSession session, TrackerClient trackerClient, InfoHash infoHash) {
-        if (dhtNode == null || !(trackerClient instanceof NoOpTrackerClient)) {
-            return;
-        }
-        Thread.ofVirtual().start(() -> {
-            try {
-                List<PeerAddress> peers = dhtNode.findPeers(infoHash, ourListenPort, false, DHT_QUERY_TIMEOUT);
-                session.addKnownPeers(peers);
-            } catch (RuntimeException e) {
-                LOG.log(System.Logger.Level.DEBUG, "DHT peer lookup failed for " + infoHash, e);
-            }
-        });
-    }
-
-    /**
      * Starts resolving a magnet link's metadata from peers (BEP 9) and, once verified,
      * hands off into the same addTorrent pipeline every other torrent uses. Peers to fetch
      * from come from whichever of the magnet's embedded trackers respond if it has any,
@@ -758,8 +897,10 @@ public final class TorrentEngine {
      * <p>Everything past that check runs on a background virtual thread: there's real
      * network I/O against an unknown number of peers before this torrent is known well
      * enough to show anything for it. A total failure (no peers reachable, or none of the
-     * peers tried had the metadata) is only logged, not surfaced to the UI - the same
-     * accepted add-to-visible latency gap as a regular upload, not a new one.
+     * peers tried had the metadata) now also records a MAGNET_ADD_FAILED library event (see
+     * recordMagnetAddFailed()) alongside the log line - design_docs/0060 - so it's visible in
+     * the Events tab and lets the frontend clear its own optimistic pending row rather than
+     * leaving it spinning forever.
      */
     public void addMagnet(MagnetLink magnet) {
         List<String> trackerUrls = magnet.trackers().stream().filter(TorrentEngine::isSupportedTrackerUrl).toList();
@@ -768,68 +909,181 @@ public final class TorrentEngine {
             return;
         }
         if (dhtNode == null) {
+            recordMagnetAddFailed(magnet, "No usable tracker, and DHT is unavailable - trackerless magnets need DHT");
             throw new TorrentEngineException(
                     "Magnet link has no usable tracker, and DHT is unavailable - trackerless magnets need DHT");
         }
         Thread.ofVirtual().start(() -> fetchMagnetMetadataViaDhtThenAdd(magnet));
     }
 
+    /** design_docs/0060. message is folded into the event rather than just infoHash/type
+     * alone, since MAGNET_ADD_FAILED has no torrentName (see EventType's own Javadoc) to
+     * carry any human-readable context otherwise. */
+    private void recordMagnetAddFailed(MagnetLink magnet, String message) {
+        eventStore.record(new LibraryEvent(
+                Instant.now(), EventType.MAGNET_ADD_FAILED, magnet.infoHash().hex(), null, message));
+    }
+
+    /** How long to wait before re-announcing/re-querying when a round found literally nothing
+     * new to try (every candidate that came back was already tried this attempt) - without
+     * this, that specific case would spin-loop re-announcing as fast as the tracker/DHT can
+     * answer, since (unlike a round that actually attempts connections) it costs no wall-clock
+     * time of its own to pace things. A round that DOES have fresh candidates needs no
+     * additional delay - racing them already costs roughly one candidate's connect-timeout
+     * worth of time, a reasonable re-announce cadence on its own. See design_docs/0028's
+     * addendum. */
+    private static final Duration EMPTY_ROUND_RETRY_DELAY = Duration.ofSeconds(5);
+
     private void fetchMagnetMetadataViaTrackerThenAdd(MagnetLink magnet, List<String> trackerUrls) {
+        Settings settings = settingsStore.current();
+        metadataFetchLimiter.resizeTo(settings.magnetFetchConcurrencyLimit());
         TrackerClient trackerClient = createTrackerClient(List.of(trackerUrls));
-        TrackerResponse response;
-        try {
-            response = trackerClient.announce(new TrackerRequest(magnet.infoHash(), ourPeerId, ourListenPort,
-                    0, 0, Long.MAX_VALUE, TrackerEvent.STARTED, MAGNET_NUM_WANT));
-        } catch (RuntimeException e) {
-            LOG.log(System.Logger.Level.WARNING, "Could not announce for magnet " + magnet.infoHash(), e);
-            return;
-        }
-        List<PeerAddress> candidates = response.peers().stream().limit(MAX_METADATA_FETCH_PEER_ATTEMPTS).toList();
-        fetchMetadataFromCandidatesThenAdd(magnet, candidates, trackerUrls);
+        Instant deadline = Instant.now().plusSeconds(settings.magnetFetchTimeBudgetSeconds());
+        Set<PeerAddress> alreadyTried = new HashSet<>();
+        do {
+            TrackerResponse response;
+            try {
+                response = trackerClient.announce(new TrackerRequest(magnet.infoHash(), ourPeerId, ourListenPort,
+                        0, 0, Long.MAX_VALUE, TrackerEvent.STARTED, settings.magnetFetchCandidatesPerRound()));
+            } catch (RuntimeException e) {
+                LOG.log(System.Logger.Level.WARNING, "Could not announce for magnet " + magnet.infoHash(), e);
+                recordMagnetAddFailed(magnet, "Could not announce to any tracker");
+                return;
+            }
+            List<PeerAddress> fresh = response.peers().stream()
+                    .filter(address -> !alreadyTried.contains(address))
+                    .limit(settings.magnetFetchCandidatesPerRound())
+                    .toList();
+            alreadyTried.addAll(fresh);
+            Optional<byte[]> infoDictBytes = raceOneRound(magnet, fresh);
+            if (infoDictBytes.isPresent()) {
+                addFetchedTorrent(magnet, infoDictBytes.get(), trackerUrls);
+                return;
+            }
+            if (fresh.isEmpty() && !sleepUnlessDeadlinePassed(EMPTY_ROUND_RETRY_DELAY, deadline)) {
+                break;
+            }
+        } while (Instant.now().isBefore(deadline));
+        LOG.log(System.Logger.Level.WARNING, "Could not fetch metadata for magnet " + magnet.infoHash()
+                + " from any of " + alreadyTried.size() + " peer(s) tried");
+        recordMagnetAddFailed(magnet, "No peer had the metadata (tried " + alreadyTried.size() + ")");
     }
 
     private void fetchMagnetMetadataViaDhtThenAdd(MagnetLink magnet) {
-        List<PeerAddress> peers;
-        try {
-            peers = dhtNode.findPeers(magnet.infoHash(), ourListenPort, false, DHT_QUERY_TIMEOUT);
-        } catch (RuntimeException e) {
-            LOG.log(System.Logger.Level.WARNING, "DHT peer lookup failed for magnet " + magnet.infoHash(), e);
-            return;
-        }
-        List<PeerAddress> candidates = peers.stream().limit(MAX_METADATA_FETCH_PEER_ATTEMPTS).toList();
-        // A trackerless magnet has no announce-list to give the resulting torrent - it
-        // relies on addTorrent's own automatic DHT peer-seeding (seedFromDhtIfTrackerless)
-        // from here on, same as it relied on DHT to find this first batch of peers.
-        fetchMetadataFromCandidatesThenAdd(magnet, candidates, List.of());
+        Settings settings = settingsStore.current();
+        metadataFetchLimiter.resizeTo(settings.magnetFetchConcurrencyLimit());
+        Instant deadline = Instant.now().plusSeconds(settings.magnetFetchTimeBudgetSeconds());
+        Set<PeerAddress> alreadyTried = new HashSet<>();
+        do {
+            List<PeerAddress> peers;
+            try {
+                peers = dhtNode.findPeers(magnet.infoHash(), ourListenPort, false, DHT_QUERY_TIMEOUT);
+            } catch (RuntimeException e) {
+                LOG.log(System.Logger.Level.WARNING, "DHT peer lookup failed for magnet " + magnet.infoHash(), e);
+                recordMagnetAddFailed(magnet, "DHT peer lookup failed");
+                return;
+            }
+            List<PeerAddress> fresh = peers.stream()
+                    .filter(address -> !alreadyTried.contains(address))
+                    .limit(settings.magnetFetchCandidatesPerRound())
+                    .toList();
+            alreadyTried.addAll(fresh);
+            Optional<byte[]> infoDictBytes = raceOneRound(magnet, fresh);
+            if (infoDictBytes.isPresent()) {
+                // A trackerless magnet has no announce-list to give the resulting torrent -
+                // it relies on the resulting TorrentSession's own trackerless DHT re-query
+                // (start()/reannounce() -> startViaDht()/reannounceViaDht(), design_docs/0036's
+                // own addendum) from here on, same as it relied on DHT to find this first batch
+                // of peers.
+                addFetchedTorrent(magnet, infoDictBytes.get(), List.of());
+                return;
+            }
+            if (fresh.isEmpty() && !sleepUnlessDeadlinePassed(EMPTY_ROUND_RETRY_DELAY, deadline)) {
+                break;
+            }
+        } while (Instant.now().isBefore(deadline));
+        LOG.log(System.Logger.Level.WARNING, "Could not fetch metadata for magnet " + magnet.infoHash()
+                + " from any of " + alreadyTried.size() + " peer(s) tried");
+        recordMagnetAddFailed(magnet, "No peer had the metadata (tried " + alreadyTried.size() + ")");
     }
 
-    /** Shared by both magnet metadata-fetch paths above: tries each candidate
-     * sequentially, stopping at the first success - see design_docs/0028 for the accepted
-     * worst-case-latency trade-off this implies. trackerUrls becomes the resulting
-     * torrent's announce-list (empty for the DHT path). */
-    private void fetchMetadataFromCandidatesThenAdd(
-            MagnetLink magnet, List<PeerAddress> candidates, List<String> trackerUrls) {
-        for (PeerAddress address : candidates) {
-            byte[] infoDictBytes;
-            try {
-                infoDictBytes = MetadataFetcher.fetch(address, magnet.infoHash(), ourPeerId);
-            } catch (IOException | RuntimeException e) {
-                LOG.log(System.Logger.Level.DEBUG,
-                        "Metadata fetch from " + address + " failed for magnet " + magnet.infoHash(), e);
-                continue;
-            }
-            try {
-                addTorrent(synthesizeTorrentFileBytes(infoDictBytes, trackerUrls));
-            } catch (IOException | RuntimeException e) {
-                // The problem is on our side (storage, directory creation, ...), not this
-                // peer's - trying another peer for the same doomed outcome wouldn't help.
-                LOG.log(System.Logger.Level.WARNING,
-                        "Fetched metadata for magnet " + magnet.infoHash() + " but could not add the torrent", e);
-            }
-            return;
+    /** Sleeps up to delay, but never past deadline, and never at all if deadline has already
+     * passed - avoids sleeping the full delay only to immediately fail the loop's own
+     * Instant.now().isBefore(deadline) check anyway. Returns false (loop should stop now,
+     * interrupted or nothing left of the budget) or true (fine to keep looping). */
+    private static boolean sleepUnlessDeadlinePassed(Duration delay, Instant deadline) {
+        Duration remaining = Duration.between(Instant.now(), deadline);
+        if (remaining.isNegative() || remaining.isZero()) {
+            return false;
         }
-        LOG.log(System.Logger.Level.WARNING, "Could not fetch metadata for magnet " + magnet.infoHash()
-                + " from any of " + candidates.size() + " peer(s) tried");
+        try {
+            Thread.sleep(delay.compareTo(remaining) < 0 ? delay : remaining);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+        return true;
+    }
+
+    /** One round of the retry loops above: races every candidate concurrently via
+     * invokeAny(), stopping at the first success - see design_docs/0028's addendum for why
+     * this replaced the original sequential, single-attempt design (revisited once real-world
+     * evidence showed it wasn't trying enough peers, not a speculative change). Per-candidate
+     * failure reasons are logged inside fetchOneCandidate() itself, not here - invokeAny()
+     * only surfaces the *last* failure as the ExecutionException's cause, which would lose
+     * every other candidate's own reason otherwise. */
+    private Optional<byte[]> raceOneRound(MagnetLink magnet, List<PeerAddress> candidates) {
+        if (candidates.isEmpty()) {
+            return Optional.empty();
+        }
+        List<Callable<byte[]>> tasks = candidates.stream()
+                .<Callable<byte[]>>map(address -> () -> fetchOneCandidate(magnet, address))
+                .toList();
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            return Optional.of(executor.invokeAny(tasks));
+        } catch (ExecutionException e) {
+            return Optional.empty();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return Optional.empty();
+        }
+    }
+
+    /** metadataFetchLimiter bounds simultaneous in-flight attempts engine-wide, across every
+     * magnet-add and every round happening at once - a candidate beyond the current limit
+     * simply blocks here until a slot frees up; invokeAny()'s own cancellation of not-yet
+     * -started tasks once a round's winner is found means a candidate still waiting on
+     * acquire() when that happens is just cleanly interrupted, never having opened a socket. */
+    private byte[] fetchOneCandidate(MagnetLink magnet, PeerAddress address) throws IOException {
+        try {
+            metadataFetchLimiter.acquire();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted while waiting for a metadata-fetch slot", e);
+        }
+        try {
+            return MetadataFetcher.fetch(address, magnet.infoHash(), ourPeerId, encryptionMode.get());
+        } catch (IOException | RuntimeException e) {
+            LOG.log(System.Logger.Level.DEBUG,
+                    "Metadata fetch from " + address + " failed for magnet " + magnet.infoHash(), e);
+            throw e;
+        } finally {
+            metadataFetchLimiter.release();
+        }
+    }
+
+    /** Shared by both magnet metadata-fetch paths above once raceOneRound() finds a winner.
+     * trackerUrls becomes the resulting torrent's announce-list (empty for the DHT path). */
+    private void addFetchedTorrent(MagnetLink magnet, byte[] infoDictBytes, List<String> trackerUrls) {
+        try {
+            addTorrent(synthesizeTorrentFileBytes(infoDictBytes, trackerUrls));
+        } catch (IOException | RuntimeException e) {
+            // The problem is on our side (storage, directory creation, ...), not this
+            // peer's - trying another peer for the same doomed outcome wouldn't help.
+            LOG.log(System.Logger.Level.WARNING,
+                    "Fetched metadata for magnet " + magnet.infoHash() + " but could not add the torrent", e);
+            recordMagnetAddFailed(magnet, "Fetched metadata but could not add the torrent");
+        }
     }
 
     /** Wraps a verified info-dict back into a full top-level torrent-file byte array (with
@@ -886,10 +1140,9 @@ public final class TorrentEngine {
             TorrentSession session = TorrentSession.restoreAsync(
                     metadata, trackerClient, directory, ourPeerId, ourListenPort, listener, dhtNode,
                     rateLimiters, fileHandlePool, pieceVerificationLimiter, encryptionMode, seedingLimitOverride,
-                    addedAt, running);
+                    addedAt, trackerlessReannounceIntervalSeconds, running);
             sessions.put(metadata.infoHash(), session);
             directories.put(metadata.infoHash(), directory);
-            seedFromDhtIfTrackerless(session, trackerClient, metadata.infoHash());
         } catch (IOException | RuntimeException e) {
             LOG.log(System.Logger.Level.WARNING, "Could not restore torrent from " + directory, e);
         }
@@ -977,6 +1230,13 @@ public final class TorrentEngine {
         return peerServer != null ? OptionalInt.of(peerServer.port()) : OptionalInt.empty();
     }
 
+    /** Package-private purely for test access (e.g. seeding a real contact directly into the
+     * routing table to test saveDhtRoutingTable()/loadPersistedDhtContacts() without waiting
+     * on real bootstrap) - null whenever DHT is disabled, same as dhtStatus().enabled(). */
+    DhtNode dhtNode() {
+        return dhtNode;
+    }
+
     /** Stops every managed session - for graceful process shutdown. Deliberately does not
      * touch any persisted state marker: whatever running/stopped state was last recorded
      * stays as the desired state for the next restore(), regardless of why the process
@@ -991,6 +1251,7 @@ public final class TorrentEngine {
             peerServer.close();
         }
         if (dhtNode != null) {
+            saveDhtRoutingTable();
             dhtNode.close();
         }
     }

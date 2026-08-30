@@ -20,6 +20,12 @@ import {
   eventLogSettingsPatch,
 } from './event-log-settings/event-log-settings';
 import {
+  MagnetFetchSettings,
+  MagnetFetchSettingsForm,
+  buildMagnetFetchSettingsForm,
+  magnetFetchSettingsPatch,
+} from './magnet-fetch-settings/magnet-fetch-settings';
+import {
   NetworkSettings,
   NetworkSettingsForm,
   buildNetworkSettingsForm,
@@ -51,6 +57,7 @@ type SettingsFormGroup = FormGroup<{
   seeding: SeedingSettingsForm;
   eventLog: EventLogSettingsForm;
   watchFolder: WatchFolderSettingsForm;
+  magnetFetch: MagnetFetchSettingsForm;
 }>;
 
 /**
@@ -67,6 +74,7 @@ type SettingsFormGroup = FormGroup<{
     AppearanceSettings,
     ButtonModule,
     EventLogSettings,
+    MagnetFetchSettings,
     NetworkSettings,
     RateLimitSettings,
     SeedingSettings,
@@ -107,6 +115,7 @@ export class SettingsPage {
             seeding: buildSeedingSettingsForm(settings),
             eventLog: buildEventLogSettingsForm(settings),
             watchFolder: buildWatchFolderSettingsForm(settings),
+            magnetFetch: buildMagnetFetchSettingsForm(settings),
           }),
         );
       }
@@ -127,6 +136,7 @@ export class SettingsPage {
       ...seedingSettingsPatch(value.seeding),
       ...eventLogSettingsPatch(value.eventLog),
       ...watchFolderSettingsPatch(value.watchFolder),
+      ...magnetFetchSettingsPatch(value.magnetFetch),
     };
 
     this.saving.set(true);

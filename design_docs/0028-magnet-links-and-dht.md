@@ -189,7 +189,10 @@ pipeline untouched.
   faster when most candidates are dead, but sequential is simply less
   code, and this can be revisited if real-world latency turns out to be
   a problem - not clear it will be, since most magnet links only need one
-  peer that actually has the metadata.
+  peer that actually has the metadata. **Since superseded** - see this
+  doc's own 2026-08-30 addendum: real-world evidence showed this wasn't
+  trying enough peers, and the fix is now a concurrent, retried, live-
+  tunable version of this same idea, not a different design.
 - **A total failure (no tracker reachable, or none of the peers tried had
   the metadata) is only logged server-side, not surfaced to the UI.**
   Raised explicitly rather than silently decided: this is the same
@@ -199,7 +202,10 @@ pipeline untouched.
   be slower and less certain than a local file upload, so it inherits the
   same deferral rather than getting bespoke "pending" UI treatment now.
   Once metadata succeeds, the resulting torrent appears exactly like any
-  other, through the existing snapshot/push mechanism.
+  other, through the existing snapshot/push mechanism. **Since superseded**
+  - see `[[0060-magnet-add-failure-feedback]]`: a total failure now also
+  records a `MAGNET_ADD_FAILED` library event, visible in the Events tab
+  and used by the frontend to resolve its own optimistic pending row.
 - **`POST /api/torrents/magnet`** takes a raw `text/plain` magnet URI
   and returns `204` (matching this resource's other action endpoints,
   e.g. pause/resume) rather than a `TorrentView` - there's nothing to
@@ -521,6 +527,117 @@ originally-stated primary goal) and everything needed to get there.
   `dht`'s public surface, which stays deliberately just `DhtNode` (plus the small value
   types its methods return/accept: `NodeId`, `NodeInfo`, `DhtException`).
 
+## Addendum: concurrent, retried, live-tunable peer sampling (2026-08-30)
+
+The "Up to 8 peers are tried sequentially, not concurrently" decision above was deliberately
+flagged as revisitable: *"this can be revisited if real-world latency turns out to be a
+problem - not clear it will be."* This is that revisit, triggered by a real debugging session
+rather than speculation.
+
+**The trigger**: a user's magnet add kept failing. Chased what looked like a network-level
+block on port 6881 across dev mode, a Docker rebuild, and raw `nc` outside the app entirely -
+along the way, a real bug surfaced and got fixed (`MetadataFetcher` never actually respected
+the configured `EncryptionMode`, see `design_docs/0052`'s own addendum). The theory finally
+fell apart against one piece of decisive evidence: the user pulled up qBittorrent's live peer
+list for the exact same torrent, on the same machine and network - roughly 76 real peers,
+several on port 6881 itself, all reachable. That ruled out a network block outright.
+GrimTorrenter's own magnet-add path was simply trying far too few peers, sequentially, to
+reliably beat ordinary BitTorrent swarm churn - most candidates in any real swarm are
+routinely unreachable at any given moment (NAT, firewalls, offline), which a client trying
+dozens-to-hundreds of candidates over real time shrugs off and one trying 8 once does not.
+
+**The fix, discussed and revised with the user before landing on this shape - three pieces:**
+
+1. **Race a round's candidates concurrently, not sequentially.** `TorrentEngine.raceOneRound()`
+   builds one `Callable<byte[]>` per candidate and hands them to
+   `ExecutorService.invokeAny()` (`Executors.newVirtualThreadPerTaskExecutor()`, the same
+   virtual-thread-per-connection convention `[[0007-concurrency-model]]` already established
+   elsewhere) - the first candidate to answer wins, and `invokeAny()` itself cancels every
+   other still-in-flight or not-yet-started task. This alone turns a round's worst-case
+   latency from *N × up to ~20s* (a `PREFERRED`-mode candidate may attempt both an encrypted
+   and a plaintext connection) into roughly one candidate's worth of wall-clock time.
+2. **Keep trying over a bounded time window, not just one batch.** Raised directly by the
+   user reviewing an earlier draft of this fix that only widened a single batch: qBittorrent's
+   peer list wasn't a static 76-peer snapshot, it grew to that over real time via repeated
+   tracker re-announces/DHT lookups - a meaningful part of *why* it succeeds where a
+   single one-shot batch might not. `fetchMagnetMetadataViaTrackerThenAdd()`/
+   `fetchMagnetMetadataViaDhtThenAdd()` are now `do`/`while` loops: each iteration announces
+   (or re-queries DHT), filters the response down to addresses not already tried this attempt
+   (a `Set<PeerAddress> alreadyTried` accumulated across rounds, so a known-dead peer is never
+   raced twice), races the fresh ones via `raceOneRound()`, and either returns immediately on
+   success or loops back until a deadline computed once at the start passes. A round that
+   found genuinely nothing *new* to try (every candidate in the response was already tried)
+   sleeps a short fixed `EMPTY_ROUND_RETRY_DELAY` (5s, clamped to whatever's left of the
+   budget) before looping - a round that actually raced fresh candidates needs no such delay,
+   since racing already costs roughly one candidate's connect-timeout worth of time on its
+   own, a reasonable re-announce cadence for free. Without that delay, a tracker/DHT that
+   keeps handing back the same already-tried addresses would spin-loop re-announcing as fast
+   as it can answer - a real edge case (common once a smaller swarm's candidates are mostly
+   exhausted early), not a hypothetical one, so it's guarded explicitly rather than left as a
+   surprise. A tracker announce or DHT lookup that itself throws still fails the whole attempt
+   immediately, as before - retrying the identical broken tracker for the full budget isn't
+   the problem this loop solves.
+3. **Made the tuning numbers themselves live-configurable**, also raised by the user in the
+   same review: rather than fixed constants or restart-only deploy config, `Settings` gained
+   three new fields - `magnetFetchTimeBudgetSeconds` (default 90), `magnetFetchCandidatesPerRound`
+   (default 50, also now drives the tracker announce's own `num_want` - replacing the old fixed
+   `MAGNET_NUM_WANT` constant), and `magnetFetchConcurrencyLimit` (default 64) - the same
+   live, user-editable, no-restart mechanism (`[[0041-live-settings-store]]`) already backing
+   rate limits, MSE mode, and seeding limits, added the same "sibling constructor overload,
+   touch zero existing call sites" way every prior field addition to that record has been. Same
+   never-unlimited, silently-normalized-if-`<= 0` treatment `eventLogRetentionDays`/
+   `watchFolderRetentionDays` already established - an advanced user (or someone actively
+   diagnosing a connectivity issue, the user's own stated motivation for wanting this live) can
+   set any of them generously high, just not to a degenerate value meaning "never give up" or
+   "no concurrency bound at all." A new `magnet-fetch-settings` frontend group
+   (`[[0045-settings-page]]`'s established per-topic component/form-builder-pair shape) exposes
+   all three; `Settings` already round-trips as a flat, DTO-less record, so no new REST surface
+   was needed. Each of `fetchMagnetMetadataViaTrackerThenAdd()`/`ViaDhtThenAdd()` reads
+   `settingsStore.current()` once at the start of its own attempt - so a live change takes
+   effect on the *next* magnet add, matching how `encryptionMode`/rate limits are already
+   described as applying "on the very next connection attempt," not retroactively mid-flight.
+
+**`LiveResizableSemaphore`** (new, small, `TorrentEngine`'s own package): the concurrency
+limit backs a `Semaphore` bounding simultaneous in-flight metadata-fetch connection attempts
+*engine-wide*, not per-magnet-per-round - still needed even at a generous default, since the
+retry loop can hold attempts open across a whole ~90s window per magnet, and the pre-existing
+multi-magnet-paste feature (`TorrentList.submitMultipleMagnets`, frontend,
+`design_docs/0029`) means several magnets can be in flight at once; without an engine-wide
+cap, pasting several magnets at once could fan out into hundreds of simultaneous sockets. A
+plain `java.util.concurrent.Semaphore` has no public "resize beyond initial" API, so this
+small subclass adds one: `release(n)` safely grows the total with no prior `acquire()`
+needed, and the JDK's own protected `reducePermits(n)` safely shrinks it without disturbing
+permits already issued to an in-flight `acquire()` (its own Javadoc: "useful in subclasses
+that use semaphores to track resources that become unavailable" - exactly this case).
+`resizeTo()` tracks its own last-applied total (`availablePermits()` reflects currently-*free*
+permits, not the configured total) and is `synchronized` - fine per
+`[[0007-concurrency-model]]`'s "no synchronized in the hot path" rule, since a resize happens
+at most once per magnet-add attempt, not per-candidate or per-byte.
+
+**Stability** (`[[0051-stability-as-a-standing-consideration]]`): the semaphore above is
+exactly what keeps the per-round candidate pool (up to 50, live-configurable higher), the
+~90s retry window, and the unbounded number of magnets a user can paste at once from
+compounding into unbounded socket fan-out - total concurrent connection attempts for this
+purpose stays capped engine-wide regardless of how many magnets, rounds, or candidates are
+in flight, and that cap can't be configured away to "unlimited" (same `<= 0`-normalized
+treatment as the other two new fields). No change to per-torrent-count scaling - this only
+fires during the one-shot magnet-add window, not for an active torrent's lifetime. Cleanup on
+every exit path: `invokeAny()` itself cancels/interrupts every not-yet-completed task once a
+winner is found or all fail, `MetadataFetcher.fetch()`'s own try-with-resources still closes
+each `PeerConnection`, and the semaphore's `acquire()`/`release()` pairing is a standard
+try/finally safe against mid-attempt interruption. Not reachable/triggerable by a hostile
+remote peer or tracker beyond what could already happen today - a malicious tracker could
+already return up to `magnetFetchCandidatesPerRound` bogus addresses; the semaphore is exactly
+what prevents that from turning into unbounded fan-out either way.
+
+**Tests**: `TorrentEngineMagnetTest` gained cases for concurrent racing within one round
+(an early candidate unreachable, a later one real), the retry loop itself (a fake tracker
+whose first response only offers an unreachable peer, whose second offers a real one), and
+the empty-candidates guard (`raceOneRound()` returning immediately rather than calling
+`invokeAny()` on an empty task list, which throws `IllegalArgumentException`) - all
+constructed with a short (`magnetFetchTimeBudgetSeconds` of a few seconds, not production's
+90) test `Settings` so they stay fast regardless of how many retry rounds they need.
+
 ## Testing
 
 `NoOpTrackerClientTest` covers a bare announce (empty peers, positive/bounded interval).
@@ -656,6 +773,331 @@ its `DhtResource`/`DhtStatusView` app-layer counterparts, mirroring `TorrentView
 - **`nodeCount` is `0`, not null/omitted, whenever `enabled` is `false`** - lets a
   consumer render it directly without a null check; "DHT is off" and "DHT is on with zero
   known nodes yet" are already distinguishable via `enabled` alone.
+
+## Addendum: routing-table health - periodic bucket refresh and a real replacement policy (2026-08-30)
+
+**The trigger**: after the concurrent/retried peer-sampling fix above shipped and was
+confirmed working live, the user noticed GrimTorrenter's own DHT node count stayed at ~16-21
+known nodes indefinitely, while qBittorrent (libtorrent) reached several hundred on the same
+network. Root-caused directly against this doc's own k-bucket/`NodeLookup` sections below -
+both gaps were flagged as deliberately deferred when they first shipped - plus a reference
+check against libtorrent-rasterbar's real `routing_table.cpp` (`arvidn/libtorrent`, `RC_2_0`
+branch), not guesswork from the BEP 5 spec alone:
+
+1. **`Bootstrap.run()` fires exactly once, at startup**, and its one `NodeLookup` self-lookup
+   only explores the neighborhood near our own node id (bounded to the closest-8 shortlist -
+   see "iterative find_node lookup and bootstrap" above). Nothing ever queries into the other
+   ~150 buckets covering the rest of the 160-bit id space. libtorrent, by contrast, runs
+   continuous background bucket refresh (`routing_table::next_refresh()`, polled on a timer)
+   plus a self-refresh every ~15 minutes.
+2. **A full bucket never evicted a stale contact for a better one** - the "k-bucket routing
+   table" section above already built `RoutingTable.insert()`'s ping-then-evict contract and
+   even proved it works (`RoutingTableTest.evictingThenInsertingReplacesTheOldContact`), but
+   explicitly noted it "is deliberately not acted on yet... not turned on until there's a
+   concrete reason to (e.g. once bootstrapping/refresh in a later slice starts exercising the
+   table enough for it to matter)." This is that later slice.
+
+Both are structural, not a bug: the table's own theoretical capacity is 1280 contacts (160
+buckets x 8), but almost none of it was ever touched, and once the handful of buckets near our
+own id filled up during the one startup lookup, growth stopped entirely from that path.
+
+**Framing from the user, worth recording**: the project's stability goal
+([[0051-stability-as-a-standing-consideration]]) was already mostly achieved by this point -
+this was never a stability problem, the client behaved correctly with a sparse table. It was a
+**usability** gap: a genuinely underused resource made peer discovery slower than it should be.
+
+**The fix - turn on the replacement policy, and add bucket refresh reusing `NodeLookup`:**
+
+1. **Replacement policy.** `DhtNode.seen(id, from)` - called from both `handleQuery` and
+   `handleResponse`, i.e. on the single receive-loop thread - now acts on
+   `RoutingTable.insert()`'s returned stale contact instead of discarding it: spawns a virtual
+   thread (never inline - the receive loop must keep processing other packets, same "don't
+   block on real network I/O" reasoning `reannounceViaDht()` already established in
+   [[0036-dht-backstop-for-tracker-bearing-torrents]]) that pings the stale contact
+   (`REPLACEMENT_PING_TIMEOUT`, the same 5s convention `Bootstrap`/`PeerLookup`/
+   `TorrentSession`'s own DHT timeouts already use). If it answers, `insert()` it again to
+   refresh it (the new candidate is simply not added this round - matches BEP 5); if it times
+   out, `evict()` it and `insert()` the new candidate in its place - exactly the sequence
+   `RoutingTableTest.evictingThenInsertingReplacesTheOldContact` already proved works, now
+   actually driven automatically. No new synchronization needed - `RoutingTable`'s `insert`/
+   `evict` were already `synchronized`, so a burst of concurrent replacement attempts against
+   the same bucket is safe (self-correcting if two candidates race for the same stale slot;
+   occasional extra churn, never a leak or a bucket exceeding `BUCKET_SIZE`).
+2. **Periodic bucket refresh.** `RoutingTable` gained a `lastRefreshed` timestamp per bucket -
+   touched by every successful `insert()`, or explicitly via a new `markRefreshed(bucketIndex)`
+   after a refresh that found nothing new - plus `mostOverdueBucket()` (the bucket that's gone
+   longest without either, a never-touched bucket always sorting first) and
+   `randomIdInBucket(bucketIndex)`, the standard Kademlia "pick a lookup target inside this
+   bucket" technique: copy our own id, flip the one bit that determines `bucketIndex`
+   (`distanceTo(id).bitLength() - 1`, counting from the least significant bit), randomize
+   every bit below that position, leave every bit above it unchanged (or the distance would
+   land in a different bucket entirely). `DhtNode.refreshRoutingTable()` ties these together -
+   picks the most-overdue bucket, generates a target inside it, and runs
+   `NodeLookup.run(this, target, timeout)` - reusing `NodeLookup` exactly the way the
+   bootstrap/`NodeLookup` section above already anticipated ("expected to be reused by a
+   future routing-table refresh... entirely within this package"), no new lookup surface
+   needed. Every node touched along the way already reaches the table normally via the
+   existing `seen()` - unchanged.
+3. **`TorrentEngine` wiring.** A third task on the existing `maintenanceScheduler` (already
+   home to `checkSeedingLimits()`/`scanWatchFolder()`, [[0056]] - "two cheap, independent
+   periodic engine-maintenance concerns sharing one thread rather than each getting its own"),
+   gated on `dhtNode != null`. Unlike the other two, its own runnable
+   (`refreshDhtRoutingTable()`) just spawns a virtual thread and returns immediately, rather
+   than running the lookup inline - a `NodeLookup` can take several real seconds (bounded by
+   its own `MAX_ROUNDS`/per-query timeout), and blocking the shared scheduler thread that long
+   would delay `checkSeedingLimits()`/`scanWatchFolder()`'s own ticks.
+4. **New live `Settings` field: `dhtRefreshIntervalSeconds`** (default 300s / 5 minutes), same
+   sibling-constructor-overload and never-degenerate-value-normalization pattern as every
+   prior field addition. Unlike `trackerlessDhtReannounceIntervalSeconds`
+   ([[0036]]'s own addendum), which drives a *per-torrent* scheduled task re-read on each
+   `start()`, this drives an *engine-wide* one read once at construction - so a live change
+   here takes effect on the engine's next construction/restart, not retroactively (same
+   underlying "a `ScheduledExecutorService`'s period can't change mid-flight" limitation, just
+   at engine scope). Deliberately shorter than libtorrent's own observed ~15-minute cadence -
+   each tick is one lightweight `find_node` lookup against a single bucket, much cheaper than
+   a full `get_peers` reannounce, so a shorter default is reasonable DHT etiquette while still
+   visibly filling in the table faster after a fresh start. Exposed as a new row in the
+   existing Network settings group, alongside `trackerlessDhtReannounceIntervalSeconds`.
+
+**Deliberately out of scope**: persisting the routing table across restarts (so the app starts
+"warm" instead of cold-bootstrapping every time) - a related but distinct concern (cold-start
+speed after a restart, not "stays sparse while running," which the fix above directly
+addresses). Logged to `TODO.md` as a separate follow-on rather than folded in here.
+
+### Testing
+
+`RoutingTableTest` gained cases for `randomIdInBucket()` (several bucket indices including
+both ends, 0 and 159, each checked against the same `distanceTo`/`bitLength` computation
+`bucketIndex()` uses internally), `mostOverdueBucket()` preferring a never-touched bucket over
+a recently-touched one, and `insert()` touching its own bucket's refresh timestamp as a side
+effect. `DhtNodeTest` gained real-loopback-socket cases (same style as this doc's original
+DHT tests) for both replacement outcomes - an unreachable stale contact gets evicted and
+replaced, a reachable one is kept and the new candidate dropped - and a
+`refreshRoutingTableDiscoversARealNodeThroughAKnownBridge` case proving the mechanism reaches
+a node known only indirectly (through a bridge node), the same multi-hop shape a real refresh
+needs; deterministic rather than relying on mocked randomness, since bucket 0 (a fresh table's
+own `mostOverdueBucket()`) has a fully deterministic `randomIdInBucket()` result (bucket 0
+covers XOR distance exactly 1 - the least significant bit differs and nothing else, so there
+are no lower bits left to randomize). `TorrentEngineTest` gained a smoke test confirming the
+`maintenanceScheduler` wiring itself runs without throwing - `DhtNode.refreshRoutingTable()`'s
+own behavior is already thoroughly covered at that lower level, so this only proves the
+engine-level plumbing.
+
+### Follow-up fix: fall back to a full bootstrap retry when the table is still too sparse
+
+**The trigger**: deployed the fix above and, on the very next real run, the DHT node count
+regressed - to just 1, worse than the ~16-21 baseline from before this addendum, with the
+existing trackerless torrent stalled and a re-add finding "0 peer(s) tried." First suspected
+was the new replacement policy causing a burst of simultaneous pings that got outbound DHT UDP
+throttled, wrongly evicting genuinely good contacts in a runaway collapse - a real risk in
+principle, but the DEBUG log the user captured didn't support it: no sign of replacement
+activity at all (which never fires unless a bucket is genuinely full - impossible with a
+near-empty table), and only 2 of the 3 hardcoded bootstrap hosts (`router.bittorrent.com`,
+`router.utorrent.com`) even logged a failure. The third, `dht.transmissionbt.com`, logged
+nothing - almost certainly meaning it succeeded, becoming the *only* contact bootstrap's
+self-lookup had to expand from. If that lone contact's own `find_node` response came back
+empty (or the query itself failed), the self-lookup terminates having found exactly what
+bootstrap itself supplied - one node. This lines up with a live, independent finding from
+earlier the same session: a raw KRPC ping sent directly to `router.bittorrent.com`/
+`router.utorrent.com` on port 6881 from this exact network timed out on both, outside the app
+entirely - this network's reachability to those two specific hosts is impaired, unrelated to
+anything built today. (Initially assumed "flaky" - a second real run's DEBUG log, captured
+after the fix below, showed the *identical* two hosts failing again, and a third manual ping
+test confirmed it a third time. Not flaky: a deterministic, persistent failure to reach those
+two specific hosts from this network - see the host-list expansion below, which is the fix
+that actually addresses this properly, once "just retry" turned out not to be enough on its
+own.)
+
+**The actual gap this exposed**: `refreshRoutingTable()`'s bucket-refresh path is powerless to
+recover from a bootstrap that barely got off the ground. `NodeLookup` always seeds itself from
+`routingTable.closestNodes(...)` - whatever's *already* known. With only one or two contacts in
+the whole table, every subsequent refresh tick just re-queries that same handful of contacts
+for a different random target, never getting a genuine second chance at reaching the wider
+network the way a fresh attempt at the well-known hosts would. A flaky first bootstrap could
+therefore leave the table starved for the entire process lifetime, and this addendum's own new
+mechanism did nothing to fix that specific failure mode.
+
+**The fix**: `refreshRoutingTable()` now checks `routingTable.size()` first - below
+`MIN_HEALTHY_NODE_COUNT` (`RoutingTable.BUCKET_SIZE`, 8 - a natural "at least one healthy
+bucket's worth" cutoff, not chosen for any more specific meaning), it re-runs full
+`bootstrap()` (re-pinging the three well-known hosts, then a fresh self-lookup) instead of a
+narrow single-bucket refresh. Once the table clears that threshold, it falls back to the
+per-bucket refresh already built above. This gives a flaky initial bootstrap a real, repeated
+second (and third, and fourth...) chance every `dhtRefreshIntervalSeconds`, rather than only
+ever getting one shot at process startup.
+
+**`DhtNodeTest` updates**: `refreshRoutingTableDiscoversARealNodeThroughAKnownBridge` (the
+bucket-refresh test above) needed padding - its 2-contact setup (bridgeNode + implicitly
+target once discovered) now falls below `MIN_HEALTHY_NODE_COUNT` and would take the new
+bootstrap-retry branch instead of the path it means to test. Padded with 7 more directly-
+inserted contacts in an unrelated bucket (never pinged - nowhere near full) purely to clear
+the threshold. A new `refreshRoutingTableReRunsBootstrapWhenTheTableIsStillSparse` smoke-tests
+the new branch is reachable and doesn't throw - real bootstrap success/failure is inherently
+network-dependent (as this whole investigation just demonstrated firsthand), so, like
+`TorrentEngineMagnetTest`'s own DHT-enabled tests, this only asserts the call completes, not a
+specific outcome.
+
+### Second follow-up fix: two more independently-confirmed bootstrap hosts
+
+**The trigger**: the retry fix above shipped and genuinely helped (node count climbed from 1 to
+2 on the next real run - real, if slow, progress), but a second DEBUG log capture, from a fresh
+restart, showed `router.bittorrent.com` and `router.utorrent.com` failing *again*, the exact
+same two hosts as the first capture. That ruled out "flaky" - two identical failures across two
+independent runs is a deterministic, persistent gap for this network, not transient bad luck.
+A direct manual KRPC ping test (bypassing the app entirely, same technique used earlier this
+session) confirmed it a third time: those two hosts reliably don't respond, while
+`dht.transmissionbt.com` reliably does. Retrying the same three hosts on a schedule (the fix
+above) can only ever get one real vote out of three on this network - not nothing, but not much
+either, and it explains why growth was real but slow.
+
+**The fix**: rather than accept "1 of 3 works here," added genuine redundancy - tested other
+well-known public DHT bootstrap hosts directly (same manual KRPC ping technique) before adding
+anything speculative. `dht.libtorrent.org` (a different port, 25401 - real bootstrap hosts
+don't actually agree on one) responded immediately - a real, actively-used bootstrap host
+(libtorrent's own, which qBittorrent - the very client whose much higher node count motivated
+this whole investigation - is built on) confirmed reachable specifically from the network that
+was struggling. The user then supplied the actual list libtorrent/qBittorrent configures via
+its own `session.add_dht_router(...)` calls, an authoritative source rather than a guess:
+`router.utorrent.com`, `router.bittorrent.com`, `dht.transmissionbt.com` (all three already
+present), `router.bitcomet.com`, and `dht.aelitis.com`. Checked both of the two new ones
+directly: `router.bitcomet.com` doesn't resolve at all anymore (confirmed independently by the
+user too - genuinely retired, not worth adding as permanently-dead weight); `dht.aelitis.com`
+(Vuze/Azureus) resolves and is a real host, but didn't respond from this particular network -
+added anyway, on the same reasoning that kept `router.bittorrent.com`/`router.utorrent.com`
+despite them failing here too: BEP 5 already treats an unreachable bootstrap host as
+expected/tolerated, so an extra independent host only ever helps on whichever network it does
+work from, never hurts. Net result: five hosts, not the original three, with `dht.transmissionbt.com`
+and `dht.libtorrent.org` the two confirmed-working ones on the network that surfaced this whole
+investigation.
+
+**`DEFAULT_HOSTS`'s shape changed** from `List<String>` plus one shared port constant
+(`DEFAULT_PORT`, 6881) to `List<BootstrapHost>` (a new small record, `host` + `port`) - real
+bootstrap hosts don't actually agree on a port: `dht.libtorrent.org` uses 25401, not 6881.
+`Bootstrap.run(DhtNode, List<BootstrapHost>, Duration)` replaces the old four-arg overload
+(dropped the now-redundant separate `port` parameter); `BootstrapTest`'s two existing cases
+updated to construct a `BootstrapHost` directly instead of passing a bare hostname string plus
+port. A new `defaultHostsIncludesFiveRedundantBootstrapHostsWithTheirOwnPorts` test locks in
+the five-host list and each one's specific port, so a future accidental host/port edit would
+be caught rather than silently drifting.
+
+**Not addressed here, worth noting**: `Bootstrap.seedFrom()` still pings hosts sequentially,
+each up to `DEFAULT_QUERY_TIMEOUT` (5s) - with potentially three of five now failing on a given
+network, one bootstrap/retry pass can take up to ~15s of wall-clock time before the self-lookup
+even starts. Not a correctness problem (bootstrap and every retry already run on their own
+virtual thread, never blocking the maintenance scheduler or anything else), just a minor
+latency cost noted for anyone revisiting this later - racing the seed pings concurrently
+(the same `ExecutorService.invokeAny()`-or-similar pattern already used elsewhere in this
+codebase) would be a natural, low-risk follow-on if it ever proves to matter in practice.
+
+### Third follow-up fix: persist the routing table across restarts
+
+**The trigger**: the two fixes above (bootstrap retry, more redundant hosts) both still depend
+entirely on whichever of the five hardcoded hosts happen to be reachable *right now*, every
+single restart - there's no way to benefit from nodes this process already proved reachable in
+a *previous* run. Raised directly by the user mid-investigation, already logged as a
+deliberately-deferred follow-on when the periodic-refresh feature was first planned earlier the
+same day - picked up now while the DHT-reliability context (and its evidence) was fresh.
+
+**The design**: save the routing table's contacts to disk periodically and on shutdown; on the
+next start, ping them - concurrently, not sequentially - before/alongside the existing
+hardcoded-host bootstrap.
+
+- **`RoutingTable.allNodes()`** - a plain, unsorted enumerator across every bucket (mirrors
+  `size()`'s own shape; unlike `closestNodes()`, nothing here needs distance ordering).
+- **`DhtNode.knownContacts()`** - `allNodes()` mapped to `(address, port)` pairs only, no id.
+  The id isn't needed to re-ping a persisted contact, and dropping it sidesteps any concern
+  about trusting a stale/wrong one - the real, current id always comes back fresh in that
+  ping's own response, the same as any other newly-heard-from contact.
+- **`DhtNode.bootstrap(List<InetSocketAddress>)`** - a new overload, not a parameter added to
+  the existing method (the plain `bootstrap()` stays as the zero-persisted-contacts case, every
+  existing caller/test untouched). Pings every contact **concurrently**
+  (`Executors.newVirtualThreadPerTaskExecutor()`, one virtual thread per contact) - deliberately
+  *not* `Bootstrap.seedFrom()`'s own sequential loop, which is fine for 5 hardcoded hosts but
+  would scale wall-clock time linearly with a persisted list that could be far larger; this way
+  a warm start costs roughly one timeout's worth of time regardless of how many contacts were
+  saved. Same round-of-concurrent-queries shape `NodeLookup`/`TorrentEngine.raceOneRound()`
+  already establish elsewhere. **Staleness/re-validation, resolved for free**: each contact is
+  verified exactly the way any hardcoded bootstrap host already is - only trusted (reaches the
+  routing table via `seen()`) if it actually answers a real ping. No separate "verify before
+  trusting" pass was needed; a saved contact that's gone dead since the last run costs one
+  timeout and is silently skipped, same as an unreachable `router.bittorrent.com` already is
+  today. Falls through to the existing no-arg `bootstrap()` afterward - persisted contacts are
+  a head start, never a replacement for the hardcoded-host mechanism.
+- **`TorrentEngine`** ties it together: a new plain-text marker (`.grimtorrenter-dht-nodes`,
+  same "no JSON library at this layer" convention as every other marker file here, one
+  `ip,port` line per contact) is loaded in `createDhtNode()` and handed to the new
+  `bootstrap(List)` overload instead of the old bare `node::bootstrap`; a new package-private
+  `saveDhtRoutingTable()` (same test-visibility convention as `checkSeedingLimits()`/
+  `scanWatchFolder()`) writes `dhtNode.knownContacts()` back out, via write-to-temp-then-
+  `Files.move(..., ATOMIC_MOVE, REPLACE_EXISTING)` so a save racing a process exit can never
+  leave a torn file behind. Wired in twice: `refreshDhtRoutingTable()`'s existing virtual
+  thread calls it right after `dhtNode.refreshRoutingTable()` (piggybacks on the already-
+  scheduled `dhtRefreshIntervalSeconds` cadence rather than adding a second timer), and
+  `shutdown()` calls it once more, synchronously, right before `dhtNode.close()` - between the
+  two, an unclean exit (kill, crash) loses at most one refresh interval's worth of changes, not
+  everything.
+- **`TorrentEngine.dhtNode()`** - a new package-private accessor, purely for test access (the
+  same "package-private purely for testability" convention used throughout this class already)
+  - lets a test seed a real contact directly into the routing table without waiting on real
+  bootstrap, the same technique every other `dht`-package test already uses.
+
+**Stability**: no new unbounded growth (`RoutingTable`'s existing 1280-contact hard cap already
+bounds the persisted file's size); no new concurrency pattern (the warm-start ping round reuses
+an established shape, the atomic-rename save avoids introducing a file-corruption class of bug
+instead of adding one); every failure path (missing/corrupt file on load, an unreachable
+persisted contact, a failed save) is non-fatal and independently logged, matching the tolerance
+every other marker file in this codebase already has; the shutdown-time save sits inside the
+existing `shutdown()` method, on every graceful exit path that already exists.
+
+**Testing**: `RoutingTableTest` covers `allNodes()`. `DhtNodeTest` covers
+`bootstrap(List<InetSocketAddress>)` both ways - a reachable contact gets pinged and added,
+an unreachable one is tolerated and never reaches the table (checked precisely by address+port,
+not by asserting the whole table stays empty - this overload always falls through to the real
+`bootstrap()` afterward, which could legitimately add unrelated real contacts of its own, same
+"tolerated real internet access" acceptance `TorrentEngineMagnetTest`'s own DHT-enabled tests
+already document). `TorrentEngineTest` gained a full save-then-reload round trip: seed a real
+loopback contact into one engine's table, save, shut that engine down, construct a *second*
+`TorrentEngine` against the same `baseDownloadDirectory`, and poll for its `dhtStatus()` to
+reach at least 1 node - proving the warm start actually reaches the routing table on a fresh
+"start," not just that the file gets written.
+
+### Fourth follow-up fix: move the two DHT marker files into the config directory
+
+**The trigger**: raised directly by the user - the two DHT marker files
+(`.grimtorrenter-dht-node-id`, and now `.grimtorrenter-dht-nodes` from the persistence work
+above) both resolve against `baseDownloadDirectory`, the top-level directory a user actually
+browses their torrents in. Unlike every *per-torrent* marker (info hash, state, seeding-limit
+override), which correctly lives inside that torrent's own subdirectory, these two are
+engine-wide and sat directly at the download directory's root - visible clutter (as dotfiles,
+hidden by default, but still there with "show hidden files" or `ls -a`) next to the user's
+actual torrent folders.
+
+**The fix**: the app already has exactly the right home for this. `grimtorrenter.config-
+directory` (default `config`) is already used by `JsonSettingsStore` (`settings.json`) and
+`JsonLinesEventStore` (`events/`, both `grimtorrenter-app`) for engine/app-level bookkeeping,
+separate from `download-directory` where actual torrent data lives - the two DHT marker files
+are the same kind of thing and now live there too.
+
+`TorrentEngine` itself didn't previously accept a config directory at all - only
+`baseDownloadDirectory`. Added the exact same way `watchDirectory` was
+(`design_docs/0056`'s own precedent): a new widest constructor (twelve-arg, appending `Path
+configDirectory`) does the real work; the previous widest (eleven-arg, ending
+`Path watchDirectory`) becomes a delegating overload defaulting `configDirectory` to
+`baseDownloadDirectory` - **preserves every pre-existing caller/test's exact current behavior**
+(confirmed via a full call-site sweep - only `WatchFolderTest.newEngine()` calls that eleven-arg
+form directly, and it stays valid, unchanged). `createDhtNode()`/`loadOrGenerateDhtNodeId()`/
+`loadPersistedDhtContacts()`'s parameters, previously named `baseDownloadDirectory` (a stale
+name even before this - they always only ever touched the DHT markers, never torrent data),
+renamed to `configDirectory` to match what they're actually for now; `saveDhtRoutingTable()`
+resolves against the new `configDirectory` field instead. `TorrentEngineProducer` reuses the
+exact `grimtorrenter.config-directory` property `JsonSettingsStore`/`JsonLinesEventStore`
+already read, rather than introducing a second property for the same directory.
+
+No stability implications beyond what was already true - this only changes *which* directory
+two already-tolerant, already-non-fatal marker files resolve against; no new resource or
+failure-handling surface. `TorrentEngineTest` gained a case constructing an engine with two
+genuinely different directories via the new widest constructor, confirming the DHT-nodes
+marker lands under the config directory and specifically not under the download directory.
 
 ## Alternatives considered
 

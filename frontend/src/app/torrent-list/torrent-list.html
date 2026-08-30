@@ -143,7 +143,12 @@
             <td [class.col-hidden]="isDetailOpen()"></td>
           </tr>
         } @else {
-          <tr app-torrent-row [torrent]="row.torrent" [compact]="isDetailOpen()"></tr>
+          <tr
+            app-torrent-row
+            [torrent]="row.torrent"
+            [compact]="isDetailOpen()"
+            [selected]="selectedInfoHash() === row.torrent.infoHash"
+          ></tr>
         }
       </ng-template>
       <ng-template pTemplate="emptymessage">

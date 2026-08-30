@@ -104,3 +104,120 @@ the node it queries along the way - the same technique `PeerLookupTest`'s own
 - **A configurable/adaptive backstop reannounce interval** instead of a fixed 1800s
   constant - rejected as unnecessary complexity; no real interval exists to read once every
   tracker has failed, and 1800s matches common real-tracker defaults closely enough.
+
+## Addendum (2026-08-30): periodic DHT re-query for genuinely trackerless torrents
+
+**The gap**: this doc's own backstop mechanism only ever covered a torrent that *has*
+trackers, all currently unreachable. A genuinely trackerless torrent (magnet with no
+announce-list, or `.torrent` upload listing none) took a completely different, much weaker
+path: `start()` always called `trackerClient.announce(...)` first, and for a trackerless
+torrent that's a `NoOpTrackerClient`, which never throws and reports a deliberately huge
+(365-day) interval specifically so its own reannounce loop is a no-op. Actual peer discovery
+for these torrents came from `TorrentEngine.seedFromDhtIfTrackerless()`: a *separate*,
+one-shot `dhtNode.findPeers(...)` call made right after torrent creation, entirely outside
+`start()`'s own reannounce scheduling. Net effect: one DHT lookup, ever, plus whatever Peer
+Exchange ([[0040]], 60s cycles) could scrounge from peers already connected from that one
+lookup. This was root-caused while investigating a real report of GrimTorrenter's peer count
+climbing far slower than qBittorrent's for a trackerless magnet (see `PROGRESS.md`'s matching
+entry and [[0028-magnet-links-and-dht]]'s own 2026-08-30 addendum for the sibling fix - too
+few candidates tried, sequentially - found in the same investigation).
+
+**The fix**: extend this doc's own backstop machinery to also cover the genuinely-trackerless
+case from `start()`, instead of routing it through a no-op tracker announce that was never
+going to do anything useful.
+
+- **`start()`** gained an early branch: `if (trackerClient instanceof NoOpTrackerClient)`
+  (the same runtime check `seedFromDhtIfTrackerless` itself used to identify a trackerless
+  torrent) calls a new `startViaDht()` instead of the pointless no-op announce.
+- **New `startViaDht()`**, parallel to `startViaDhtBackstop()` but not sharing its body,
+  since the failure semantics genuinely differ: a `dhtNode == null` or a failed/empty lookup
+  is *never* `ERROR` here, just "enter `DOWNLOADING` with zero peers so far" - there's no
+  prior working state to consider "failed," the same way a regular tracker responding with
+  zero peers isn't `ERROR` either (`startViaDhtBackstop()`, by contrast, has just watched a
+  real tracker announce fail, so an empty-vs-failed DHT lookup there still means something).
+  Feeds `enterDownloading(peers, trackerlessReannounceIntervalSeconds.get())`.
+- **`reannounce()`** gained the same early branch, calling a new `reannounceViaDht()` (parallel
+  to `reannounceViaDhtBackstop()`, same async-virtual-thread-into-`addKnownPeers()` shape)
+  instead of the no-op tracker announce.
+- **`dhtBackstopActive` is deliberately left untouched by either new method.** That flag's own
+  Javadoc (and [[0039-dht-backstop-visibility]]'s UI work) reserves it for a tracker-bearing
+  torrent whose tracker is currently unreachable - a genuine degradation. A trackerless
+  torrent doing DHT lookups is its *normal* operating mode, not a degradation; `usesDht()` /
+  `isTrackerless()` already communicate that unconditionally, and the frontend's
+  `trackers-tab.ts` already computes `usesDht() || dhtBackstopActive()` for display, so
+  nothing is lost by not also flipping the second flag here.
+
+**New live `Settings` field**: `trackerlessDhtReannounceIntervalSeconds` (default 300s / 5
+minutes), read once per `start()` via a `Supplier<Long>` threaded through `TorrentSession`
+exactly the way `Supplier<EncryptionMode> encryptionMode` already is - a change takes effect
+on that torrent's *next* `start()`, not retroactively, for the same reason
+`Math.max(response.interval(), 30)` already can't change mid-flight: a
+`ScheduledExecutorService.scheduleWithFixedDelay` period can't be altered once scheduled
+without cancelling and rebuilding it. **Deliberately a new field, not a reuse of
+`DHT_BACKSTOP_REANNOUNCE_INTERVAL_SECONDS`** (which stays exactly as-is, 1800s, fixed, for
+its own separate tracker-degraded case) - raised directly by the user, whose own reasoning
+was that 30 minutes is far too slow given qBittorrent's peer count visibly grows within
+seconds. Chose 300s over something closer to that qBittorrent-observed speed: shortening this
+interval alone doesn't fully close the qBittorrent gap, which is mostly explained by a much
+richer DHT routing table (379 vs. GrimTorrenter's 21 nodes at the time - a separate,
+already-logged `TODO.md` item) making its *first* lookup far more fruitful, not by re-querying
+DHT every few seconds. Querying `get_peers` for the same info hash that often is also poor DHT
+citizenship - real clients typically re-query on a multi-minute cadence similar to tracker
+announce intervals, and well-behaved remote nodes may deprioritize or ignore overly-frequent
+repeat queries. 300s is meaningfully faster than the existing 1800s backstop interval while
+staying reasonable, and is fully live-tunable (same never-degenerate-value normalization as
+`eventLogRetentionDays` and the [[0028-magnet-links-and-dht]] magnet-fetch fields: `<= 0`
+resets to the 300s default) so it can be experimented with directly - exposed in the frontend
+as a new row in the existing `network-settings` group (`settings.model.ts`,
+`network-settings.ts`/`.html`/`.scss`), not a new settings group, since it's a DHT-adjacent
+tuning knob alongside `dhtEnabled`/`acceptIncomingConnections`/`encryptionMode` rather than a
+topic of its own.
+
+**`TorrentEngine.seedFromDhtIfTrackerless()` removed entirely**, along with its two call sites
+(the `addTorrent()` new-torrent path and the restore path) - `TorrentSession.start()`'s own
+new `startViaDht()` fully replaces what it did, eliminating the previous redundant
+double-lookup (one pointless no-op announce plus one external one-shot DHT seed) in favor of
+one consistent, genuinely periodic mechanism owned entirely by `TorrentSession` itself.
+
+### Stability ([[0051-stability-as-a-standing-consideration]])
+
+- **No new unbounded growth**: each `TorrentSession`'s reannounce timer already existed for
+  every torrent (previously scheduled at a ~365-day interval for trackerless torrents, now a
+  real one) - this changes an existing per-torrent scheduled task's *frequency*, not its
+  *existence*, and the frequency is user-controlled with a normalized, never-degenerate floor.
+- **No new concurrency pattern**: multiple torrents' independent DHT lookups running
+  concurrently against the one shared `DhtNode` already had to work correctly before this
+  change - `startViaDhtBackstop()`/`reannounceViaDhtBackstop()` already do exactly this for
+  any number of tracker-bearing-but-degraded torrents simultaneously. This just makes that
+  same already-supported pattern more frequent for trackerless torrents specifically, not a
+  new category of load `DhtNode` hasn't already had to handle. Each lookup is still bounded by
+  the existing `DHT_QUERY_TIMEOUT` (5s).
+- **Cleanup unaffected**: `shutdownNetworking()`'s existing `scheduler.shutdownNow()` already
+  cancels whatever's scheduled regardless of which reannounce path is in use - no new exit
+  path to account for.
+
+### Testing
+
+`TorrentSessionTest` gained two cases, same real-local-UDP-socket DHT style as the three
+cases this doc's Testing section above already lists:
+
+- `startViaDhtFindsPeersImmediatelyForATrackerlessTorrent` - a `NoOpTrackerClient` session
+  whose peer is already announced to DHT before `start()` runs finds and connects to it via
+  `startViaDht()` alone (no `reannounce()` involved), and `isDhtBackstopActive()` stays
+  `false` throughout.
+- `reannounceViaDhtPicksUpANewlyAnnouncedPeerOnALaterCycle` - proves periodicity, not just a
+  one-shot lookup: `start()`'s own DHT lookup runs *before* the peer is announced to DHT at
+  all, so it finds nothing; the peer only becomes discoverable afterwards, and is picked up on
+  a later *scheduled* cycle - `reannounce()` is never called directly here (unlike
+  `fallsBackToDhtWhenReannounceFails` above, which drives one cycle manually) - using the
+  widest `TorrentSession.create(...)` overload with `trackerlessReannounceIntervalSeconds`
+  supplied as `() -> 1L` so the test doesn't wait out the real 300s default.
+
+Existing trackerless coverage (`addKnownPeersSeedsAdditionalPeersAndAttemptsConnection`,
+constructed with `dhtNode == null`) needed no change - `startViaDht()`'s `dhtNode == null`
+branch still yields zero peers on `start()`, exactly matching what that test already asserted
+before this addendum, just reached through a different internal path now.
+`TorrentEngineMagnetTest`'s DHT-related cases (`addMagnetDoesNotThrowSynchronouslyWhenNoUsableTrackerButDhtEnabled`
+and friends) only assert `addMagnet()` doesn't throw synchronously, never on
+`seedFromDhtIfTrackerless()`'s specific one-shot behavior, so the removal needed no test
+changes there.

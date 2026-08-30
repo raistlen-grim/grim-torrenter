@@ -15,6 +15,7 @@ import com.grimtorrenter.engine.metainfo.PieceHashes;
 import com.grimtorrenter.engine.metainfo.SingleFileTorrent;
 import com.grimtorrenter.engine.metainfo.TorrentFile;
 import com.grimtorrenter.engine.metainfo.TorrentMetadata;
+import com.grimtorrenter.engine.mse.EncryptionMode;
 import com.grimtorrenter.engine.peerwire.Bitfield;
 import com.grimtorrenter.engine.peerwire.Extended;
 import com.grimtorrenter.engine.peerwire.Handshake;
@@ -55,6 +56,7 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -606,6 +608,109 @@ class TorrentSessionTest {
             session.addKnownPeers(List.of(fakePeerAddress));
 
             assertTrue(handshakeReceived.await(5, TimeUnit.SECONDS));
+        } finally {
+            session.stop();
+        }
+        fakePeer.join(2000);
+    }
+
+    /** Genuinely trackerless (NoOpTrackerClient) - start() itself now performs a real DHT
+     * lookup via startViaDht(), replacing the old external one-shot
+     * TorrentEngine.seedFromDhtIfTrackerless() (removed - see design_docs/0036's own
+     * addendum). Same DHT-over-real-loopback-UDP setup as fallsBackToDhtWhenAllTrackersFailOnStart,
+     * but for the genuinely-trackerless path rather than the tracker-degraded backstop path -
+     * and isDhtBackstopActive() should stay false throughout, since a trackerless torrent
+     * doing DHT lookups is its normal operating mode, not a degradation. */
+    @Test
+    void startViaDhtFindsPeersImmediatelyForATrackerlessTorrent(@TempDir Path tempDir) throws Exception {
+        TorrentMetadata metadata = singlePieceMetadata(fill(20, 1));
+        InfoHash infoHash = metadata.infoHash();
+
+        serverSocket = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+        PeerAddress fakePeerAddress = new PeerAddress(InetAddress.getLoopbackAddress(), serverSocket.getLocalPort());
+        CountDownLatch handshakeReceived = new CountDownLatch(1);
+        Thread fakePeer = new Thread(() -> {
+            try (Socket socket = serverSocket.accept()) {
+                Handshake theirHandshake = PeerWireCodec.readHandshake(socket.getInputStream());
+                if (infoHash.equals(theirHandshake.infoHash())) {
+                    handshakeReceived.countDown();
+                }
+                PeerWireCodec.writeHandshake(socket.getOutputStream(), Handshake.of(infoHash, fakeRemotePeerId()));
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+        fakePeer.start();
+
+        DhtNode sessionDht = createDhtNode(1);
+        DhtNode dhtResponder = createDhtNode(2);
+        DhtNode peerAnnouncer = createDhtNode(3);
+        sessionDht.routingTable().insert(contactOf(dhtResponder));
+        peerAnnouncer.routingTable().insert(contactOf(dhtResponder));
+        peerAnnouncer.findPeers(infoHash, fakePeerAddress.port(), false, DHT_TEST_TIMEOUT);
+
+        TorrentSession session = TorrentSession.create(metadata, new NoOpTrackerClient(), tempDir,
+                fakeRemotePeerId(), 6881, new RecordingListener(), sessionDht);
+        try {
+            session.start();
+
+            assertTrue(handshakeReceived.await(5, TimeUnit.SECONDS));
+            assertEquals(TorrentState.DOWNLOADING, session.state());
+            assertFalse(session.isDhtBackstopActive());
+        } finally {
+            session.stop();
+        }
+        fakePeer.join(2000);
+    }
+
+    /** Proves the trackerless DHT re-query is genuinely periodic, not the old one-shot lookup -
+     * start()'s own DHT lookup runs before the peer is announced to DHT at all, so it finds
+     * nothing; the peer only becomes discoverable afterwards, and is picked up on a later
+     * scheduled cycle without reannounce() ever being called directly (unlike
+     * fallsBackToDhtWhenReannounceFails, which drives one cycle manually) - a short
+     * trackerlessReannounceIntervalSeconds keeps the test itself fast. See design_docs/0036's
+     * own addendum. */
+    @Test
+    void reannounceViaDhtPicksUpANewlyAnnouncedPeerOnALaterCycle(@TempDir Path tempDir) throws Exception {
+        TorrentMetadata metadata = singlePieceMetadata(fill(20, 1));
+        InfoHash infoHash = metadata.infoHash();
+
+        serverSocket = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+        PeerAddress fakePeerAddress = new PeerAddress(InetAddress.getLoopbackAddress(), serverSocket.getLocalPort());
+        Thread fakePeer = new Thread(() -> {
+            try (Socket socket = serverSocket.accept()) {
+                PeerWireCodec.readHandshake(socket.getInputStream());
+                PeerWireCodec.writeHandshake(socket.getOutputStream(), Handshake.of(infoHash, fakeRemotePeerId()));
+                Thread.sleep(500); // keep the connection open long enough for the assertion below
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+        fakePeer.start();
+
+        DhtNode sessionDht = createDhtNode(1);
+        DhtNode dhtResponder = createDhtNode(2);
+        DhtNode peerAnnouncer = createDhtNode(3);
+        sessionDht.routingTable().insert(contactOf(dhtResponder));
+        peerAnnouncer.routingTable().insert(contactOf(dhtResponder));
+
+        TorrentSession session = TorrentSession.create(metadata, new NoOpTrackerClient(), tempDir,
+                fakeRemotePeerId(), 6881, new RecordingListener(), sessionDht,
+                RateLimiters.unlimited(), FileHandlePool.unbounded(), new Semaphore(Integer.MAX_VALUE),
+                () -> EncryptionMode.DISABLED, SeedingLimitOverride.INHERIT, Instant.now(), () -> 1L);
+        try {
+            session.start();
+            assertEquals(TorrentState.DOWNLOADING, session.state());
+            assertTrue(session.peers().isEmpty());
+
+            // Only now does the peer become discoverable via DHT - start()'s own lookup
+            // already ran and found nothing, so it must come from a later scheduled cycle.
+            peerAnnouncer.findPeers(infoHash, fakePeerAddress.port(), false, DHT_TEST_TIMEOUT);
+
+            List<TorrentSession.PeerSnapshot> peers = awaitOnePeer(session);
+            assertEquals(1, peers.size());
+            assertEquals(fakePeerAddress, peers.get(0).address());
+            assertFalse(session.isDhtBackstopActive());
         } finally {
             session.stop();
         }
