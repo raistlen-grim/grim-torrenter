@@ -1,16 +1,53 @@
 <p-toast />
 
-<h1 class="heading-font">Settings</h1>
+<h1 class="display-font">Settings</h1>
 
 @if (form(); as settingsForm) {
-  <div class="settings-groups">
-    <app-appearance-settings [form]="settingsForm.controls.appearance" />
-    <app-network-settings [form]="settingsForm.controls.network" />
-    <app-rate-limit-settings [form]="settingsForm.controls.rateLimiting" />
-    <app-seeding-settings [form]="settingsForm.controls.seeding" />
-    <app-event-log-settings [form]="settingsForm.controls.eventLog" />
-    <app-watch-folder-settings [form]="settingsForm.controls.watchFolder" />
-    <app-magnet-fetch-settings [form]="settingsForm.controls.magnetFetch" />
+  <div class="settings-layout blueprint">
+    <i class="corner tl" aria-hidden="true"></i><i class="corner tr" aria-hidden="true"></i><i class="corner bl" aria-hidden="true"></i><i class="corner br" aria-hidden="true"></i>
+
+    <nav class="settings-nav" aria-label="Settings sections">
+      @for (group of groups; track group.key) {
+        <button
+          type="button"
+          class="nav-item"
+          [class.active]="activeGroup() === group.key"
+          (click)="activeGroup.set(group.key)"
+        >
+          <i class="pi {{ group.icon }}" aria-hidden="true"></i>
+          {{ group.label }}
+        </button>
+      }
+    </nav>
+
+    <div class="settings-content">
+      <div class="settings-group-heading">
+        <h2 class="display-font">{{ activeGroupDef().label }}</h2>
+        <p class="settings-group-hint">{{ activeGroupDef().hint }}</p>
+      </div>
+
+      <div [hidden]="activeGroup() !== 'appearance'">
+        <app-appearance-settings [form]="settingsForm.controls.appearance" />
+      </div>
+      <div [hidden]="activeGroup() !== 'network'">
+        <app-network-settings [form]="settingsForm.controls.network" />
+      </div>
+      <div [hidden]="activeGroup() !== 'rateLimiting'">
+        <app-rate-limit-settings [form]="settingsForm.controls.rateLimiting" />
+      </div>
+      <div [hidden]="activeGroup() !== 'seeding'">
+        <app-seeding-settings [form]="settingsForm.controls.seeding" />
+      </div>
+      <div [hidden]="activeGroup() !== 'eventLog'">
+        <app-event-log-settings [form]="settingsForm.controls.eventLog" />
+      </div>
+      <div [hidden]="activeGroup() !== 'watchFolder'">
+        <app-watch-folder-settings [form]="settingsForm.controls.watchFolder" />
+      </div>
+      <div [hidden]="activeGroup() !== 'magnetFetch'">
+        <app-magnet-fetch-settings [form]="settingsForm.controls.magnetFetch" />
+      </div>
+    </div>
   </div>
 
   <div class="save-bar">

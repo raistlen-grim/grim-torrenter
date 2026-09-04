@@ -1,6 +1,5 @@
 import { ChangeDetectionStrategy, Component, effect, inject, input } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule } from '@angular/forms';
-import { SelectModule } from 'primeng/select';
 
 import { Settings, ThemePreference } from '../../models/settings.model';
 import { ThemeService } from '../../services/theme.service';
@@ -27,7 +26,7 @@ export function appearanceSettingsPatch(value: { theme: ThemePreference }): Part
  */
 @Component({
   selector: 'app-appearance-settings',
-  imports: [ReactiveFormsModule, SelectModule],
+  imports: [ReactiveFormsModule],
   templateUrl: './appearance-settings.html',
   styleUrl: './appearance-settings.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,

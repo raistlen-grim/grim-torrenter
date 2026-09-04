@@ -1,5 +1,7 @@
 import { ChangeDetectionStrategy, Component, input } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule } from '@angular/forms';
+import { InputGroupModule } from 'primeng/inputgroup';
+import { InputGroupAddonModule } from 'primeng/inputgroupaddon';
 import { InputNumberModule } from 'primeng/inputnumber';
 
 import { Settings } from '../../models/settings.model';
@@ -39,7 +41,7 @@ export function magnetFetchSettingsPatch(
  */
 @Component({
   selector: 'app-magnet-fetch-settings',
-  imports: [InputNumberModule, ReactiveFormsModule],
+  imports: [InputGroupModule, InputGroupAddonModule, InputNumberModule, ReactiveFormsModule],
   templateUrl: './magnet-fetch-settings.html',
   styleUrl: './magnet-fetch-settings.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,

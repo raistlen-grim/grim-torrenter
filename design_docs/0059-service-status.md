@@ -125,9 +125,68 @@ allocates a resource that needs releasing.
 No cheap, deterministic way exists today to force a real DHT/peer-server bind failure in a
 unit test (would mean pre-binding the same ephemeral port from the test itself, racy by
 nature), so the `FAILED` branch of `serviceStatuses()` and the new event recording it triggers
-have no automated coverage — `TorrentEngineTest` only covers `RUNNING`/`DISABLED`. Same shape
+have no automated coverage — `TorrentEngineTest` only covers `RUNNING`/`DEGRADED`/`DISABLED`
+(see this doc's own 2026-09-01 addendum for the `DEGRADED` coverage). Same shape
 as the already-noted `TorrentEventListener` `ERROR`-mapping gap in `PROGRESS.md`. Worth a
 follow-up if a reliable way to force a bind conflict in-test is found.
+
+## Addendum: DEGRADED state for a sparse DHT routing table (2026-09-01)
+
+Picked up from `TODO.md`'s own follow-on item: `serviceStatuses()` reported `RUNNING` for DHT
+as soon as `dhtNode != null` (construction succeeded), with no distinction from "bootstrapped
+but the routing table has stayed sparse" - a real, twice-observed condition (see `TODO.md`'s
+own DHT-sparseness item, now otherwise closed by [[0028-magnet-links-and-dht]]'s 2026-08-30
+routing-table-health and persistence addenda). Those fixes mean a low node count is no longer
+expected to persist *indefinitely*, but the status endpoint still couldn't say "still filling
+in" - this addendum closes that gap.
+
+**`DhtNode` gained one new method, `isDegraded()`**, reusing the exact same
+`MIN_HEALTHY_NODE_COUNT` threshold (`RoutingTable.BUCKET_SIZE`, 8) `refreshRoutingTable()`
+already uses to decide "sparse enough to retry full bootstrap rather than a narrow bucket
+refresh" - one threshold, not two independently-tunable ones meaning almost the same thing.
+`ServiceState` gained `DEGRADED`, DHT-only (the peer server has no equivalent notion, only
+bound-or-not); `TorrentEngine.serviceStatuses()`'s DHT branch now checks `isDegraded()` on
+every call rather than returning a value fixed at construction.
+
+**This is a live, self-healing signal, not a new failure mode** - confirmed with the user
+before building, three decisions:
+
+- **Doesn't count toward the Services nav badge's failed-service count.** DEGRADED isn't a
+  problem needing attention the way FAILED is (DHT is running and actively retrying/refreshing
+  on its own); only true `FAILED` bumps the badge, unchanged from before this addendum. Also
+  means the nav item's own all-clear checkmark (`failedServiceCount() === 0`) is untouched by a
+  degraded DHT - deliberately scoped down to the Services page only.
+- **Flat threshold, no startup grace period.** `isDegraded()` is checked live on every poll
+  with no "has this been running a while" gate - simplest, and accurate rather than
+  misleading: a freshly-started DHT node genuinely *is* sparse until bootstrap/refresh catches
+  up, and the Services page is only ever viewed on demand (a 30s poll while the page is open),
+  not something a grace period would meaningfully smooth over.
+- **`GET /api/dht/status` (the header pill) stays unchanged** - still just `{enabled,
+  nodeCount}`, no qualitative signal added. Keeps 0059's original separation: the
+  always-visible summary pill shows the raw number, the Services page is where a number gets
+  interpreted qualitatively. A user watching the pill's raw count already sees exactly what
+  "sparse" means numerically.
+
+**Frontend**: `ServiceState` widened to include `'DEGRADED'`. Reuses the existing `'dim'` tone
+rather than adding a fourth `StatusTone` - also confirmed with the user, staying inside the
+style guide's deliberate 3-tone cap ("one hue, one alarm, not a five-tag rainbow",
+[[0032-style-guide-and-primeng-theme]]/[[0034-ink-weight-status-display]]). Reusing `'dim'`
+alone would read identically to `DISABLED` though (both currently render as ink-weight-only
+with no other marker), so `services-page.html` adds its own explicit "Sparse routing table"
+text next to a `DEGRADED` row - the same "don't rely on tone alone" reasoning this doc's own
+"explicit healthy checkmarks" addendum already established for `RUNNING`.
+
+**Testing**: `DhtNodeTest` covers `isDegraded()` directly (below/at threshold, seeding the
+routing table with `insert()` rather than real bootstrap). `TorrentEngineTest` covers both
+`serviceStatuses()` branches - a freshly-constructed engine (empty routing table) reports
+`DEGRADED`, not `RUNNING`, right after enabling (a real, if initially surprising, consequence
+of "no grace period"); a second test seeds the real `DhtNode`'s routing table (via the
+existing package-private `dhtNode()` test accessor) past the threshold and confirms `RUNNING`.
+
+**Stability** ([[0051-stability-as-a-standing-consideration]]): no new state, storage, or
+locking - `isDegraded()` is a plain computed comparison against `RoutingTable.size()` (already
+maintained), evaluated fresh on each `serviceStatuses()` call. No unbounded growth, no new
+resource, no cleanup path needed.
 
 ## Alternatives considered
 

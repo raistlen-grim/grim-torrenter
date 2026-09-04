@@ -1,51 +1,47 @@
-<fieldset [formGroup]="form()">
-  <legend class="heading-font">Seeding limits</legend>
-  <p class="group-hint">
-    Automatically stop a torrent once it's seeded enough - whichever enabled limit is reached
-    first. A per-torrent override is available from each torrent's right-click menu.
-  </p>
-
-  <div class="setting-row">
-    <div class="setting-label">
-      <label for="ratioLimitEnabled">Ratio limit</label>
-      <p class="setting-description">Stop seeding once upload has reached this multiple of download.</p>
+<div [formGroup]="form()">
+  <div class="settings-row">
+    <div class="settings-row-label">
+      <label for="ratioLimit">Ratio limit</label>
+      <p class="settings-row-description">Stop seeding once this upload/download ratio is reached.</p>
     </div>
-    <div class="rate-control">
-      <p-inputgroup class="rate-input">
+    <div class="settings-row-control">
+      <p-inputgroup class="settings-number-group">
         <p-inputnumber
+          inputId="ratioLimit"
           formControlName="ratioLimit"
           aria-label="Ratio limit value"
           [min]="0"
           [minFractionDigits]="1"
           [maxFractionDigits]="2"
           [showButtons]="false"
-          inputStyleClass="rate-input-field"
+          inputStyleClass="settings-number-input"
         />
-        <p-inputgroup-addon>x</p-inputgroup-addon>
+        <p-inputgroup-addon class="settings-number-unit">x</p-inputgroup-addon>
       </p-inputgroup>
       <p-toggleswitch inputId="ratioLimitEnabled" formControlName="ratioLimitEnabled" />
     </div>
   </div>
 
-  <div class="setting-row">
-    <div class="setting-label">
-      <label for="timeLimitEnabled">Time limit</label>
-      <p class="setting-description">Stop seeding once a torrent has been complete for this long.</p>
+  <div class="settings-row">
+    <div class="settings-row-label">
+      <label for="timeLimitHours">Time limit</label>
+      <p class="settings-row-description">Stop seeding after this long, regardless of ratio.</p>
     </div>
-    <div class="rate-control">
-      <p-inputgroup class="rate-input">
+    <div class="settings-row-control">
+      <p-inputgroup class="settings-number-group">
         <p-inputnumber
+          inputId="timeLimitHours"
           formControlName="timeLimitHours"
           aria-label="Time limit value"
           [min]="0"
           [minFractionDigits]="0"
           [maxFractionDigits]="1"
           [showButtons]="false"
-          inputStyleClass="rate-input-field"
+          inputStyleClass="settings-number-input"
         />
-        <p-inputgroup-addon>hours</p-inputgroup-addon>
+        <p-inputgroup-addon class="settings-number-unit">hours</p-inputgroup-addon>
       </p-inputgroup>
       <p-toggleswitch inputId="timeLimitEnabled" formControlName="timeLimitEnabled" />
     </div>
   </div>
-</fieldset>
+</div>

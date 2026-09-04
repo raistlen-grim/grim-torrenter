@@ -347,6 +347,53 @@ complete**, per the phased scope in [[0009-phased-scope]]:
     delegating with `configDirectory` defaulted to `baseDownloadDirectory` so every existing
     caller/test is unaffected.
   ([[0028-magnet-links-and-dht]]'s own 2026-08-30 addendum)
+- **DHT service status now distinguishes "healthy" from "bootstrapped but sparse"
+  (2026-09-01)** — picked from `TODO.md`'s DEGRADED-state item, the one piece the DHT-health
+  work above deliberately left open. `TorrentEngine.serviceStatuses()`'s DHT row now reports a
+  new `DEGRADED` state (live, re-checked every call, not fixed at construction like
+  `RUNNING`/`FAILED`/`DISABLED` still are) whenever `DhtNode.isDegraded()` — the routing table
+  has fewer than `MIN_HEALTHY_NODE_COUNT` (8) known nodes, reusing the exact threshold
+  `refreshRoutingTable()` already uses. Confirmed with the user: DEGRADED doesn't count toward
+  the Services nav badge's failed-service count (it's running and self-healing, not a
+  problem); no startup grace period (a flat live threshold check — a fresh DHT node
+  genuinely is sparse until bootstrap/refresh catches up); and `GET /api/dht/status` (the
+  header pill) stays unchanged, still just the raw node count — the Services page is the one
+  place that interprets it qualitatively. Frontend reuses the existing `'dim'` `StatusTone`
+  rather than adding a 4th tone (also confirmed — the style guide deliberately caps at 3), with
+  its own explicit "Sparse routing table" text on the row so it doesn't read identically to
+  `DISABLED`, the same "don't rely on tone alone" precedent `RUNNING`'s own checkmark already
+  set. ([[0059-service-status]]'s own 2026-09-01 addendum)
+- **Migrated off `@primeng/themes` onto `@primeuix/themes` entirely (2026-09-03)** — the last
+  piece still coming from the deprecated package was the `Aura` preset object itself
+  (`definePreset`/`@primeuix/themes` were already in use, see [[0032-style-guide-and-primeng-theme]]'s
+  original "the preset" section). Diffed the two packages' shipped `Aura` exports directly
+  before switching — structurally identical component-token maps, `@primeuix/themes`'s version
+  just also bundles Aura's own base CSS (unused here either way). `package.json`'s
+  `@primeng/themes` dependency dropped entirely; `npm install` (to catch the lockfile up) left
+  for the user per this project's "builds run manually" convention. ([[0032-style-guide-and-primeng-theme]]'s
+  own 2026-09-03 addendum)
+- **Settings page restyled: vertical section nav + one consistent row shell (2026-09-04/05)** —
+  the 7 groups moved from a stacked single page (each its own `<fieldset>`, its own slightly
+  different row CSS — cataloged in `SETTINGS_LAYOUT_PATTERNS.md`, 21 rows, 7 different control
+  implementations for 4 conceptual types) to a `.blueprint`-framed two-column layout: a vertical
+  nav on the left (matching the torrent list's own selected-row treatment), the active group's
+  heading/hint/rows on the right, all sharing one global row shell and 4 control shapes (toggle,
+  native select, number+unit, number+unit+enable-toggle) instead of per-group CSS. Built from a
+  Claude Design handoff (`SETTINGS_PAGE.md` + a `.dc.html` prototype export), with several
+  deliberate deviations from it — PrimeIcons kept over the handoff's Lucide icons, restart/live-
+  timing caveats kept in row descriptions rather than dropped, `p-toggleswitch` kept (re-themed)
+  rather than hand-rolled, and a real unit-label error in the handoff itself caught and fixed
+  (Burst allowance mislabeled "KB/s", actually a duration) — all confirmed with the user rather
+  than assumed. Rate limiting's `xUnlimited` fields renamed/inverted to `xEnabled` so its
+  enable-toggle means the same thing as every other toggle on the page. Registration-mark corner
+  decorations, previously exempted app-wide as not worth the maintenance cost
+  ([[0032-style-guide-and-primeng-theme]]), turned out to need no PrimeNG-fighting at all once
+  actually costed out — added to Settings' own frame specifically, with the wider rollout logged
+  to `TODO.md` rather than done everywhere at once. Three real Aura/PrimeNG base-CSS conflicts
+  found via live devtools verification, not guessed at — `p-toggleswitch` clipping under flex-
+  shrink, `p-inputgroup`'s own `width: 100%`/`flex: 1 1 auto` fighting a fixed-width numeric
+  field, and an equal-specificity cascade-order loss on the first fix attempt — all documented
+  with the actual computed-box evidence in [[0045-settings-page]]'s own 2026-09-05 addendum.
 
 **Not yet built** (the rest of Phase 3):
 
@@ -447,25 +494,22 @@ Phase 2 is fully complete; Phase 3 has Peer Exchange, rate limiting (with a dail
 schedule and a burst allowance), a real settings page, and MSE done — every item from the
 original Phase 3 list is now built; the engine stability/scale audit is fully closed out;
 seeding limits, library events, the watch folder, service status, the row-selected highlight,
-magnet-add reliability/feedback, periodic DHT re-query for trackerless torrents, and DHT
-routing-table health (all picked from `TODO.md`) are done:
+magnet-add reliability/feedback, periodic DHT re-query for trackerless torrents, DHT
+routing-table health, DHT routing-table persistence across restarts, the DHT healthy-vs-sparse
+`DEGRADED` service state, and the `@primeng/themes` → `@primeuix/themes` migration (all picked
+from `TODO.md`) are done:
 
-1. DHT routing-table persistence across restarts (`TODO.md`) — the periodic-refresh fix above
-   closes "stays sparse while running," this would additionally close "starts cold every
-   restart." Deliberately deferred, real scope of its own (storage format, staleness policy).
-2. The DHT service-status "healthy vs. sparse routing table" distinction noted above — the
-   routing-table-health fix means a low count is no longer expected to persist indefinitely,
-   but the status endpoint still can't distinguish "still filling in" from "genuinely stuck."
-3. The remaining `TODO.md` items: a notification service (still fully unscoped), running a
-   user-configured script automatically on torrent completion, LSD (BEP 14, minor), and the
-   `@primeng/themes` migration.
-4. The pending-action-vs-2s-snapshot-lag gap noted above, if it proves to
+1. The remaining `TODO.md` items: a notification service (still fully unscoped), running a
+   user-configured script automatically on torrent completion, and LSD (BEP 14, minor).
+2. The pending-action-vs-2s-snapshot-lag gap noted above, if it proves to
    matter in practice.
-5. Library events' two deferred event types ([[0055-library-events]]'s own "Deferred from this
+3. Library events' two deferred event types ([[0055-library-events]]'s own "Deferred from this
    pass" section) — tracker unreachable/recovered, and a distinctly-labeled magnet-resolved —
    if they prove to matter in practice.
-6. The watch folder's two deferred items ([[0056-watch-folder]]'s own "Alternatives considered"
+4. The watch folder's two deferred items ([[0056-watch-folder]]'s own "Alternatives considered"
    section) — magnet-link files and a configurable poll interval — if either proves to matter.
-7. The rate-limiting settings group's remaining natural additions (per-torrent overrides,
+5. The rate-limiting settings group's remaining natural additions (per-torrent overrides,
    multi-rule schedule) — pushed to the back of the backlog (2026-08-25), marginal real-world
    value relative to the items above.
+6. Multi-select on the torrent list (checkboxes/shift-click for bulk Pause/Resume/Remove) —
+   noted in `TODO.md`, 2026-09-03, unscoped.

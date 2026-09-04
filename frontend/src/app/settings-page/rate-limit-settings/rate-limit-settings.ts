@@ -1,6 +1,5 @@
 import { ChangeDetectionStrategy, Component, effect, input } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule } from '@angular/forms';
-import { CheckboxModule } from 'primeng/checkbox';
 import { InputGroupModule } from 'primeng/inputgroup';
 import { InputGroupAddonModule } from 'primeng/inputgroupaddon';
 import { InputNumberModule } from 'primeng/inputnumber';
@@ -31,45 +30,50 @@ function kibToBytes(kibPerSec: number): number {
 
 export type RateLimitSettingsForm = FormGroup<{
   uploadLimitKibPerSec: FormControl<number>;
-  uploadUnlimited: FormControl<boolean>;
+  uploadEnabled: FormControl<boolean>;
   downloadLimitKibPerSec: FormControl<number>;
-  downloadUnlimited: FormControl<boolean>;
+  downloadEnabled: FormControl<boolean>;
   burstSeconds: FormControl<number>;
   scheduleEnabled: FormControl<boolean>;
   scheduleStart: FormControl<string>;
   scheduleEnd: FormControl<string>;
   scheduleUploadLimitKibPerSec: FormControl<number>;
-  scheduleUploadUnlimited: FormControl<boolean>;
+  scheduleUploadEnabled: FormControl<boolean>;
   scheduleDownloadLimitKibPerSec: FormControl<number>;
-  scheduleDownloadUnlimited: FormControl<boolean>;
+  scheduleDownloadEnabled: FormControl<boolean>;
 }>;
 
 /** bytes/sec (the model's unit of record, see settings.model.ts) -> KiB/s (this group's
- * display unit) happens only here, at the form's construction. uploadUnlimited/
- * downloadUnlimited (and their schedule-window counterparts) are a UI-only convenience
- * derived from the loaded value (<= 0), not a separate field on Settings - "unlimited" and
- * "0" are the same fact, just easier to act on as a checkbox than as a magic number (see
- * design_docs/0045's update on this). The schedule window's start/end are plain "HH:mm"
- * strings straight from Settings - a native <input type="time"> reads/writes that exact
- * format, so no conversion is needed there (see design_docs/0046). */
+ * display unit) happens only here, at the form's construction. uploadEnabled/downloadEnabled
+ * (and their schedule-window counterparts) are a UI-only convenience derived from the loaded
+ * value (> 0), not a separate field on Settings - "capped" and "a positive byte value" are the
+ * same fact, just easier to act on as a toggle than as a magic number. `true` means "the cap is
+ * active," matching Seeding's own ratioLimitEnabled/timeLimitEnabled naming exactly - renamed
+ * from the previous uploadUnlimited/downloadUnlimited (inverted sense) as part of the settings
+ * redesign unifying every "number + enable-toggle" row onto one shape/semantic (SETTINGS_PAGE.md,
+ * design_docs/0045's addendum): the design's toggle is "on = capped" everywhere on the page, so
+ * this group's own fields needed to match rather than being the one place "on" meant the
+ * opposite. The schedule window's start/end are plain "HH:mm" strings straight from Settings - a
+ * native <input type="time"> reads/writes that exact format, so no conversion is needed there
+ * (see design_docs/0046). */
 export function buildRateLimitSettingsForm(settings: Settings): RateLimitSettingsForm {
-  const uploadUnlimited = settings.uploadRateLimitBytesPerSec <= 0;
-  const downloadUnlimited = settings.downloadRateLimitBytesPerSec <= 0;
+  const uploadEnabled = settings.uploadRateLimitBytesPerSec > 0;
+  const downloadEnabled = settings.downloadRateLimitBytesPerSec > 0;
   const scheduleEnabled = settings.rateLimitScheduleEnabled;
-  const scheduleUploadUnlimited = settings.scheduledUploadRateLimitBytesPerSec <= 0;
-  const scheduleDownloadUnlimited = settings.scheduledDownloadRateLimitBytesPerSec <= 0;
+  const scheduleUploadEnabled = settings.scheduledUploadRateLimitBytesPerSec > 0;
+  const scheduleDownloadEnabled = settings.scheduledDownloadRateLimitBytesPerSec > 0;
 
   return new FormGroup({
     uploadLimitKibPerSec: new FormControl(
-      { value: bytesToKib(settings.uploadRateLimitBytesPerSec), disabled: uploadUnlimited },
+      { value: bytesToKib(settings.uploadRateLimitBytesPerSec), disabled: !uploadEnabled },
       { nonNullable: true },
     ),
-    uploadUnlimited: new FormControl(uploadUnlimited, { nonNullable: true }),
+    uploadEnabled: new FormControl(uploadEnabled, { nonNullable: true }),
     downloadLimitKibPerSec: new FormControl(
-      { value: bytesToKib(settings.downloadRateLimitBytesPerSec), disabled: downloadUnlimited },
+      { value: bytesToKib(settings.downloadRateLimitBytesPerSec), disabled: !downloadEnabled },
       { nonNullable: true },
     ),
-    downloadUnlimited: new FormControl(downloadUnlimited, { nonNullable: true }),
+    downloadEnabled: new FormControl(downloadEnabled, { nonNullable: true }),
     burstSeconds: new FormControl(Math.max(0, settings.rateLimitBurstSeconds), { nonNullable: true }),
 
     scheduleEnabled: new FormControl(scheduleEnabled, { nonNullable: true }),
@@ -84,23 +88,23 @@ export function buildRateLimitSettingsForm(settings: Settings): RateLimitSetting
     scheduleUploadLimitKibPerSec: new FormControl(
       {
         value: bytesToKib(settings.scheduledUploadRateLimitBytesPerSec),
-        disabled: !scheduleEnabled || scheduleUploadUnlimited,
+        disabled: !scheduleEnabled || !scheduleUploadEnabled,
       },
       { nonNullable: true },
     ),
-    scheduleUploadUnlimited: new FormControl(
-      { value: scheduleUploadUnlimited, disabled: !scheduleEnabled },
+    scheduleUploadEnabled: new FormControl(
+      { value: scheduleUploadEnabled, disabled: !scheduleEnabled },
       { nonNullable: true },
     ),
     scheduleDownloadLimitKibPerSec: new FormControl(
       {
         value: bytesToKib(settings.scheduledDownloadRateLimitBytesPerSec),
-        disabled: !scheduleEnabled || scheduleDownloadUnlimited,
+        disabled: !scheduleEnabled || !scheduleDownloadEnabled,
       },
       { nonNullable: true },
     ),
-    scheduleDownloadUnlimited: new FormControl(
-      { value: scheduleDownloadUnlimited, disabled: !scheduleEnabled },
+    scheduleDownloadEnabled: new FormControl(
+      { value: scheduleDownloadEnabled, disabled: !scheduleEnabled },
       { nonNullable: true },
     ),
   });
@@ -108,29 +112,29 @@ export function buildRateLimitSettingsForm(settings: Settings): RateLimitSetting
 
 export function rateLimitSettingsPatch(value: {
   uploadLimitKibPerSec: number;
-  uploadUnlimited: boolean;
+  uploadEnabled: boolean;
   downloadLimitKibPerSec: number;
-  downloadUnlimited: boolean;
+  downloadEnabled: boolean;
   burstSeconds: number;
   scheduleEnabled: boolean;
   scheduleStart: string;
   scheduleEnd: string;
   scheduleUploadLimitKibPerSec: number;
-  scheduleUploadUnlimited: boolean;
+  scheduleUploadEnabled: boolean;
   scheduleDownloadLimitKibPerSec: number;
-  scheduleDownloadUnlimited: boolean;
+  scheduleDownloadEnabled: boolean;
 }): Partial<Settings> {
   return {
-    uploadRateLimitBytesPerSec: value.uploadUnlimited ? 0 : kibToBytes(value.uploadLimitKibPerSec),
-    downloadRateLimitBytesPerSec: value.downloadUnlimited ? 0 : kibToBytes(value.downloadLimitKibPerSec),
+    uploadRateLimitBytesPerSec: value.uploadEnabled ? kibToBytes(value.uploadLimitKibPerSec) : 0,
+    downloadRateLimitBytesPerSec: value.downloadEnabled ? kibToBytes(value.downloadLimitKibPerSec) : 0,
     rateLimitBurstSeconds: value.burstSeconds,
     rateLimitScheduleEnabled: value.scheduleEnabled,
     rateLimitScheduleStart: value.scheduleStart,
     rateLimitScheduleEnd: value.scheduleEnd,
-    scheduledUploadRateLimitBytesPerSec: value.scheduleUploadUnlimited ? 0 : kibToBytes(value.scheduleUploadLimitKibPerSec),
-    scheduledDownloadRateLimitBytesPerSec: value.scheduleDownloadUnlimited
-      ? 0
-      : kibToBytes(value.scheduleDownloadLimitKibPerSec),
+    scheduledUploadRateLimitBytesPerSec: value.scheduleUploadEnabled ? kibToBytes(value.scheduleUploadLimitKibPerSec) : 0,
+    scheduledDownloadRateLimitBytesPerSec: value.scheduleDownloadEnabled
+      ? kibToBytes(value.scheduleDownloadLimitKibPerSec)
+      : 0,
   };
 }
 
@@ -148,14 +152,7 @@ export function rateLimitSettingsPatch(value: {
  */
 @Component({
   selector: 'app-rate-limit-settings',
-  imports: [
-    CheckboxModule,
-    InputGroupModule,
-    InputGroupAddonModule,
-    InputNumberModule,
-    ReactiveFormsModule,
-    ToggleSwitchModule,
-  ],
+  imports: [InputGroupModule, InputGroupAddonModule, InputNumberModule, ReactiveFormsModule, ToggleSwitchModule],
   templateUrl: './rate-limit-settings.html',
   styleUrl: './rate-limit-settings.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -166,14 +163,13 @@ export class RateLimitSettings {
   /** Reactive Forms discourages toggling a control's disabled state via a template
    * [disabled] binding once it's also bound through formControlName (Angular logs a warning
    * - the directive already owns that state); enable()/disable() here is the supported way,
-   * driven by the paired "Unlimited" checkbox's (or the schedule's own enabled toggle's)
-   * value. */
+   * driven by the paired enable-toggle's (or the schedule's own enabled toggle's) value. */
   constructor() {
     effect((onCleanup) => {
       const controls = this.form().controls;
       const subscriptions = [
-        syncUnlimitedDisabled(controls.uploadUnlimited, controls.uploadLimitKibPerSec),
-        syncUnlimitedDisabled(controls.downloadUnlimited, controls.downloadLimitKibPerSec),
+        syncEnabledDisabled(controls.uploadEnabled, controls.uploadLimitKibPerSec),
+        syncEnabledDisabled(controls.downloadEnabled, controls.downloadLimitKibPerSec),
         syncScheduleDisabled(controls),
       ];
       onCleanup(() => subscriptions.forEach((subscription) => subscription.unsubscribe()));
@@ -181,38 +177,38 @@ export class RateLimitSettings {
   }
 }
 
-function syncUnlimitedDisabled(unlimited: FormControl<boolean>, limit: FormControl<number>): Subscription {
-  const apply = (isUnlimited: boolean) => (isUnlimited ? limit.disable() : limit.enable());
-  apply(unlimited.value);
-  return unlimited.valueChanges.subscribe(apply);
+function syncEnabledDisabled(enabled: FormControl<boolean>, limit: FormControl<number>): Subscription {
+  const apply = (isEnabled: boolean) => (isEnabled ? limit.enable() : limit.disable());
+  apply(enabled.value);
+  return enabled.valueChanges.subscribe(apply);
 }
 
 /** The schedule's fields have two disabling inputs, not one: the section's own "enabled"
  * toggle (which gates every field in it), and - for the two limit fields specifically -
- * their own "Unlimited" checkbox on top of that. Re-evaluated from both controls' current
- * values on either one changing, rather than trying to express "disabled because of A, then
- * separately because of B" as two independent subscriptions that could race and leave a
- * control in the wrong state. */
+ * their own enable-toggle on top of that. Re-evaluated from both controls' current values on
+ * either one changing, rather than trying to express "disabled because of A, then separately
+ * because of B" as two independent subscriptions that could race and leave a control in the
+ * wrong state. */
 function syncScheduleDisabled(controls: RateLimitSettingsForm['controls']): Subscription {
   const applySectionEnabled = (enabled: boolean) => {
     setDisabled(controls.scheduleStart, !enabled);
     setDisabled(controls.scheduleEnd, !enabled);
-    setDisabled(controls.scheduleUploadUnlimited, !enabled);
-    setDisabled(controls.scheduleDownloadUnlimited, !enabled);
+    setDisabled(controls.scheduleUploadEnabled, !enabled);
+    setDisabled(controls.scheduleDownloadEnabled, !enabled);
     applyLimitFieldsEnabled();
   };
   const applyLimitFieldsEnabled = () => {
     const enabled = controls.scheduleEnabled.value;
-    setDisabled(controls.scheduleUploadLimitKibPerSec, !enabled || controls.scheduleUploadUnlimited.value);
-    setDisabled(controls.scheduleDownloadLimitKibPerSec, !enabled || controls.scheduleDownloadUnlimited.value);
+    setDisabled(controls.scheduleUploadLimitKibPerSec, !enabled || !controls.scheduleUploadEnabled.value);
+    setDisabled(controls.scheduleDownloadLimitKibPerSec, !enabled || !controls.scheduleDownloadEnabled.value);
   };
 
   applySectionEnabled(controls.scheduleEnabled.value);
 
   const subscription = new Subscription();
   subscription.add(controls.scheduleEnabled.valueChanges.subscribe(applySectionEnabled));
-  subscription.add(controls.scheduleUploadUnlimited.valueChanges.subscribe(applyLimitFieldsEnabled));
-  subscription.add(controls.scheduleDownloadUnlimited.valueChanges.subscribe(applyLimitFieldsEnabled));
+  subscription.add(controls.scheduleUploadEnabled.valueChanges.subscribe(applyLimitFieldsEnabled));
+  subscription.add(controls.scheduleDownloadEnabled.valueChanges.subscribe(applyLimitFieldsEnabled));
   return subscription;
 }
 

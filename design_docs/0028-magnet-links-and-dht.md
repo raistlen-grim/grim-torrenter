@@ -1099,6 +1099,23 @@ failure-handling surface. `TorrentEngineTest` gained a case constructing an engi
 genuinely different directories via the new widest constructor, confirming the DHT-nodes
 marker lands under the config directory and specifically not under the download directory.
 
+### Real-world confirmation: 21-hour idle run on a second deployment (2026-09-03)
+
+Deployed to a second server (a fresh Docker build, `config`/`downloads`/`watch` all
+bind-mounted per the Dockerfile's own documented volumes) specifically to soak-test the whole
+2026-08-30 DHT addendum above (routing-table health, persistence, the new bootstrap host list)
+plus [[0059-service-status]]'s DEGRADED-state addendum, under real network conditions rather
+than a dev machine. After 21 hours idle (no torrents added): **65 known DHT nodes** - well
+above `MIN_HEALTHY_NODE_COUNT` (8), confirming the routing table reached and held a healthy
+size unattended, and that `serviceStatuses()`'s DHT row would report `RUNNING`, not
+`DEGRADED`, at this state. Resource footprint stayed low and stable throughout: `docker stats`
+reported 135.8 MB RSS / 1.74% of the container's memory limit / 0.20% CPU; the app's own
+footer widget separately reported ~12.2 MB JVM heap used - a smaller, expected subset of that
+RSS figure (heap alone, not metaspace/thread stacks/JIT code cache/off-heap buffers), not a
+discrepancy. Confirms the periodic `dhtRefreshIntervalSeconds` maintenance tick costs
+essentially nothing at idle, and that nothing in this addendum's fixes leaks memory or spins
+CPU over a sustained real run.
+
 ## Alternatives considered
 
 - **Reject unknown magnet params outright** - rejected; BEP 9's own magnet

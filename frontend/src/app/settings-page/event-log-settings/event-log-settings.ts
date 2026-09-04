@@ -1,5 +1,7 @@
 import { ChangeDetectionStrategy, Component, input } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule } from '@angular/forms';
+import { InputGroupModule } from 'primeng/inputgroup';
+import { InputGroupAddonModule } from 'primeng/inputgroupaddon';
 import { InputNumberModule } from 'primeng/inputnumber';
 
 import { Settings } from '../../models/settings.model';
@@ -30,7 +32,7 @@ export function eventLogSettingsPatch(value: { retentionDays: number }): Partial
  */
 @Component({
   selector: 'app-event-log-settings',
-  imports: [InputNumberModule, ReactiveFormsModule],
+  imports: [InputGroupModule, InputGroupAddonModule, InputNumberModule, ReactiveFormsModule],
   templateUrl: './event-log-settings.html',
   styleUrl: './event-log-settings.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,

@@ -6,16 +6,20 @@ nothing here gets acted on until it's explicitly picked up.
 
 - Notification service (emails, or something else yet to be defined)
 - Run a user-configured script automatically when a torrent completes
-- Migrate off `@primeng/themes` (deprecated upstream, per its own `npm ci` warning) to
-  `@primeuix/themes`, the maintained replacement. Not urgent - no functionality is broken yet,
-  just a maintenance item before the old package stops receiving updates entirely.
-- **DHT service status doesn't distinguish "healthy" from "bootstrapped but sparse."**
-  `TorrentEngine`'s DHT service status ([[0059-service-status]]) reports `RUNNING` as soon as
-  `dhtNode != null` (construction succeeded), with no distinction from "enabled, but the
+- ~~Migrate off `@primeng/themes` (deprecated upstream, per its own `npm ci` warning) to
+  `@primeuix/themes`, the maintained replacement.~~ **Done (2026-09-03)** - see
+  `design_docs/0032`'s own addendum. Only `npm install` (to catch up the lockfile) remains,
+  left for the user per this project's "builds run manually" convention.
+- **DHT service status doesn't distinguish "healthy" from "bootstrapped but sparse."** —
+  **Done (2026-09-01)**, see `design_docs/0059`'s own DEGRADED-state addendum:
+  `TorrentEngine.serviceStatuses()` now reports `DEGRADED` (not `RUNNING`) whenever
+  `DhtNode.isDegraded()` - the routing table has fewer than `MIN_HEALTHY_NODE_COUNT` (8) known
+  nodes, the same threshold `refreshRoutingTable()` already uses to decide "still too sparse."
+  Was: `TorrentEngine`'s DHT service status ([[0059-service-status]]) reported `RUNNING` as soon
+  as `dhtNode != null` (construction succeeded), with no distinction from "enabled, but the
   routing table has stayed tiny ever since" - a real, now twice-observed state (design_docs/
   0028's "port 6881" debugging trail, and again 2026-08-30: 21 DHT nodes known vs. qBittorrent's
-  379 on the same network). Might be worth a `DEGRADED` state (or a node-count threshold) once
-  there's a concrete reason to build it, rather than speculatively now.
+  379 on the same network).
   - **Root cause confirmed for one real case (2026-08-30)**: a dev machine's DHT node stayed at
     0-ish known nodes indefinitely (over a minute post-startup) while running via `mvn quarkus:dev`
     in IntelliJ, blocking every trackerless magnet's metadata fetch (`0 peer(s) tried` - DHT
@@ -40,3 +44,10 @@ nothing here gets acted on until it's explicitly picked up.
   (qBittorrent reports DHT/PEX/LSD all active; GrimTorrenter has no LSD implementation at
   all). Only ever finds same-LAN peers, so it's a minor contributor to peer-count gaps at
   best, not a priority on its own - noted for completeness alongside the DHT item above.
+- Multi-select on the torrent list — checkboxes (or shift/ctrl-click) to select several rows
+  at once, then bulk Pause/Resume/Remove across the selection, rather than one row (or the
+  existing global Pause all/Resume all) at a time.
+- Roll the blueprint registration-mark corner treatment out to other panels/cards app-wide
+  (torrent list, torrent detail drawer, Services, Events) — added to the Settings page's frame
+  first (2026-09-04, `design_docs/0032`'s own addendum), scoped there for now rather than
+  site-wide.

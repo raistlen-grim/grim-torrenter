@@ -1178,6 +1178,34 @@ background-image in directly for `<app-skull-mark>` at each call site rather tha
 extend this component to support both a CSS and an image mode; the `--void` mechanism has no
 equivalent for a raster asset.
 
+## Addendum: dropped `@primeng/themes` entirely, in favor of `@primeuix/themes` (2026-09-03)
+
+Picked from `TODO.md`'s own maintenance item: `@primeng/themes` prints a deprecation warning
+on `npm ci` pointing at `@primeuix/themes` as its replacement. This doc's own "the preset"
+section above already established that `definePreset` lives in `@primeuix/themes` (added as an
+explicit dependency for that reason, at the time only present transitively via `@primeng/themes`)
+- the one thing still coming from the old package was the `Aura` preset object itself
+(`import Aura from '@primeng/themes/aura'`).
+
+**Verified equivalent before switching, not assumed** - same "read the shipped source, don't
+guess" precedent this doc already set: diffed `node_modules/@primeng/themes/aura/index.mjs`
+against `node_modules/@primeuix/themes/dist/aura/index.mjs` directly. Structurally identical
+(same full component-token map, same keys) - `@primeuix/themes`'s version additionally bundles
+a `css` field (Aura's own base stylesheet, inlined) that `@primeng/themes`'s didn't, which
+`definePreset` simply carries through unused since nothing here previously provided or read one.
+
+**The fix**: `grimtorrenter-preset.ts`'s import changed to `from '@primeuix/themes/aura'`;
+`@primeng/themes` dropped from `package.json`'s `dependencies` entirely - `@primeuix/themes` was
+already an explicit, correctly-pinned dependency (not transitive), so nothing else needed
+adding. `package-lock.json` needs `npm install` to catch up and actually remove the
+now-unreferenced package from `node_modules`, left for the user per this project's "builds run
+manually" convention (same deferral this doc's original `@primeuix/themes` addition already
+established).
+
+No stability implication - a pure build-time dependency swap between two versions of
+functionally the same preset data; nothing here touches runtime behavior, resource usage, or
+failure paths.
+
 ## Alternatives considered
 
 - **Replacing Aura outright with a from-scratch preset** - rejected; `definePreset(Aura,
@@ -1188,3 +1216,31 @@ equivalent for a raster asset.
 - **Hand-styling the guide's registration-mark corners and row-underlay progress onto
   PrimeNG components anyway** - rejected per the user's explicit maintenance-cost
   priority; see Decision above.
+
+## 2026-09-04 addendum: registration-mark corners reconsidered, scoped to Settings
+
+The blanket exemption above (registration-mark corners "not revisited" as of the row-anatomy
+addendum) is now partially reversed, prompted by the Settings-page redesign handoff
+(`SETTINGS_PAGE.md`) proposing them for that page's frame. Re-examined the original rejection's
+own rationale - "reproducing it means hand-styling every `p-card`/panel instance, exactly the
+maintenance cost the vanilla-first rule exists to avoid" - against the guide's actual
+implementation (`style/torrent_list/*.zip`'s own `ds/industry.css`): the marks are drawn by four
+small `position: absolute` `.corner` elements (a `::before`/`::after` cross each) added *beside*
+a container, not by styling anything inside a PrimeNG component's own template/encapsulation
+boundary. There's no PrimeNG-internals fight here at all - unlike the `.encryption-mode-select`-
+style workarounds elsewhere in this app that exist specifically because `[styleClass]` lands
+outside a component's emulated view encapsulation, this decoration sits entirely on markup this
+app already owns. The original "hand-styling every instance" maintenance-cost framing overstated
+the actual cost for this specific decoration; it's ~20 lines of CSS plus 4 markup elements per
+container, reusable as-is.
+
+**Decision: add it to the Settings page's own frame** (user's explicit call, once the low actual
+cost was surfaced), **not site-wide.** The row-underlay-progress exemption immediately above is
+untouched - that one's rejection was about a real missing PrimeNG capability (`p-table` rows
+don't support a full-row background underlay), not an overstated cost, and stands as originally
+decided.
+
+**Follow-up logged to `TODO.md`**: roll the corner-mark treatment out to other panels/cards
+app-wide (torrent list, torrent detail drawer, Services, Events) where it fits, now that Settings
+will be the first real example to check it against - unscoped and not committed to, the same
+"come back to it" treatment every other `TODO.md` item gets.

@@ -125,6 +125,17 @@ public final class DhtNode implements AutoCloseable {
         return routingTable;
     }
 
+    /** True once the routing table has stayed sparser than {@link #MIN_HEALTHY_NODE_COUNT}
+     * known nodes - the same threshold {@link #refreshRoutingTable()} already uses to decide
+     * "still too sparse, worth a full bootstrap retry rather than a narrow bucket refresh."
+     * Exposed for {@code TorrentEngine.serviceStatuses()} (see design_docs/0059's own
+     * DEGRADED-state addendum) - a live, on-demand check, not a cached/debounced one: this
+     * node is running and self-healing (refreshRoutingTable() keeps retrying bootstrap below
+     * this threshold), so "degraded" here means "still filling in right now," not "stuck." */
+    public boolean isDegraded() {
+        return routingTable.size() < MIN_HEALTHY_NODE_COUNT;
+    }
+
     /** Every known contact's address, for persisting the routing table across restarts (see
      * design_docs/0028's own 2026-08-30 addendum) - no id, no other metadata. The id isn't
      * needed to re-ping a persisted contact on the next start, and dropping it sidesteps any

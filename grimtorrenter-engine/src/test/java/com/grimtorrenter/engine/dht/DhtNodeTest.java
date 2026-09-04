@@ -20,6 +20,7 @@ import java.util.function.BooleanSupplier;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -80,6 +81,24 @@ class DhtNodeTest {
         List<NodeInfo> result = nodeA.findNode(addressOf(nodeB), idWithLastByte(3), TIMEOUT);
 
         assertTrue(result.contains(known));
+    }
+
+    /** See design_docs/0059's DEGRADED-state addendum - isDegraded() is a flat, live threshold
+     * check against RoutingTable.BUCKET_SIZE, the same MIN_HEALTHY_NODE_COUNT
+     * refreshRoutingTable() already uses. */
+    @Test
+    void isDegradedIsTrueBelowThresholdAndFalseAtOrAboveIt() {
+        nodeA = new DhtNode(NODE_A_ID, 0);
+        assertTrue(nodeA.isDegraded());
+
+        for (int i = 0; i < RoutingTable.BUCKET_SIZE - 1; i++) {
+            nodeA.routingTable().insert(new NodeInfo(idWithLastByte(10 + i), InetAddress.getLoopbackAddress(), 20000 + i));
+        }
+        assertTrue(nodeA.isDegraded());
+
+        nodeA.routingTable().insert(new NodeInfo(idWithLastByte(100), InetAddress.getLoopbackAddress(), 20999));
+        assertTrue(nodeA.routingTable().size() >= RoutingTable.BUCKET_SIZE);
+        assertFalse(nodeA.isDegraded());
     }
 
     @Test

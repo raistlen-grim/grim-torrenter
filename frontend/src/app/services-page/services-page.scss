@@ -29,3 +29,13 @@
   color: var(--p-primary-color);
   font-size: 0.9rem;
 }
+
+/* DEGRADED reuses app-status-indicator's 'dim' tone (see status-display.ts) - identical to
+ * DISABLED's ink weight on its own, so this explicit label is what actually tells the two
+ * apart, same reasoning as .service-status-ok above for RUNNING. See design_docs/0059's
+ * DEGRADED-state addendum. */
+.service-status-degraded {
+  margin-left: auto;
+  opacity: 0.55;
+  font-size: 0.8rem;
+}

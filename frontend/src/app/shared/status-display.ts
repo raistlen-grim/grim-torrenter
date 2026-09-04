@@ -73,9 +73,17 @@ const SERVICE_DISPLAY: Record<string, { label: string; icon: string }> = {
 
 /** RUNNING/DISABLED/FAILED map onto the same 'active'/'dim'/'alarm' ink-weight vocabulary
  * every other status display in this app already uses (see StatusTone's own Javadoc) -
- * DISABLED is 'dim' like STOPPED/Paused, a deliberately inert state, not a problem. */
+ * DISABLED is 'dim' like STOPPED/Paused, a deliberately inert state, not a problem. DEGRADED
+ * also reuses 'dim' rather than adding a 4th tone (confirmed with the user, staying within
+ * the style guide's deliberate 3-tone cap) - it isn't a problem either (DHT is running and
+ * self-healing), just not yet fully populated. Reusing 'dim' alone would read identically to
+ * DISABLED though, so services-page.html adds its own explicit "sparse" text for DEGRADED
+ * rows, the same way it already adds an explicit checkmark for RUNNING rather than relying on
+ * tone alone (see design_docs/0059's "explicit healthy checkmarks" addendum, and its own
+ * DEGRADED-state addendum). */
 const SERVICE_STATE_TONE: Record<ServiceState, StatusTone> = {
   RUNNING: 'active',
+  DEGRADED: 'dim',
   DISABLED: 'dim',
   FAILED: 'alarm',
 };

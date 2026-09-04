@@ -1,5 +1,5 @@
 import { definePreset } from '@primeuix/themes';
-import Aura from '@primeng/themes/aura';
+import Aura from '@primeuix/themes/aura';
 
 /**
  * Extends PrimeNG's Aura preset with the GrimTorrenter style guide's tokens
@@ -16,13 +16,15 @@ import Aura from '@primeng/themes/aura';
  * consistency - the priority the user named when this was flagged as a guide-vs-prior-decision
  * conflict.
  *
- * <p>Verified against this project's actually-installed package (`definePreset` lives in
- * `@primeuix/themes`, not `@primeng/themes` as most current docs/tutorials show; the
- * primitive border-radius token is a single `borderRadius` object, not a nested
- * `border.radius.*` structure, despite semantic tokens referencing it as `{border.radius.md}`)
- * by reading `node_modules/@primeuix/themes/dist/aura/base/index.mjs` directly, rather than
- * guessed - same "read the shipped source, don't guess a JS/TS library's API" precedent
- * design_docs/0020 already set for this frontend.
+ * <p>Verified against this project's actually-installed package (the primitive border-radius
+ * token is a single `borderRadius` object, not a nested `border.radius.*` structure, despite
+ * semantic tokens referencing it as `{border.radius.md}`) by reading
+ * `node_modules/@primeuix/themes/dist/aura/base/index.mjs` directly, rather than guessed -
+ * same "read the shipped source, don't guess a JS/TS library's API" precedent design_docs/0020
+ * already set for this frontend. Both `definePreset` and the `Aura` preset itself come from
+ * `@primeuix/themes` (the maintained package - `@primeng/themes`, the deprecated one most
+ * current docs/tutorials still show, was migrated off entirely; see `TODO.md`'s own note on
+ * this and `package.json`'s dependency list).
  *
  * <p>**Ramp-to-role mapping, read from Aura's own source rather than assumed** (the same
  * file above): a scheme's `primary.color` is `{primary.500}` in light but `{primary.400}`
@@ -141,6 +143,60 @@ export const GrimTorrenterPreset = definePreset(Aura, {
    * (row hover, row selection, this same ghost hover) being a translucent wash rather than a
    * solid fill. */
   components: {
+    /** Settings-page redesign (SETTINGS_PAGE.md, design_docs/0045's addendum): the guide's
+     * toggle is 34x20px, square-cornered, hairline-bordered - Aura's own default ships a
+     * hardcoded 30px `borderRadius` on this one component (independent of the app-wide
+     * `primitive.borderRadius: 0` override above, which only reaches `sm/md/lg/xl`-referenced
+     * tokens), plus a 40x24px track and a transparent border. All of that is just component
+     * tokens, not a reason to hand-roll the control - `p-toggleswitch` stays. `background`/
+     * `handle.*Background` reference this app's own `--color-divider`/`--color-surface`
+     * aliases directly (styles.scss) rather than an Aura semantic ref, since those aliases
+     * *are* the guide's own literal hairline/knob colors - closer than reaching for whatever
+     * Aura's `surface.*` ramp happens to approximate. One color-mix expression shared by both
+     * schemes (the same "theme-aware without a separate dark override" reasoning styles.scss's
+     * own `--rule`/`--color-divider` already use), and one knob color regardless of checked
+     * state, unlike Aura's own default (different bg for checked vs. unchecked, and again
+     * between light/dark) - the guide's knob is just `var(--color-surface)`, always. */
+    toggleswitch: {
+      root: {
+        width: '34px',
+        height: '20px',
+        borderRadius: '0px',
+        borderColor: 'var(--color-divider)',
+        hoverBorderColor: 'var(--color-divider)',
+        checkedBorderColor: 'var(--color-divider)',
+        checkedHoverBorderColor: 'var(--color-divider)',
+      },
+      handle: {
+        borderRadius: '0px',
+      },
+      colorScheme: {
+        light: {
+          root: {
+            background: 'color-mix(in srgb, var(--color-text) 14%, transparent)',
+            hoverBackground: 'color-mix(in srgb, var(--color-text) 14%, transparent)',
+          },
+          handle: {
+            background: 'var(--color-surface)',
+            hoverBackground: 'var(--color-surface)',
+            checkedBackground: 'var(--color-surface)',
+            checkedHoverBackground: 'var(--color-surface)',
+          },
+        },
+        dark: {
+          root: {
+            background: 'color-mix(in srgb, var(--color-text) 14%, transparent)',
+            hoverBackground: 'color-mix(in srgb, var(--color-text) 14%, transparent)',
+          },
+          handle: {
+            background: 'var(--color-surface)',
+            hoverBackground: 'var(--color-surface)',
+            checkedBackground: 'var(--color-surface)',
+            checkedHoverBackground: 'var(--color-surface)',
+          },
+        },
+      },
+    },
     button: {
       colorScheme: {
         light: {

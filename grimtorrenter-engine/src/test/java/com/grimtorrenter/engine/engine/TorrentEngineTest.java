@@ -7,6 +7,7 @@ import com.grimtorrenter.engine.bencode.BencodeEncoder;
 import com.grimtorrenter.engine.dht.DhtNode;
 import com.grimtorrenter.engine.dht.NodeId;
 import com.grimtorrenter.engine.dht.NodeInfo;
+import com.grimtorrenter.engine.dht.RoutingTable;
 import com.grimtorrenter.engine.events.EventType;
 import com.grimtorrenter.engine.events.InMemoryEventStore;
 import com.grimtorrenter.engine.events.LibraryEvent;
@@ -285,18 +286,47 @@ class TorrentEngineTest {
                 statuses);
     }
 
+    /** A freshly-constructed engine's DHT node has an empty routing table (real bootstrap runs
+     * asynchronously - see createDhtNode()), so it's genuinely DEGRADED, not RUNNING, at this
+     * point - see design_docs/0059's DEGRADED-state addendum (a flat, live threshold check,
+     * deliberately no startup grace period). serviceStatusesReportRunningOnceRoutingTableIsHealthy
+     * below covers the RUNNING case. */
     @Test
-    void serviceStatusesReportRunningWhenEnabled(@TempDir Path tempDir) {
+    void serviceStatusesReportDegradedRightAfterEnabling(@TempDir Path tempDir) {
         TorrentEngine engine = new TorrentEngine(tempDir, 0, new NoOpListener(), true);
         try {
             List<TorrentEngine.ServiceStatus> statuses = engine.serviceStatuses();
 
             assertEquals(
-                    new TorrentEngine.ServiceStatus("dht", TorrentEngine.ServiceState.RUNNING),
+                    new TorrentEngine.ServiceStatus("dht", TorrentEngine.ServiceState.DEGRADED),
                     statuses.get(0));
             assertEquals(
                     new TorrentEngine.ServiceStatus("peerServer", TorrentEngine.ServiceState.DISABLED),
                     statuses.get(1));
+        } finally {
+            engine.shutdown();
+        }
+    }
+
+    /** Seeds the real DhtNode's routing table directly (no real bootstrap/network needed -
+     * same "package-private dhtNode() for test access" seam its own Javadoc already
+     * anticipates) past DhtNode.isDegraded()'s threshold, confirming serviceStatuses() reports
+     * RUNNING once the table is no longer sparse. See design_docs/0059's DEGRADED-state
+     * addendum. */
+    @Test
+    void serviceStatusesReportRunningOnceRoutingTableIsHealthy(@TempDir Path tempDir) throws Exception {
+        TorrentEngine engine = new TorrentEngine(tempDir, 0, new NoOpListener(), true);
+        try {
+            for (int i = 0; i < RoutingTable.BUCKET_SIZE; i++) {
+                engine.dhtNode().routingTable().insert(
+                        new NodeInfo(NodeId.random(), InetAddress.getLoopbackAddress(), 10000 + i));
+            }
+
+            List<TorrentEngine.ServiceStatus> statuses = engine.serviceStatuses();
+
+            assertEquals(
+                    new TorrentEngine.ServiceStatus("dht", TorrentEngine.ServiceState.RUNNING),
+                    statuses.get(0));
         } finally {
             engine.shutdown();
         }

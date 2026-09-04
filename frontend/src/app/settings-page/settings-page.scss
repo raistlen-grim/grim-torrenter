@@ -1,23 +1,138 @@
+/* flex/min-height: 0 makes this a real flex item of .shell-main's own flex column (app.scss),
+ * the same thing torrent-list.scss's :host already relies on flex:1 for - which is what lets
+ * .settings-content below become its own bounded, independently-scrolling region instead of
+ * growing however tall its active group happens to be and pushing .save-bar off the bottom of
+ * whatever .shell-main's own scroll height is. Unlike torrent-list, no full-bleed opt-out
+ * (negative margin/overflow: hidden) is needed here - .shell-main's own padding still applies
+ * fine, only .settings-content needs a scroll region of its own, not this whole page. */
 :host {
-  display: block;
-  max-width: 640px;
-}
-
-h1 {
-  margin: 0 0 var(--space-6);
-  font-size: 1.75rem;
-}
-
-.settings-groups {
   display: flex;
   flex-direction: column;
-  gap: var(--space-6);
+  flex: 1;
+  min-height: 0;
+  /* Wide enough for .settings-nav's fixed 208px column plus a content pane matching the
+   * original single-column page's own ~640px reading width. */
+  max-width: 900px;
 }
 
+/* .display-font (styles.scss) only sets font-family - font-weight is set here explicitly
+ * since the guide's own Cinzel headings are 600, not the browser's bold-by-default h1/h2. */
+h1 {
+  margin: 0 0 var(--space-6);
+  font-weight: 600;
+  font-size: 25px;
+  letter-spacing: 0.02em;
+  flex: none;
+}
+
+/* align-items: stretch (not the default flex-start) so .settings-content actually gets a real
+ * height to scroll within - flex-start would size it to its own content instead. min-height: 0
+ * for the same reason .shell-main/torrent-list's own flex chains need it: without it this row
+ * refuses to shrink below its tallest child's natural height, and the scroll region below never
+ * actually engages. background: var(--color-surface) and no gap between nav/content - .blueprint
+ * (global, styles.scss) supplies the frame border + corner marks; nav and content sit flush
+ * against each other inside it, separated by .settings-nav's own border-right, not a gutter. */
+.settings-layout {
+  display: flex;
+  align-items: stretch;
+  flex: 1;
+  min-height: 0;
+  background: var(--color-surface);
+}
+
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 0 0 208px;
+  padding: 14px 0;
+  border-right: 1px solid var(--color-divider);
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 18px;
+  border: none;
+  background: none;
+  color: inherit;
+  font-family: var(--font-heading);
+  font-weight: 600;
+  font-size: 12.5px;
+  letter-spacing: 0.02em;
+  text-align: left;
+  cursor: pointer;
+  opacity: 0.75;
+  transition:
+    opacity var(--motion-fast),
+    background var(--motion-fast);
+}
+
+.nav-item i {
+  flex: none;
+  width: 15px;
+  font-size: 15px;
+}
+
+.nav-item:hover,
+.nav-item:focus-visible {
+  opacity: 1;
+  background: color-mix(in srgb, currentColor 6%, transparent);
+}
+
+/* The exact "selected" language torrent-row.scss's own :host(.row-selected) already
+ * establishes for the torrent list (design_docs/0043's addendum) - an inset left edge plus an
+ * 8% accent wash, not a filled background. Same treatment, different trigger. */
+.nav-item.active {
+  opacity: 1;
+  color: var(--p-primary-color);
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+  box-shadow: inset 2px 0 0 0 var(--color-accent);
+}
+
+/* The scroll region: only the active group's own content scrolls, independently of
+ * .settings-nav beside it (which stays fully visible - it's short and is how the user gets to
+ * the other groups) and of .save-bar below (pinned, not part of this scroll region at all -
+ * see :host's own comment). */
+.settings-content {
+  flex: 1;
+  min-width: 0;
+  padding: 22px 28px 28px;
+  overflow-y: auto;
+}
+
+.settings-group-heading {
+  margin-bottom: 14px;
+}
+
+.settings-group-heading h2 {
+  margin: 0 0 6px;
+  font-weight: 600;
+  font-size: 19px;
+  letter-spacing: 0.01em;
+}
+
+.settings-group-hint {
+  margin: 0;
+  font-size: 11.5px;
+  opacity: 0.55;
+  max-width: 60ch;
+  line-height: 1.5;
+}
+
+/* A plain flex item after the flex: 1 scroll region above, not position: sticky - the same
+ * "pinned footer below a scrollable middle region" shape torrent-detail.scss's own
+ * .panel-footer already uses. No border-top separator, unlike that footer - the .blueprint
+ * frame above already draws its own bottom edge right next to this, and a second line directly
+ * underneath it just doubled up (flagged live by the user). flex: none so it never gets
+ * compressed by .settings-layout above claiming flex: 1 for itself. */
 .save-bar {
   display: flex;
   align-items: center;
   gap: var(--space-4);
+  flex: none;
   margin-top: var(--space-6);
 }
 

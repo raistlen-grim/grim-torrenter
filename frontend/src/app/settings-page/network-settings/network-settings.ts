@@ -1,7 +1,8 @@
 import { ChangeDetectionStrategy, Component, input } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule } from '@angular/forms';
+import { InputGroupModule } from 'primeng/inputgroup';
+import { InputGroupAddonModule } from 'primeng/inputgroupaddon';
 import { InputNumberModule } from 'primeng/inputnumber';
-import { SelectModule } from 'primeng/select';
 import { ToggleSwitchModule } from 'primeng/toggleswitch';
 
 import { EncryptionMode, Settings } from '../../models/settings.model';
@@ -57,7 +58,7 @@ export function networkSettingsPatch(value: {
  */
 @Component({
   selector: 'app-network-settings',
-  imports: [InputNumberModule, ReactiveFormsModule, SelectModule, ToggleSwitchModule],
+  imports: [InputGroupModule, InputGroupAddonModule, InputNumberModule, ReactiveFormsModule, ToggleSwitchModule],
   templateUrl: './network-settings.html',
   styleUrl: './network-settings.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,

@@ -19,7 +19,7 @@
   "seedTimeLimitEnabled" : false,
   "seedTimeLimitMinutes" : 0,
   "theme" : "SYSTEM",
-  "trackerlessDhtReannounceIntervalSeconds" : 300,
+  "trackerlessDhtReannounceIntervalSeconds" : 30,
   "uploadRateLimitBytesPerSec" : 0,
   "watchFolderEnabled" : true,
   "watchFolderRetentionDays" : 7

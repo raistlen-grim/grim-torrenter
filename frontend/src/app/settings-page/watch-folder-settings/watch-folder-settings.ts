@@ -1,5 +1,7 @@
 import { ChangeDetectionStrategy, Component, effect, input } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule } from '@angular/forms';
+import { InputGroupModule } from 'primeng/inputgroup';
+import { InputGroupAddonModule } from 'primeng/inputgroupaddon';
 import { InputNumberModule } from 'primeng/inputnumber';
 import { ToggleSwitchModule } from 'primeng/toggleswitch';
 import { Subscription } from 'rxjs';
@@ -33,7 +35,7 @@ export function watchFolderSettingsPatch(value: { enabled: boolean; retentionDay
  */
 @Component({
   selector: 'app-watch-folder-settings',
-  imports: [InputNumberModule, ReactiveFormsModule, ToggleSwitchModule],
+  imports: [InputGroupModule, InputGroupAddonModule, InputNumberModule, ReactiveFormsModule, ToggleSwitchModule],
   templateUrl: './watch-folder-settings.html',
   styleUrl: './watch-folder-settings.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,

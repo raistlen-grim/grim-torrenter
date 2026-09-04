@@ -198,30 +198,10 @@ body {
 
 /* p-inputnumber renders its own inner <input> from its own template, so a class applied to
    it via [inputStyleClass] lands outside any consuming component's emulated view
-   encapsulation - has to live here globally rather than in that component's own .scss.
-   Used by the settings page's rate-limit fields (design_docs/0045) to keep a KiB/s value
-   from needing the input's full default width. */
-.rate-input-field {
-  width: 5rem;
-}
-
-/* Same reason as .rate-input-field above - [styleClass] on p-select also lands outside the
- * consuming component's emulated view encapsulation. Used by the Network settings group's
- * encryption-mode dropdown (design_docs/0052) to keep it from stretching to fill its row. */
-.encryption-mode-select {
-  width: 11rem;
-}
-
-/* Same reason as .encryption-mode-select above - [styleClass] on p-select lands outside the
- * consuming component's emulated view encapsulation. Used by the Appearance settings group's
- * theme dropdown (design_docs/0032's "Manual theme switcher" section). */
-.theme-select {
-  width: 11rem;
-}
-
-/* Same reason as .rate-input-field/.encryption-mode-select above. Used by the seeding-limits
- * dialog's ratio/time mode dropdowns (design_docs/0054) - wider than .encryption-mode-select
- * since these labels include the resolved default value (e.g. "Use default (2x)"). */
+   encapsulation - has to live here globally rather than in that component's own .scss. Used
+   by the seeding-limits dialog's ratio/time mode dropdowns (design_docs/0054) - wider than a
+   plain select since these labels include the resolved default value (e.g. "Use default
+   (2x)"). */
 .limit-mode-select {
   width: 14rem;
 }
@@ -232,16 +212,282 @@ body {
   width: 6rem;
 }
 
-/* Same reason again - [inputStyleClass] on the Event log settings group's retention-days
- * field (design_docs/0055). */
-.retention-input-field {
-  width: 5rem;
-}
-
 /* p-dialog renders its panel via Angular CDK overlay, detached from the consuming
  * component's own DOM position entirely - not just a narrower version of the same
  * encapsulation issue above, [styleClass] is the only way to reach it regardless. Used by the
  * seeding-limits dialog (design_docs/0054). */
 .seeding-limits-dialog {
   width: 26rem;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   Settings page redesign - shared foundation (SETTINGS_PAGE.md,
+   design_docs/0045's addendum). Global, not per-group .scss, because every
+   settings group component needs the exact same row shell/control shapes -
+   a component-scoped copy is exactly the drift the redesign exists to fix.
+   Literal px values throughout, taken directly from the design's own
+   Industry-system scale (SETTINGS_PAGE.md / the prototype's own :root),
+   not this app's --space-* tokens - same "match the guide's own exact
+   measurements" precedent torrent-detail.scss's hand-tuned pixel values
+   already set, not a new one.
+   ══════════════════════════════════════════════════════════════════════ */
+
+/* "Blueprint" framing - a wireframe-object treatment (hairline border + four "+" registration
+ * marks at the corners) from the original style guide's Industry system. Previously exempted
+ * app-wide (design_docs/0032, "pure decoration with no PrimeNG concept behind it") as not
+ * worth hand-styling every card/panel instance for; reconsidered for the Settings page frame
+ * specifically once it turned out to involve no PrimeNG-internals fight at all - see 0032's
+ * 2026-09-04 addendum for the full reasoning. Corner marks are 4 explicit `.corner` elements
+ * in the consuming template (`<i class="corner tl">` etc.), not pseudo-elements on `.blueprint`
+ * itself, so they can sit outside the bordered box via negative offsets without `.blueprint`
+ * itself needing `overflow: visible` (it has no overflow rule at all - nothing here clips). */
+.blueprint {
+  position: relative;
+  border: 1px solid var(--color-divider);
+}
+
+.blueprint > .corner {
+  position: absolute;
+  width: 11px;
+  height: 11px;
+  color: color-mix(in srgb, var(--color-text) 55%, transparent);
+}
+
+.blueprint > .corner::before,
+.blueprint > .corner::after {
+  content: "";
+  position: absolute;
+  background: currentColor;
+}
+
+.blueprint > .corner::before {
+  left: 5px;
+  top: 0;
+  width: 1px;
+  height: 100%;
+}
+
+.blueprint > .corner::after {
+  top: 5px;
+  left: 0;
+  width: 100%;
+  height: 1px;
+}
+
+.blueprint > .corner.tl {
+  top: -6px;
+  left: -6px;
+}
+
+.blueprint > .corner.tr {
+  top: -6px;
+  right: -6px;
+}
+
+.blueprint > .corner.bl {
+  bottom: -6px;
+  left: -6px;
+}
+
+.blueprint > .corner.br {
+  bottom: -6px;
+  right: -6px;
+}
+
+/* The row shell: every settings row, any group, is label/description on the left and one of
+ * the 4 control shapes below on the right. Replaces each group's own duplicated
+ * fieldset/legend/.setting-row skeleton entirely - no <fieldset> border doubling the
+ * .blueprint frame the page already draws around the whole nav+content area. */
+.settings-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.settings-row-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 48ch;
+}
+
+.settings-row-label label {
+  display: block;
+  font-family: var(--font-heading);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.settings-row-description {
+  margin: 3px 0 0;
+  font-size: 11.5px;
+  opacity: 0.55;
+  line-height: 1.4;
+}
+
+.settings-row-control {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 1px;
+}
+
+/* Without this, a row whose control side doesn't fit alongside .settings-row-label (e.g. a
+ * number+unit group plus an enable-toggle) has its children flex-shrink along the main axis by
+ * default - confirmed live via devtools: a clipped toggle's computed height was exactly the
+ * intended 20px (cross-axis, unaffected) but its width had shrunk to ~30px against the
+ * intended 34px (main-axis, exactly the flex-shrink signature). .settings-row-label already has
+ * min-width: 0 specifically so *it* is the side that compresses/wraps under pressure - the
+ * controls should stay at their real size regardless. */
+.settings-row-control > * {
+  flex-shrink: 0;
+}
+
+/* Control 1/4: toggle - see grimtorrenter-preset.ts's own `components.toggleswitch` override;
+ * `p-toggleswitch` itself needs no per-usage class. */
+
+/* Control 2/4: select - a native <select>, not p-select (SETTINGS_PAGE.md: "No PrimeNG
+ * dropdown chrome to match - style the native element directly"; confirmed against the actual
+ * prototype's own <select> markup, not a paraphrase). Bordered like every other control here
+ * rather than left at the browser's own default chrome. */
+.settings-select {
+  border: 1px solid var(--color-divider);
+  background: var(--color-bg);
+  color: inherit;
+  padding: 6px 10px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  min-width: 150px;
+}
+
+/* Control 3/4 & 4/4: number + unit, and number + unit + enable-toggle - both built on
+ * `p-inputgroup` + `p-inputnumber` + `p-inputgroup-addon`, the same composition
+ * rate-limit-settings/seeding-settings already use today (design_docs/0045), just applied
+ * consistently everywhere a number+unit row appears instead of only some groups, and with
+ * Aura's own default input/addon chrome stripped down to the guide's plain bordered-box look.
+ * [styleClass]/[inputStyleClass] land outside the consuming component's emulated view
+ * encapsulation (same reason .limit-mode-select/.limit-value-field above are global), so
+ * these have to live here too. Every number+unit input is a fixed 64px regardless of group or
+ * unit length - the audit's flagged inconsistency (SETTINGS_LAYOUT_PATTERNS.md) this design
+ * exists to fix; don't let the unit text size the field. Best-effort against the prototype's
+ * own inline styles - not yet checked live against a rendered row (`p-inputgroup`/
+ * `p-inputgroup-addon`'s own Aura defaults may need further stripping once a real numeric row
+ * exists to check against - see the Network/Rate limiting/Seeding/Magnet fetching rollout). */
+/* Aura's own `.p-inputgroup` base CSS sets `width: 100%` and gives the wrapped input `flex: 1
+ * 1 auto; width: 1%` - built for a group meant to stretch and fill its row, growing the input
+ * to whatever space is left. That's the opposite of this design's fixed-64px-input rule: it was
+ * the real reason the box measured wider than 64+84px live, and (once .settings-row-control's
+ * children stopped shrinking to compensate) why the row started overflowing. Scoped to this
+ * class specifically, not `.p-inputgroup` globally - the seeding-limits dialog's own
+ * inputgroups (design_docs/0054) still want Aura's default stretch-to-fill behavior. */
+/* Both this and the rule below combine the element's own tag name (`p-inputgroup`, its real
+ * rendered host element - confirmed live in devtools) with the class, not just the class alone
+ * - Aura's own `.p-inputgroup`/`.p-inputgroup .p-inputtext` rules are equal-specificity class
+ * selectors, so which one wins depends on cascade order (whichever stylesheet the browser
+ * applied later), not just what's written here. First attempt at this override used bare
+ * `.settings-number-group` and visibly lost that tie live - this guarantees a win regardless of
+ * injection order instead of depending on it. */
+p-inputgroup.settings-number-group {
+  width: auto;
+  border: 1px solid var(--color-divider);
+  background: var(--color-bg);
+}
+
+p-inputgroup.settings-number-group .p-inputwrapper,
+p-inputgroup.settings-number-group .p-inputtext {
+  flex: none;
+  width: auto;
+}
+
+/* The outer p-inputgroup never itself becomes "disabled" - only its inner p-inputnumber
+ * control does (PrimeNG sets the native `disabled` attribute on that control's own <input>,
+ * reached here via `.settings-number-input` from `inputStyleClass`) - so this has to key off
+ * a descendant match, not a class/attribute on the wrapper itself. */
+.settings-number-group:has(.settings-number-input:disabled) {
+  opacity: 0.45;
+}
+
+.settings-number-input {
+  width: 64px;
+  border: none;
+  background: transparent;
+  padding: 6px 8px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: inherit;
+}
+
+/* Fixed width, not content-sized - the prototype's own inline styles left this auto-width,
+ * which is exactly the box-width inconsistency the user flagged live (a "seconds"/"peers"/
+ * "connections" row each rendering a different overall .settings-number-group width, next to
+ * each other on the same page). 84px comfortably fits "connections", the longest unit word in
+ * use, at this font-size; text-align: center so shorter units (e.g. "x", "sec") don't look
+ * flush against the divider with empty space trailing after them. */
+.settings-number-unit {
+  width: 84px;
+  padding: 6px 8px;
+  font-size: 11px;
+  text-align: center;
+  opacity: 0.55;
+  border-left: 1px solid var(--color-divider);
+  background: transparent;
+  white-space: nowrap;
+}
+
+/* Time range - stays native <input type="time"> (no change of widget from today, only
+ * styling - see settings.model.ts's own comment on why a native time input was chosen in the
+ * first place), now bordered like every other control instead of its own one-off treatment. */
+.settings-time-input {
+  border: 1px solid var(--color-divider);
+  background: var(--color-bg);
+  padding: 6px 8px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: inherit;
+}
+
+.settings-time-input:disabled {
+  opacity: 0.45;
+}
+
+.settings-time-sep {
+  font-size: 11.5px;
+  opacity: 0.5;
+}
+
+/* The Rate limiting schedule subsection - the one nested sub-group on the page (design says
+ * "keep it that way rather than promoting it to a full group of its own"). */
+.settings-schedule {
+  margin-top: 8px;
+  padding-top: 14px;
+  border-top: 1px solid var(--color-divider);
+}
+
+.settings-schedule-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 4px 0 12px;
+}
+
+/* A real <label for="..."> for the schedule's own enable-toggle, not a plain div - accessible
+ * name for the toggle, styled as the guide's uppercase sub-heading instead of a normal row
+ * label (overrides .settings-row-label label's own font-size/weight for this one spot). */
+.settings-schedule-header .settings-row-label label {
+  font-size: 12.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+
+/* Indented so the 3 schedule rows read as children of the header above (design's own
+ * `padding-left: 16px in addition to the row shell`). */
+.settings-schedule-row {
+  padding-left: 16px;
 }

@@ -785,9 +785,11 @@ public final class TorrentEngine {
     }
 
     /** Engine-wide singleton subsystems only (DHT, the inbound peer server) - per-torrent
-     * status stays on the torrent itself, not here. See design_docs/0059. */
+     * status stays on the torrent itself, not here. DEGRADED is DHT-only (see
+     * dhtServiceState()) - the peer server has no equivalent "running but not fully healthy"
+     * notion, only bound-or-not. See design_docs/0059 and its own DEGRADED-state addendum. */
     public enum ServiceState {
-        RUNNING, DISABLED, FAILED
+        RUNNING, DEGRADED, DISABLED, FAILED
     }
 
     /** name is a stable identifier ("dht"/"peerServer"), matched by name against a frontend
@@ -796,13 +798,24 @@ public final class TorrentEngine {
     public record ServiceStatus(String name, ServiceState state) {
     }
 
-    /** DHT and the peer server only bind once, at construction - no retry - so FAILED is
-     * stable for the whole process lifetime; a caller doesn't need to poll this expecting a
-     * RUNNING->FAILED or FAILED->RUNNING transition mid-process. See design_docs/0059. */
+    /** The peer server only binds once, at construction - no retry - so its FAILED/DISABLED
+     * state is stable for the whole process lifetime, same as before. DHT's state is no
+     * longer as stable: alongside the same bind-time FAILED/DISABLED, a running DHT node can
+     * live-transition RUNNING<->DEGRADED as its routing table's known-node count crosses
+     * DhtNode.isDegraded()'s threshold - a caller polling this (e.g. the Services page) should
+     * expect that one transition, unlike bind status. See design_docs/0059 and its own
+     * DEGRADED-state addendum. */
     public List<ServiceStatus> serviceStatuses() {
         return List.of(
-                new ServiceStatus("dht", serviceState(dhtNode != null, dhtBindFailed)),
+                new ServiceStatus("dht", dhtServiceState()),
                 new ServiceStatus("peerServer", serviceState(peerServer != null, peerServerBindFailed)));
+    }
+
+    private ServiceState dhtServiceState() {
+        if (dhtNode != null) {
+            return dhtNode.isDegraded() ? ServiceState.DEGRADED : ServiceState.RUNNING;
+        }
+        return dhtBindFailed ? ServiceState.FAILED : ServiceState.DISABLED;
     }
 
     private static ServiceState serviceState(boolean running, boolean failed) {

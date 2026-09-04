@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, effect, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, effect, inject, signal } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { FormGroup } from '@angular/forms';
 import { MessageService } from 'primeng/api';
@@ -60,6 +60,74 @@ type SettingsFormGroup = FormGroup<{
   magnetFetch: MagnetFetchSettingsForm;
 }>;
 
+type SettingsGroupKey =
+  | 'appearance'
+  | 'network'
+  | 'rateLimiting'
+  | 'seeding'
+  | 'eventLog'
+  | 'watchFolder'
+  | 'magnetFetch';
+
+/** Labels/icons/hints for the settings-page nav (a plain vertical list, not PrimeNG Tabs - see
+ * design_docs/0045's own addendum: at this page's width, seven labels including multi-word
+ * ones like "Rate limiting"/"Magnet fetching" don't fit a horizontal tab strip without
+ * wrapping or scrolling). Order matches the groups' existing top-to-bottom order. `hint` is
+ * the group's intro copy, now rendered once by this page (SETTINGS_PAGE.md) rather than
+ * duplicated as each child component's own `.group-hint` - present on every group, not just
+ * the 4 of 7 that had one before.
+ *
+ * `icon` is a PrimeIcons class, not the design's own Lucide set - design_docs/0032's
+ * PrimeIcons-over-Lucide rule, confirmed still standing for this page (user decision,
+ * 2026-09-04). 5 of 7 have an exact PrimeIcons equivalent; "scroll-text" (Event log) and
+ * "magnet" (Magnet fetching) don't - substituted with pi-history (matching the real Events
+ * sidebar nav item's own icon) and pi-link (a magnet link is literally a link) rather than
+ * pulling in a second icon system for 2 icons. */
+const SETTINGS_GROUPS: { key: SettingsGroupKey; label: string; icon: string; hint: string }[] = [
+  {
+    key: 'appearance',
+    label: 'Appearance',
+    icon: 'pi-palette',
+    hint: 'Controls how GrimTorrenter looks. Applies immediately, no restart.',
+  },
+  {
+    key: 'network',
+    label: 'Network',
+    icon: 'pi-wifi',
+    hint: 'Peer discovery and protocol behavior.',
+  },
+  {
+    key: 'rateLimiting',
+    label: 'Rate limiting',
+    icon: 'pi-gauge',
+    hint: 'Caps on transfer speed, always or on a schedule.',
+  },
+  {
+    key: 'seeding',
+    label: 'Seeding',
+    icon: 'pi-arrow-up',
+    hint: "When to stop serving data you've already downloaded.",
+  },
+  {
+    key: 'eventLog',
+    label: 'Event log',
+    icon: 'pi-history',
+    hint: 'How long GrimTorrenter keeps its own activity log.',
+  },
+  {
+    key: 'watchFolder',
+    label: 'Watch folder',
+    icon: 'pi-folder',
+    hint: 'Automatically add torrents dropped into a folder.',
+  },
+  {
+    key: 'magnetFetch',
+    label: 'Magnet fetching',
+    icon: 'pi-link',
+    hint: "How hard to try before giving up on a magnet link's metadata.",
+  },
+];
+
 /**
  * Container for the settings page: loads the current Settings once, builds one form group
  * per topic (see the network-settings/rate-limit-settings sub-components), and saves them
@@ -94,6 +162,10 @@ export class SettingsPage {
    * merged onto, so a group that hasn't been touched never has its fields clobbered by a
    * stale default. */
   private baseline: Settings | undefined;
+
+  readonly groups = SETTINGS_GROUPS;
+  readonly activeGroup = signal<SettingsGroupKey>('appearance');
+  readonly activeGroupDef = computed(() => this.groups.find((g) => g.key === this.activeGroup())!);
 
   readonly loadedSettings = toSignal(this.settingsService.current());
   readonly form = signal<SettingsFormGroup | undefined>(undefined);

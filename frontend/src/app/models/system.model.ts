@@ -19,8 +19,10 @@ export interface ResourceUsage {
   availableProcessors: number;
 }
 
-/** Matches the backend's TorrentEngine.ServiceState. See design_docs/0059. */
-export type ServiceState = 'RUNNING' | 'DISABLED' | 'FAILED';
+/** Matches the backend's TorrentEngine.ServiceState. DEGRADED is DHT-only (a running node
+ * whose routing table has stayed sparse) - the peer server never reports it. See
+ * design_docs/0059 and its own DEGRADED-state addendum. */
+export type ServiceState = 'RUNNING' | 'DEGRADED' | 'DISABLED' | 'FAILED';
 
 /** Matches the backend's ServiceStatusView. name is a stable identifier ("dht"/"peerServer"),
  * mapped to a display label/icon in shared/status-display.ts. See design_docs/0059. */

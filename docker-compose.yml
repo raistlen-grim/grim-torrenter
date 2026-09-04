@@ -1,0 +1,16 @@
+# Convenience wrapper around `docker build -t grimtorrenter .` + `docker run` (see
+# design_docs/0003 - still one container, compose is just running it). Volumes/ports match
+# the Dockerfile's own documentation comments.
+services:
+  grimtorrenter:
+    build: .
+    container_name: grimtorrenter
+    restart: unless-stopped
+    ports:
+      - "8087:8080"
+      - "6881:6881/tcp"
+      - "6881:6881/udp"
+    volumes:
+      - /srv/dev-disk-by-uuid-48dca88d-2275-47d9-99b7-ffaa469ae120/downloads:/app/downloads
+      - /srv/dev-disk-by-uuid-48dca88d-2275-47d9-99b7-ffaa469ae120/config/grimtorrenter:/app/config
+      - /srv/dev-disk-by-uuid-48dca88d-2275-47d9-99b7-ffaa469ae120/downloads/grimtorrenter-watch:/app/watch

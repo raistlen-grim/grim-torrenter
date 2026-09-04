@@ -10,6 +10,8 @@
       />
       @if (service.state === 'RUNNING') {
         <i class="pi pi-check-circle service-status-ok" aria-hidden="true"></i>
+      } @else if (service.state === 'DEGRADED') {
+        <span class="service-status-degraded">Sparse routing table</span>
       }
     </li>
   }
