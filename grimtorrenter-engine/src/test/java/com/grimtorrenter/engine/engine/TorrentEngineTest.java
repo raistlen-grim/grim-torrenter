@@ -11,6 +11,7 @@ import com.grimtorrenter.engine.dht.RoutingTable;
 import com.grimtorrenter.engine.events.EventType;
 import com.grimtorrenter.engine.events.InMemoryEventStore;
 import com.grimtorrenter.engine.events.LibraryEvent;
+import com.grimtorrenter.engine.magnet.MagnetLink;
 import com.grimtorrenter.engine.metainfo.InfoHash;
 import com.grimtorrenter.engine.metainfo.MetainfoParser;
 import com.grimtorrenter.engine.metainfo.PieceHashes;
@@ -91,6 +92,18 @@ class TorrentEngineTest {
         });
         trackerServer.start();
         return "http://127.0.0.1:" + trackerServer.getAddress().getPort() + "/announce";
+    }
+
+    /** Just the bencoded 'info' dictionary, e.g. what a verified magnet metadata fetch hands
+     * addFetchedTorrent() - not a full top-level torrent file (that's synthesizeTorrentFileBytes'
+     * own job, exercised indirectly through addFetchedTorrent() itself). */
+    private static byte[] infoDictBytes(String name, byte[] content) {
+        BDictionary info = new BDictionary(Map.of(
+                BString.of("name"), BString.of(name),
+                BString.of("piece length"), new BInteger(content.length),
+                BString.of("pieces"), BString.of(sha1(content)),
+                BString.of("length"), new BInteger(content.length)));
+        return BencodeEncoder.encode(info);
     }
 
     private static byte[] torrentBytes(String name, byte[] content, String announceUrl) {
@@ -806,6 +819,33 @@ class TorrentEngineTest {
                 .filter(e -> e.type() == EventType.TRACKER_RECOVERED).findFirst().orElseThrow();
         assertEquals("tracker-status.bin", recovered.torrentName());
         assertTrue(recovered.message().contains("http://tracker.example/announce"));
+    }
+
+    /** design_docs/0055's own MAGNET_RESOLVED addendum: a resolved magnet reuses the existing
+     * ADDED event (not a new EventType) with the same source-driven message watch folder already
+     * established ([[0056-watch-folder]]) - "Added via magnet" rather than a distinct type,
+     * since the ADDED event already shows up either way and a second event per resolved magnet
+     * would just be redundant. addFetchedTorrent() is exercised directly here (package-private
+     * for testing) rather than through a real peer metadata fetch. */
+    @Test
+    void addFetchedTorrentRecordsAnAddedEventWithAnAddedViaMagnetMessage(@TempDir Path tempDir) {
+        InMemoryEventStore eventStore = new InMemoryEventStore();
+        TorrentEngine engine = new TorrentEngine(tempDir, 6881, new NoOpListener(), false, false,
+                new InMemorySettingsStore(), FileHandlePool.unbounded(), Integer.MAX_VALUE, eventStore);
+        byte[] infoDict = infoDictBytes("magnet-resolved.bin", fill(20, 17));
+        MagnetLink magnet = new MagnetLink(InfoHash.of(fill(20, 18)), "magnet-resolved.bin", List.of());
+
+        // Empty tracker list, same as the real DHT-resolved-magnet call site
+        // (addFetchedTorrent(magnet, infoDictBytes.get(), List.of())) - avoids a real network
+        // call to a fake tracker host, which createTrackerClient(List.of(...)) would otherwise
+        // attempt via TorrentSession.start().
+        engine.addFetchedTorrent(magnet, infoDict, List.of());
+
+        InfoHash resultingInfoHash = InfoHash.of(sha1(infoDict));
+        List<LibraryEvent> events = eventStore.forTorrent(resultingInfoHash.hex());
+        LibraryEvent added = events.stream().filter(e -> e.type() == EventType.ADDED).findFirst().orElseThrow();
+        assertEquals("magnet-resolved.bin", added.torrentName());
+        assertEquals("Added via magnet", added.message());
     }
 
     /** The "override can enable a limit the global default leaves disabled" direction isn't

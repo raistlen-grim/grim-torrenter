@@ -3,8 +3,10 @@
 **Status:** Accepted - built for a first event set (ADDED/COMPLETED/ERROR/REMOVED/
 SEEDING_LIMIT_REACHED); see "Deferred from this pass" below for what's intentionally not
 wired up yet. `SERVER_STARTED` added 2026-08-26 - see its own section below.
-`TRACKER_UNREACHABLE`/`TRACKER_RECOVERED` added 2026-09-06 - see their own addendum below;
-`MAGNET_RESOLVED` remains deferred.
+`TRACKER_UNREACHABLE`/`TRACKER_RECOVERED` added 2026-09-06 - see their own addendum below.
+`MAGNET_RESOLVED` (also 2026-09-06) resolved into reusing `ADDED` with a source-driven message
+rather than a new `EventType` - see its own addendum below; both originally-deferred items are
+now closed.
 
 ## Decision
 
@@ -188,16 +190,9 @@ itself is seeded then kept live.
 
 ## Deferred from this pass
 
-One event type from the original scoping was **not** wired up when this was built
-(2026-08-26), and is not in the `EventType` enum at all yet rather than sitting unused:
-
-- **`MAGNET_RESOLVED`** - a resolved magnet already flows straight into the same `addTorrent()`
-  pipeline every other torrent uses, which already records `ADDED`. A distinctly-labeled
-  "resolved" event would need `addTorrent()` to know it arrived via magnet resolution rather
-  than a direct upload, which it doesn't distinguish today - a small but real addition, judged
-  low-value enough (the `ADDED` event still shows up either way) to defer.
-
-Remains a reasonable addition if it proves to matter in practice - see `PROGRESS.md`.
+Both event types from the original scoping that weren't wired up when this was built
+(2026-08-26) are now closed - see their own addenda below (`TRACKER_UNREACHABLE`/
+`TRACKER_RECOVERED`, and `MAGNET_RESOLVED`).
 
 ## `TRACKER_UNREACHABLE`/`TRACKER_RECOVERED` (added 2026-09-06)
 
@@ -273,7 +268,7 @@ noise, not signal.
   `TRACKER_UNREACHABLE`/`TRACKER_RECOVERED` `LibraryEvent` with the right `torrentName` and the
   tracker URL folded into the message.
 
-## Stability addendum ([[0051-stability-as-a-standing-consideration]])
+### Stability ([[0051-stability-as-a-standing-consideration]])
 
 - **Hostile/flaky-tracker angle**: this is exactly the risk the debounce policy above exists to
   bound - a tracker flapping between reachable/unreachable on a short cycle could otherwise
@@ -287,6 +282,38 @@ noise, not signal.
   from whatever single thread drives that session's `announce()`/`reannounce()` calls (no new
   concurrent access introduced); the listener callback runs synchronously on that same thread,
   same as the rest of `record()`'s call chain.
+
+## `MAGNET_RESOLVED` (added 2026-09-06)
+
+Picked up alongside the tracker-events addendum above, closing the other half of the pair this
+doc originally deferred. Resolved as **reusing the existing `ADDED` event with a source-driven
+message**, not a new `EventType` - the same mechanism [[0056-watch-folder]] already built for
+`WATCH_FOLDER_SOURCE` (`addTorrent(byte[], String source)`), just given a second source value.
+A distinct `MAGNET_RESOLVED` type was the shape implied by this item's original name, but adding
+one would mean firing *two* events for the same add (`ADDED` and `MAGNET_RESOLVED` both, since
+`addTorrent()`'s own idempotent-`ADDED`-recording logic doesn't distinguish the reason it was
+called) - redundant, and inconsistent with the choice [[0056-watch-folder]] already made for the
+exact same shape of problem (a watch-folder-triggered add is `ADDED` with `message: "Added via
+watch folder"`, not a second, distinct event type).
+
+`TorrentEngine.addFetchedTorrent(MagnetLink, byte[], List<String>)` - the single method both the
+tracker-based and DHT-based magnet metadata-fetch paths already funnel through once a peer's
+metadata is verified - now calls `addTorrent(bytes, MAGNET_SOURCE)` (`MAGNET_SOURCE = "magnet"`)
+instead of the source-less public overload, producing `message: "Added via magnet"`. Made
+package-private (was `private`) for direct testing, same test-visibility rationale as
+`trackerStatusListenerFor()` above - a real end-to-end test would need a full fake-peer
+metadata-fetch harness for no real additional coverage, since the only new logic here is which
+`source` string gets passed through an already-tested mechanism.
+
+No stability implication - this only changes which string flows into an existing, already-bounded
+event-log write path; no new storage, concurrency, or growth behavior.
+
+### Testing
+
+- `TorrentEngineTest` (new case) - `addFetchedTorrent()` called directly with a synthesized info
+  dict records an `ADDED` event with `message: "Added via magnet"` for the resulting torrent's
+  real info hash (derived from the info dict bytes themselves, matching how `MetainfoParser`
+  computes it).
 
 ## Stability ([[0051-stability-as-a-standing-consideration]])
 

@@ -141,6 +141,11 @@ public final class TorrentEngine {
     private static final String WATCH_FOLDER_SOURCE = "watch folder";
     private static final long WATCH_FOLDER_SCAN_INTERVAL_SECONDS = 30;
 
+    /** See design_docs/0055's own MAGNET_RESOLVED addendum - addTorrent()'s existing source
+     * mechanism (built for WATCH_FOLDER_SOURCE above) reused rather than a new EventType, same
+     * "Added via X" message shape. */
+    private static final String MAGNET_SOURCE = "magnet";
+
     private static final Duration DHT_QUERY_TIMEOUT = Duration.ofSeconds(5);
 
     private final Path baseDownloadDirectory;
@@ -836,8 +841,9 @@ public final class TorrentEngine {
     }
 
     /** source is null for a direct upload (the public overload above) or a short label like
-     * "watch folder" (scanWatchFolder()) - folded into the resulting ADDED library event's
-     * message ("Added via watch folder") so it's distinguishable from a direct upload, without
+     * "watch folder" (scanWatchFolder()) or "magnet" (addFetchedTorrent(), once a magnet's
+     * metadata resolves) - folded into the resulting ADDED library event's message ("Added via
+     * watch folder"/"Added via magnet") so it's distinguishable from a direct upload, without
      * adding a new parameter to every existing caller. See design_docs/0055/0056. */
     AddTorrentResult addTorrent(byte[] torrentFileBytes, String source) throws IOException {
         TorrentMetadata metadata = MetainfoParser.parse(torrentFileBytes);
@@ -1087,10 +1093,12 @@ public final class TorrentEngine {
     }
 
     /** Shared by both magnet metadata-fetch paths above once raceOneRound() finds a winner.
-     * trackerUrls becomes the resulting torrent's announce-list (empty for the DHT path). */
-    private void addFetchedTorrent(MagnetLink magnet, byte[] infoDictBytes, List<String> trackerUrls) {
+     * trackerUrls becomes the resulting torrent's announce-list (empty for the DHT path).
+     * Package-private (not private) so tests can drive this directly rather than through a real
+     * peer metadata fetch - same test-visibility rationale as trackerStatusListenerFor above. */
+    void addFetchedTorrent(MagnetLink magnet, byte[] infoDictBytes, List<String> trackerUrls) {
         try {
-            addTorrent(synthesizeTorrentFileBytes(infoDictBytes, trackerUrls));
+            addTorrent(synthesizeTorrentFileBytes(infoDictBytes, trackerUrls), MAGNET_SOURCE);
         } catch (IOException | RuntimeException e) {
             // The problem is on our side (storage, directory creation, ...), not this
             // peer's - trying another peer for the same doomed outcome wouldn't help.
