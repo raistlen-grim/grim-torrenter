@@ -9,6 +9,7 @@ import { finalize } from 'rxjs';
 import { TorrentWithRate } from '../../models/torrent.model';
 import { TorrentEventsService } from '../../services/torrent-events.service';
 import { TorrentService } from '../../services/torrent.service';
+import { copyToClipboard } from '../../shared/clipboard';
 import { FormatBytesPipe } from '../../shared/format-bytes.pipe';
 import { FormatEtaPipe } from '../../shared/format-eta.pipe';
 import { FormatRateWindowsPipe } from '../../shared/format-rate-windows.pipe';
@@ -207,7 +208,7 @@ export class TorrentRow {
    * hint, not required. Built client-side; no backend endpoint needed. */
   copyMagnetLink(): void {
     const magnetUri = `magnet:?xt=urn:btih:${this.infoHash()}&dn=${encodeURIComponent(this.name())}`;
-    navigator.clipboard.writeText(magnetUri).then(
+    copyToClipboard(magnetUri).then(
       () => this.messageService.add({ severity: 'success', summary: 'Magnet link copied', detail: this.name() }),
       () => this.messageService.add({ severity: 'error', summary: 'Could not copy magnet link', detail: this.name() }),
     );

@@ -372,6 +372,26 @@ complete**, per the phased scope in [[0009-phased-scope]]:
   `@primeng/themes` dependency dropped entirely; `npm install` (to catch the lockfile up) left
   for the user per this project's "builds run manually" convention. ([[0032-style-guide-and-primeng-theme]]'s
   own 2026-09-03 addendum)
+- **Fixed: adding a `.torrent` file threw `crypto.randomUUID is not a function` in the Docker
+  container specifically, not local dev (2026-09-06)** — `torrent-list.ts`'s `uploadFile()`/
+  `submitMagnet()`/`submitMultipleMagnets()` used `crypto.randomUUID()` purely to key a pending-
+  upload row locally in the UI (never sent to the backend). `Crypto.randomUUID()` is only
+  defined in secure contexts (HTTPS, or `http://localhost`) - a self-hosted deployment reached
+  over plain HTTP on a LAN IP/hostname (the ordinary way to reach the Docker container) isn't
+  one, so the method is simply undefined there, while `ng serve` on `localhost` during local dev
+  gets a browser secure-context exception and never hits it. Replaced with a new
+  `generateLocalId()` helper (`shared/local-id.ts`, `Date.now()` + `Math.random()`) at all three
+  call sites - no cryptographic randomness was ever needed for a client-local, ephemeral id.
+  Prompted a sweep for the same class of bug: **"Copy magnet link" (torrent row context menu and
+  the detail drawer) had the identical issue** - `navigator.clipboard` itself (not just
+  `randomUUID`) is only defined in a secure context, so `navigator.clipboard.writeText(...)`
+  throws synchronously in the Docker deployment, before either `.then()`/error handler ever runs
+  - worse than the upload case, since it meant no error toast either, just a silent failure.
+  Fixed with a new `copyToClipboard()` helper (`shared/clipboard.ts`) that falls back to the
+  legacy `document.execCommand('copy')` (a hidden textarea, select, execCommand) when
+  `navigator.clipboard` is unavailable - used at both call sites. A repo-wide grep for every
+  other secure-context-gated API (service worker, geolocation, media devices, WebAuthn, share,
+  Bluetooth/USB/HID, wake lock, `crypto.subtle`/`getRandomValues`) turned up nothing else.
 - **Settings page restyled: vertical section nav + one consistent row shell (2026-09-04/05)** —
   the 7 groups moved from a stacked single page (each its own `<fieldset>`, its own slightly
   different row CSS — cataloged in `SETTINGS_LAYOUT_PATTERNS.md`, 21 rows, 7 different control

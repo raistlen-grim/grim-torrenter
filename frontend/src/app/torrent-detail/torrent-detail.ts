@@ -13,6 +13,7 @@ import { TorrentEventsService } from '../services/torrent-events.service';
 import { DetailTab, TorrentDetailTabService } from '../services/torrent-detail-tab.service';
 import { TorrentService } from '../services/torrent.service';
 import { ActiveContextMenuRegistry } from '../shared/active-context-menu-registry';
+import { copyToClipboard } from '../shared/clipboard';
 import { FormatBytesPipe } from '../shared/format-bytes.pipe';
 import { FormatRatePipe } from '../shared/format-rate.pipe';
 import { pollWhileInput } from '../shared/poll-while-input';
@@ -179,7 +180,7 @@ export class TorrentDetail {
       return;
     }
     const magnetUri = `magnet:?xt=urn:btih:${torrent.infoHash}&dn=${encodeURIComponent(torrent.name)}`;
-    navigator.clipboard.writeText(magnetUri).then(
+    copyToClipboard(magnetUri).then(
       () => this.messageService.add({ severity: 'success', summary: 'Magnet link copied', detail: torrent.name }),
       () => this.messageService.add({ severity: 'error', summary: 'Could not copy magnet link', detail: torrent.name }),
     );

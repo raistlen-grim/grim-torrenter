@@ -33,6 +33,7 @@ import {
 } from '../services/torrent-filter.service';
 import { TorrentService } from '../services/torrent.service';
 import { FormatBytesPipe } from '../shared/format-bytes.pipe';
+import { generateLocalId } from '../shared/local-id';
 import { pluralTorrentCount } from '../shared/plural-torrent-count';
 import { SkullMark } from '../shared/skull-mark/skull-mark';
 import { StatusIndicator } from '../shared/status-indicator/status-indicator';
@@ -606,7 +607,7 @@ export class TorrentList {
   }
 
   private uploadFile(file: File): void {
-    const pendingId = crypto.randomUUID();
+    const pendingId = generateLocalId();
     this.pendingUploads.update((uploads) => [...uploads, { id: pendingId, fileName: file.name }]);
 
     this.torrentService.upload(file).subscribe({
@@ -645,7 +646,7 @@ export class TorrentList {
    * appearing *is* the confirmation." A synchronous failure keeps the echo strip open in its
    * alarm state instead of a toast, naming the reason, per the same doc's behaviour table. */
   private submitMagnet(uri: string): void {
-    const pendingId = crypto.randomUUID();
+    const pendingId = generateLocalId();
     this.pendingUploads.update((uploads) => [
       ...uploads,
       { id: pendingId, fileName: magnetDisplayName(uri), infoHash: parseMagnetParams(uri)?.infoHash ?? undefined },
@@ -671,7 +672,7 @@ export class TorrentList {
     let remaining = uris.length;
     let failed = 0;
     uris.forEach((uri) => {
-      const pendingId = crypto.randomUUID();
+      const pendingId = generateLocalId();
       this.pendingUploads.update((uploads) => [
         ...uploads,
         { id: pendingId, fileName: magnetDisplayName(uri), infoHash: parseMagnetParams(uri)?.infoHash ?? undefined },
