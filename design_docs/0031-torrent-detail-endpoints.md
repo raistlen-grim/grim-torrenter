@@ -277,12 +277,15 @@ underlying endpoints/DTOs documented here are unaffected; only the presentation 
 (`url`, `tier`, `state`, `lastAnnouncedAt`, `nextAnnounceAt`, `lastError`, `seeders`,
 `leechers`) on every `announce()` call, without changing that call's own success/failure
 behavior at all - it still returns/throws exactly as the delegate would. This means
-`MultiTrackerClient`'s existing tier-fallback logic (see [[0022-multi-tracker-fallback]])
-needed **no changes to its `announce()` method** - only a new `statuses()` that aggregates
-every wrapped tracker's own status, including ones a given `announce()` call's
-short-circuiting-on-first-success never reached (their status just reflects whenever they
-were last, or never, attempted - an honest "this backup tracker hasn't been needed" rather
-than a fabricated value).
+`MultiTrackerClient`'s tier-fallback logic *at the time this was built* (see
+[[0022-multi-tracker-fallback]] - since revised, 2026-09-06, to concurrent announce over
+BEP 12 fallback) needed **no changes to its `announce()` method** - only a new `statuses()`
+that aggregates every wrapped tracker's own status, including ones a given `announce()`
+call's short-circuiting-on-first-success never reached (their status just reflects whenever
+they were last, or never, attempted - an honest "this backup tracker hasn't been needed"
+rather than a fabricated value). Still true post-revision, for the same reason:
+`TrackedTrackerClient` only observes each delegate's own outcome, indifferent to how or how
+often `MultiTrackerClient` chooses to call it.
 
 Querying flows through a new `default List<TrackerStatus> statuses() { return List.of(); }`
 on the `TrackerClient` interface itself (same "empty default, meaningful override" shape as

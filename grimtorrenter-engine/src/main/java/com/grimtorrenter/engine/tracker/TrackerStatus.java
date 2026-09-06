@@ -11,8 +11,10 @@ import java.time.Instant;
  * stale-but-recent count is more useful than none, and lastAnnouncedAt/state already tell
  * the caller how fresh it is. nextAnnounceAt is this tracker's own view (its own response's
  * interval, from its own last successful announce) - null whenever that's not known, which
- * includes every ERROR/UNKNOWN tracker and any lower-priority tracker MultiTrackerClient
- * hasn't needed to call yet.
+ * includes every ERROR/UNKNOWN tracker. UNKNOWN itself should now be rare/transient in
+ * steady state - MultiTrackerClient announces to every configured tracker concurrently on
+ * every call (design_docs/0022's own 2026-09-06 revision), rather than only reaching a
+ * lower-priority tracker once every higher-priority one had failed.
  */
 public record TrackerStatus(
         String url,

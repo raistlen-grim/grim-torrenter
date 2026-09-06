@@ -53,11 +53,17 @@ export class TrackersTab {
   /** [DHT]·[PeX] only, not the guide's own [DHT]·[PeX]·[LSD] - Local Service Discovery isn't
    * implemented anywhere in this engine at all (unlike the fact-grid's dropped fields, this
    * one has no data to surface even in principle yet). PeX has no per-torrent toggle in this
-   * engine - it's unconditionally advertised on every connection - so it always reads
-   * Enabled. */
+   * engine - it's unconditionally advertised on every connection (except for a private
+   * torrent, BEP 27 - not distinguished in this label either) - so it always reads Enabled.
+   *
+   * <p>torrent.usesDht now directly means "DHT is eligible as a peer source for this
+   * torrent" (design_docs/0036's own 2026-09-06 revision) - true for any non-private torrent
+   * with DHT configured, tracker-bearing or not, so no longer needs OR-ing with
+   * dhtBackstopActive (a separate, tracker-health-only signal) to cover the
+   * degraded-tracker case; usesDht alone already does. */
   readonly usesDht = computed(() => {
     const torrent = this.events.torrents().find((t) => t.infoHash === this.infoHash());
-    return torrent ? torrent.usesDht || torrent.dhtBackstopActive : false;
+    return torrent ? torrent.usesDht : false;
   });
 
   reasonFor(tracker: Tracker): string {

@@ -9,8 +9,10 @@ below) — this file is a status/TODO list, not a source of truth for *why*.
 **Phase 1 (MVP) and Phase 2 (usable day to day) are functionally
 complete**, per the phased scope in [[0009-phased-scope]]:
 
-- Full engine: bencode, metainfo parsing, HTTP + UDP tracker announce
-  with multi-tracker/tier fallback, peer wire protocol, piece/block
+- Full engine: bencode, metainfo parsing, HTTP + UDP tracker announce —
+  concurrent to every configured tracker, aggregating whatever succeeds
+  ([[0022-multi-tracker-fallback]], including its own 2026-09-06 revision
+  away from BEP 12 tier fallback) — peer wire protocol, piece/block
   management with SHA-1 verification, disk I/O (single + multi-file
   torrents), sequential piece selection, real seeding (choking algorithm,
   block serving).
@@ -28,14 +30,15 @@ complete**, per the phased scope in [[0009-phased-scope]]:
   ([[0029-optimistic-upload-feedback]]).
 - **Mainline DHT (BEP 5)** — node ID, k-bucket routing table, KRPC over
   UDP (ping/find_node/get_peers/announce_peer), bootstrap, iterative node
-  lookup ([[0028-magnet-links-and-dht]]). Wired into `TorrentSession` for
-  trackerless magnets — peer discovery on `start()` *and* a periodic
-  re-query while running (live-tunable interval, default 300s), mirroring
-  **the same backstop mechanism built for regular (tracker-bearing)
-  torrents whose trackers are all currently unreachable**
-  ([[0036-dht-backstop-for-tracker-bearing-torrents]], including its own
-  2026-08-30 addendum for the trackerless periodic re-query). A `GET
-  /api/dht/status` endpoint exposes node count.
+  lookup ([[0028-magnet-links-and-dht]]). Wired into `TorrentSession` as a
+  routine, periodic, concurrent peer source (live-tunable interval,
+  default 300s) for **any non-private torrent DHT is eligible for** —
+  tracker-bearing or not, regardless of tracker health, not just a
+  trackerless-only mechanism or a last-resort backstop for total tracker
+  failure ([[0036-dht-backstop-for-tracker-bearing-torrents]], including
+  its own 2026-09-06 revision). BEP 27's "private" flag is parsed and
+  gates both DHT and PEX. A `GET /api/dht/status` endpoint exposes node
+  count.
 - Full per-torrent detail view: tabbed Pieces/Files/Peers/Trackers, each
   a self-contained on-demand endpoint
   ([[0031-torrent-detail-endpoints]]), plus per-entry pending/error
@@ -53,10 +56,13 @@ complete**, per the phased scope in [[0009-phased-scope]]:
   per torrent) accepts connections peers initiate to us and routes them to
   the right torrent by info hash, operator-toggleable like DHT
   ([[0038-incoming-peer-connections]]).
-- The detail header now shows when a tracker-bearing torrent is actively
-  leaning on the DHT backstop (distinct from the trackerless-only `usesDht`
-  tag) — the UI-visibility question left open in
-  [[0036-dht-backstop-for-tracker-bearing-torrents]] ([[0039-dht-backstop-visibility]]).
+- The detail header shows `dhtBackstopActive` — now purely a tracker-health
+  signal (true whenever the tracker's own last announce failed), distinct
+  from `usesDht` (whether DHT is actually eligible as a peer source for
+  this torrent at all) — the UI-visibility question left open in
+  [[0036-dht-backstop-for-tracker-bearing-torrents]]
+  ([[0039-dht-backstop-visibility]], reflecting that doc's own 2026-09-06
+  revision).
 - **Peer Exchange (BEP 11)** — connected peers gossip who else they're
   connected to (IPv4 `added`/`dropped` only, session-wide delta every 60s),
   supplementing tracker/DHT discovery ([[0040-peer-exchange]]). First
@@ -446,6 +452,48 @@ complete**, per the phased scope in [[0009-phased-scope]]:
   shrink, `p-inputgroup`'s own `width: 100%`/`flex: 1 1 auto` fighting a fixed-width numeric
   field, and an equal-specificity cascade-order loss on the first fix attempt — all documented
   with the actual computed-box evidence in [[0045-settings-page]]'s own 2026-09-05 addendum.
+- **Peer/seed-count investigation and fixes (2026-09-06)** — a real user report ("GrimTorrenter
+  shows 1-2 peers for a torrent qBittorrent finds dozens of peers/hundreds of known peers for on
+  the same system") root-caused and fixed end to end, verified against the user's own real
+  torrent throughout, not just in tests. Three real, distinct root causes, found in sequence as
+  each fix exposed the next bottleneck - see `TODO.md`'s own matching Performance entry for the
+  full investigation trail (qBittorrent side-by-sides, DEBUG logging added along the way, exact
+  before/after numbers):
+  1. **DHT was only a last-resort backstop, never a concurrent peer source, for a tracker-bearing
+     torrent** - fixed by making `TorrentSession.discoverPeersViaDht()` (new) a routine, periodic,
+     independent task for any non-private torrent DHT is eligible for, regardless of tracker
+     health, replacing the old backstop-only/trackerless-only special-casing
+     ([[0036-dht-backstop-for-tracker-bearing-torrents]]'s own 2026-09-06 revision). Surfaced a
+     real prerequisite gap along the way: BEP 27's "private" flag had never been parsed anywhere
+     in this codebase - now parsed (`TorrentMetadata.isPrivate()`) and gates both DHT and PEX,
+     closing what would otherwise have been a live private-tracker privacy leak once DHT became
+     routine.
+  2. **`fillConnections()` was a one-shot burst, not a continuously-replenishing pool** - fixed by
+     having `attemptConnect()`'s failure path and `PeerListener.onDisconnected()` both trigger a
+     fresh refill instead of waiting for the next external tracker/DHT/PEX batch
+     ([[0017-torrent-session]]'s own 2026-09-06 revision). This fix shipped with two real,
+     sequential production bugs of its own, both found and fixed the same night: an
+     `OutOfMemoryError` (an uncontrolled concurrent-attempt cascade - fixed with a `Semaphore`
+     bounding total in-flight-or-established connections atomically) and, once that was deployed,
+     the same address being attempted a dozen-plus times within milliseconds instead of spreading
+     across the known pool (fixed with a second atomically-claimed set, `inFlightAddresses`).
+     Both have dedicated regression tests.
+  3. **`MultiTrackerClient` implemented strict BEP 12 tier fallback** (stop at the first working
+     tracker, never touch the rest) - fixed by announcing to every configured tracker concurrently
+     on every call instead, aggregating a deduplicated union of peers and the minimum interval
+     among the successes ([[0022-multi-tracker-fallback]]'s own 2026-09-06 revision). A qBittorrent
+     screenshot of the same real torrent was the deciding evidence: several different tiers were
+     independently "Working" with distinct, non-duplicate seed/peer/leech counts, proving real
+     clients don't limit themselves to one tracker's slice of the swarm. Deliberately kept a
+     shared single-announce-cycle model rather than per-tracker independent scheduling (the more
+     correct, substantially bigger alternative) - confirmed with the user as the right scope for
+     one night's work; logged as a follow-up in `TODO.md` if the shared-cycle model's soft
+     politeness cost ever turns out to matter.
+
+  **Verified end to end on the user's real system**: the same torrent went from 0-1 connected
+  peers and 1 working tracker to 20 connected peers, 9 working trackers, multiple peers actually
+  unchoking and sending real data, and genuine sustained throughput (96.0 KB/s at 2% and
+  climbing) - deployed for a 24-hour stability test.
 
 **Not yet built** (the rest of Phase 3):
 
@@ -548,11 +596,18 @@ original Phase 3 list is now built; the engine stability/scale audit is fully cl
 seeding limits, library events, the watch folder, service status, the row-selected highlight,
 magnet-add reliability/feedback, periodic DHT re-query for trackerless torrents, DHT
 routing-table health, DHT routing-table persistence across restarts, the DHT healthy-vs-sparse
-`DEGRADED` service state, and the `@primeng/themes` → `@primeuix/themes` migration (all picked
-from `TODO.md`) are done:
+`DEGRADED` service state, the `@primeng/themes` → `@primeuix/themes` migration, and the
+peer/seed-count investigation (DHT as a concurrent source, BEP 27 private-torrent gating,
+continuous connection refill, concurrent multi-tracker announce - all picked from `TODO.md`)
+are done:
 
 1. The remaining `TODO.md` items: a notification service (still fully unscoped), running a
-   user-configured script automatically on torrent completion, and LSD (BEP 14, minor).
+   user-configured script automatically on torrent completion, LSD (BEP 14, minor), a
+   per-tracker seeders/leechers/peers UI (summary + detail view, from a qBittorrent
+   comparison), per-tracker independent announce scheduling (deferred as the bigger
+   alternative to the shared-cycle tracker-concurrency fix above), and retrying a failed
+   peer address after a cooldown (deferred as the simpler option when the connection-refill
+   fix landed).
 2. The pending-action-vs-2s-snapshot-lag gap noted above, if it proves to
    matter in practice.
 3. The rate-limiting settings group's remaining natural additions (per-torrent overrides,

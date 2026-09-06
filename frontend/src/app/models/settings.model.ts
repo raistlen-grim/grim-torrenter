@@ -46,9 +46,10 @@ export type ThemePreference = 'SYSTEM' | 'LIGHT' | 'DARK';
  * concurrency bound at all." Defaults (90s / 50 / 64) work out of the box; exposed as
  * user-editable mainly for an advanced user, or someone actively diagnosing a connectivity
  * issue, to tune without a rebuild/restart.
- * trackerlessDhtReannounceIntervalSeconds (design_docs/0036's own addendum) governs how often
- * a genuinely trackerless torrent re-queries DHT for fresh peers while running, mirroring what
- * a real tracker's own announce interval already does - live, but read once per torrent
+ * dhtReannounceIntervalSeconds (design_docs/0036's own addendum, broadened by its 2026-09-06
+ * revision) governs how often DHT is re-queried for fresh peers while a torrent is running -
+ * for any non-private torrent DHT is eligible for, not just a genuinely trackerless one,
+ * mirroring what a real tracker's own announce interval already does - live, but read once per torrent
  * start() (a live-scheduled task's period can't change mid-flight), so a change here takes
  * effect on that torrent's next start(), not retroactively. Default 300s (5 minutes) -
  * deliberately not much shorter: re-querying DHT for the same info hash too often is poor DHT
@@ -61,7 +62,7 @@ export type ThemePreference = 'SYSTEM' | 'LIGHT' | 'DARK';
  * lookup never touches. Live, but drives an engine-wide scheduled task rather than a per-torrent
  * one, so a change here takes effect on the engine's next construction/restart, not
  * retroactively. Default 300s (5 minutes) - each tick is one lightweight lookup against a single
- * bucket, so a shorter-than-trackerlessDhtReannounceIntervalSeconds-style default is reasonable
+ * bucket, so a shorter-than-dhtReannounceIntervalSeconds-style default is reasonable
  * DHT etiquette here. Same no-unlimited-value, silently-normalized-below-1 treatment as the
  * other tunable fields above.
  * watchFolderPollIntervalSeconds (design_docs/0056's own 2026-09-06 addendum) is how often the
@@ -93,7 +94,7 @@ export interface Settings {
   magnetFetchTimeBudgetSeconds: number;
   magnetFetchCandidatesPerRound: number;
   magnetFetchConcurrencyLimit: number;
-  trackerlessDhtReannounceIntervalSeconds: number;
+  dhtReannounceIntervalSeconds: number;
   dhtRefreshIntervalSeconds: number;
   watchFolderPollIntervalSeconds: number;
 }

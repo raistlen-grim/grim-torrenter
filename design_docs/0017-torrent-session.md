@@ -62,11 +62,104 @@ not correctness ones, for Phase 1:
   calls (from a re-announce and a disconnect happening close together)
   could transiently overshoot it slightly. Not worth adding reservation
   bookkeeping for.
-- No per-peer-address retry backoff after a failed connection attempt —
-  a failed address just gets retried on the next `fillConnections()` call.
-  In practice this is naturally rate-limited by the tracker's re-announce
-  interval (typically tens of minutes), so it doesn't become a retry
-  storm.
+
+**Revised (2026-09-06, see [[0036-dht-backstop-for-tracker-bearing-torrents]]'s own
+2026-09-06 revision): `fillConnections()` is no longer purely event-driven from external
+triggers, and a failed address is no longer silently eligible for immediate re-attempt.**
+Both halves of the "naturally rate-limited" assumption directly above turned out to be
+false once DHT became a routine concurrent peer source (see that doc): a real side-by-side
+comparison against qBittorrent found `discoverPeersViaDht()` correctly locating 275 DHT
+peers for a real torrent, yet only 1 ever got connected - `fillConnections()` only ran from
+four external triggers (`start()`, a successful tracker `reannounce()`, a
+`discoverPeersViaDht()` tick, a PEX `addKnownPeers()` batch), never in response to an
+individual `attemptConnect()` failure or a `PeerConnection` disconnecting, so the very first
+burst of up to `MAX_CONNECTIONS` attempts (mostly failing within 5-20s, since most
+tracker/DHT-supplied addresses are unreachable at any given moment - ordinary swarm churn,
+confirmed via `attemptConnect()`'s own DEBUG logging) left the session under-connected until
+the next external trigger, up to `dhtReannounceIntervalSeconds` (default 300s) away. Two
+changes, needed together:
+- `attemptConnect()`'s catch block and `PeerListener.onDisconnected()` both now call
+  `fillConnections()` again, so a freed slot reaches a fresh candidate immediately rather
+  than waiting for the next external batch.
+- A new permanent-for-the-session `failedAddresses` set, excluded (alongside
+  currently-connected addresses) from `fillConnections()`'s own candidate selection -
+  necessary specifically *because* of the change above: without it, the new
+  immediate-retry-on-failure trigger would hammer the same known-dead address in a tight
+  loop instead of the old, accidentally-adequate "next reannounce" spacing.
+  Deliberately never retried later this session (confirmed with the user, over a
+  timestamp-per-address cooldown/expiry mechanism) - simpler, and DHT/tracker/PEX keep
+  supplying fresh candidates continuously now anyway, so there's little to gain from ever
+  retrying an address that's already failed once. Flagged as a real, deliberately deferred
+  trade-off in `TODO.md`'s own matching entry - a genuinely transient failure (NAT timing, a
+  peer briefly offline) won't ever be recovered from without a cooldown this doesn't have.
+
+`fillConnections()`'s own soft-`MAX_CONNECTIONS` overshoot tolerance above now also covers
+one more (rarer) case for the same underlying reason: several failures or disconnects
+resolving around the same moment could each independently select an overlapping candidate
+before any of them has registered as connected or failed yet, occasionally racing two
+attempts at the same address - accepted for the same "not worth synchronizing against"
+reasoning, not a new category of imprecision.
+
+Stability ([[0051-stability-as-a-standing-consideration]]): `failedAddresses` can in
+principle grow unboundedly over a very long-running session against a very large swarm,
+same as `knownAddresses` itself already does (never pruned either) - accepted at this
+project's real-world swarm-size scale (hundreds to low thousands of addresses), not a new
+category of growth this introduces.
+
+**Correction, same day: "no new concurrency pattern" above was wrong** - a real production
+`OutOfMemoryError` surfaced within hours of this revision shipping. `fillConnections()`'s own
+`slots = MAX_CONNECTIONS - connections.size()` computation only ever counted *established*
+connections, never attempts still in flight - fine when `fillConnections()` only ran from a
+handful of well-spaced external triggers, but this revision started calling it reactively
+from every single `attemptConnect()` failure. A "connection refused" is near-instant (unlike
+a 10-20s timeout), so a burst of candidates failing within milliseconds of each other could
+each independently observe the same "N slots free" and each spawn up to N more attempts -
+not a small, bounded overshoot like the pre-existing `MAX_CONNECTIONS` soft-limit tolerance
+above, but an uncontrolled multiplicative cascade, made worse by `PREFERRED` encryption
+mode's per-attempt Diffie-Hellman handshake (real CPU/memory cost, not free at an unbounded
+concurrency level).
+
+**Fixed the same day** with a `Semaphore connectionSlots` (`MAX_CONNECTIONS` permits),
+replacing the size-based check entirely: one permit acquired atomically
+(`tryAcquire()`) before an attempt (outbound, in `fillConnections()`'s own loop, or inbound,
+in `acceptIncomingConnection()`) ever starts, held for as long as that attempt is in flight
+or (on success) the resulting connection stays established, released on failure
+(`attemptConnect()`'s catch block, `acceptIncomingConnection()`'s own catch block for a
+failed `PeerConnection.accept()`) or disconnect (`PeerListener.onDisconnected()`). Atomicity
+is what actually closes the gap - no matter how many threads call `fillConnections()`
+concurrently, the *total* across all of them can never acquire more than `MAX_CONNECTIONS`
+permits, so the cascade is structurally impossible rather than just statistically rarer.
+Inbound connections (`acceptIncomingConnection()`) needed the same fix, not just outbound -
+they previously used their own separate `connections.size() >= MAX_CONNECTIONS` check,
+unaware of outbound attempts in flight, which would have let inbound and outbound
+connections independently race past the real cap once outbound relied on the semaphore
+instead.
+
+**Second correction, same day: connectionSlots alone wasn't sufficient.** Deployed, and the
+very next real run showed 0 connected peers despite a healthy tracker (336 seeders) and DHT
+genuinely finding peers - the DEBUG logging added earlier showed the *same* single address
+being attempted over a dozen times within a 24-millisecond window, then repeatedly for
+several more seconds. `connectionSlots` correctly bounds the *total* number of concurrent
+attempts, but does nothing to stop several concurrent `fillConnections()` calls (now firing
+on every single failure, far more often than before) from each independently reading the
+*same, not-yet-changed* `knownAddresses`/`failedAddresses` snapshot and each picking the
+*same* leading untried candidate - wasting the connection budget hammering one or two
+addresses instead of spreading across the real pool. Fixed with a second set,
+`inFlightAddresses`, added to right in `fillConnections()`'s own candidate loop via
+`Set.add()`'s own atomic "was this newly added" return value - the actual claim, since two
+concurrent calls can never both win the add for the same address. Removed once the attempt
+resolves either way (success: covered by the `connections`-based filter from then on;
+failure: `failedAddresses`'s permanent exclusion takes over) - deliberately a separate set
+from `failedAddresses`, since a peer connected once and later disconnected must remain
+eligible for reconnection, which folding the two together would have broken.
+
+`TorrentSessionTest`'s `neverExceedsMaxConnectionsEvenUnderABurstOfFailures` was renamed to
+`neverDuplicatesOrExceedsMaxConnectionsEvenUnderABurstOfFailures` and strengthened to catch
+both bugs at once: 60 candidates (double `MAX_CONNECTIONS`), each fake server looping accept
+calls and counting them per port rather than accepting once, asserting both that peak
+concurrent attempts never exceeds 30 *and* that every one of the 60 addresses is attempted
+*exactly* once - never zero (every candidate eventually reached) and never more than once (no
+duplicate/wasted attempts).
 
 **Requesting blocks without double-requesting from the same connection.**
 `PieceManager` only tracks "received," not "requested" (by design, per

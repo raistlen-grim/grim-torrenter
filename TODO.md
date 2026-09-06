@@ -10,6 +10,7 @@ nothing here gets acted on until it's explicitly picked up.
   `@primeuix/themes`, the maintained replacement.~~ **Done (2026-09-03)** - see
   `design_docs/0032`'s own addendum. Only `npm install` (to catch up the lockfile) remains,
   left for the user per this project's "builds run manually" convention.
+
 ## Performance: peer/seed count gap vs qBittorrent
 
 Real user report (2026-09-06): the same torrent shows far fewer peers/seeds in
@@ -40,14 +41,81 @@ candidate pool is far too small to absorb that normal attrition, because:
   tracker + DHT + PEX simultaneously for any non-private torrent, giving a
   continuously-growing pool; GrimTorrenter's pool here was ~50 candidates from one
   tracker, refreshed roughly hourly (that tracker's own announce interval).
-  **In progress**: making DHT a concurrent source for any non-private torrent (not
-  just trackerless/backstop) - revises design_docs/0036. Prerequisite surfaced along
-  the way: BEP 27's "private" flag was never parsed anywhere in this codebase, so
-  before DHT/PEX can run unconditionally they need a real gate to respect it (a
-  private-tracker torrent must never be DHT/PEX-exposed) - folded into the same piece
-  of work rather than done separately.
+  **Done (2026-09-06)** - see `design_docs/0036`'s own 2026-09-06 revision:
+  `TorrentSession.discoverPeersViaDht()` now runs as an independent periodic task for
+  any non-private torrent DHT is eligible for, regardless of tracker health, replacing
+  the old backstop-only/trackerless-only special-casing. Included as a prerequisite in
+  the same change: BEP 27's "private" flag was never parsed anywhere in this codebase
+  before this - now parsed (`TorrentMetadata.isPrivate()`) and gates both DHT
+  (`dhtEligible()`) and PEX (`extensionsToAdvertise()`/`sendPexUpdates()`), closing a
+  real, previously-live privacy gap for private-tracker torrents.
+  **Verified end-to-end (2026-09-06)**, after the two connection-layer bugs below were also
+  found and fixed: the same torrent reached 20 connected peers (up from 0-1), multiple peers
+  actually unchoking and sending real data (one alone: ~26 MB), and genuine throughput -
+  96.0 KB/s at 2% and climbing. The full chain (DHT discovery, continuous connection refill,
+  no duplicate/OOM waste, real unchoke/download) confirmed working together on the user's
+  real system.
 
-**Confirmed root cause #2 (2026-09-06)**: a qBittorrent trackers-tab screenshot for
+**Confirmed root cause #2 (2026-09-06)**: deployed the DHT-concurrency
+fix above and re-tested - DHT peer discovery genuinely works now (`discoverPeersViaDht()`
+found 275 peers for the same torrent, confirmed via its own new DEBUG log line), but
+connected-peer count still only reached 1. Root cause: `TorrentSession.fillConnections()`
+(and its `onDisconnected` counterpart) is a one-shot burst, not a continuously-replenishing
+pool:
+- `fillConnections()` only ever runs from four external triggers (initial `start()`, a
+  successful tracker `reannounce()`, a `discoverPeersViaDht()` tick, a PEX/`addKnownPeers`
+  batch) - never in response to an individual `attemptConnect()` failing or a connected peer
+  disconnecting. `PeerListener.onDisconnected()` removes the connection from the set and
+  updates byte counters, but never calls `fillConnections()` to backfill the freed slot.
+  Given most candidates fail within 5-20s (the normal churn confirmed via root cause #1's
+  logging), the very first burst of up to `MAX_CONNECTIONS` (30) attempts mostly fails fast,
+  and nothing tries a replacement until the next external trigger - up to
+  `dhtReannounceIntervalSeconds` (default 300s) away for DHT.
+- **Compounds with a second gap**: a failed candidate is never excluded from future rounds -
+  `fillConnections()`'s filter only excludes *currently-connected* addresses, not
+  previously-attempted-and-failed ones, so a later refill can waste slots re-attempting known-dead
+  addresses instead of reaching fresh candidates from the (large) known pool.
+- **Net effect**: it doesn't matter how many candidates DHT/tracker/PEX hand over - the
+  connection layer only ever actually *uses* about `MAX_CONNECTIONS` per external trigger,
+  the rest sit idle in `knownAddresses`. This is why 275 known DHT peers produced 1
+  connection, and it would equally undercut the tracker-concurrency item below (more
+  candidate addresses hitting the same bottleneck, not more actual connections) - so this
+  jumps ahead of that item; confirmed with the user (2026-09-06) as the next thing to fix.
+  **Done (2026-09-06)** - `fillConnections()` now excludes a new permanent-for-the-session
+  `failedAddresses` set (populated by `attemptConnect()`'s own catch block) alongside
+  currently-connected addresses, and both `attemptConnect()`'s failure path and
+  `PeerListener.onDisconnected()` call `fillConnections()` again, so a freed slot reaches a
+  fresh candidate immediately rather than waiting for the next external batch.
+  - **Caused a real production `OutOfMemoryError` within hours of shipping, fixed the same
+    day** - see `design_docs/0017`'s own same-day correction. The refill-on-failure trigger
+    above combined with `fillConnections()`'s old `connections.size()`-based slot check (which
+    never counted in-flight attempts) let a burst of near-simultaneous failures each spawn up
+    to `MAX_CONNECTIONS` more attempts independently - an uncontrolled cascade, not the small
+    bounded overshoot that check's own comment had accepted. Fixed with a `Semaphore
+    connectionSlots`, acquired atomically per attempt (outbound *and* inbound - the latter had
+    its own separate, equally unaware size check) and released on failure/disconnect, so the
+    total in-flight-or-established count structurally can't exceed `MAX_CONNECTIONS` no matter
+    how many threads race to refill at once.
+  - **That fix alone wasn't sufficient - a second bug, found the same day on the very next
+    real run**: 0 connected peers despite a healthy tracker and DHT genuinely finding peers;
+    logs showed the *same* address attempted over a dozen times within 24ms. `connectionSlots`
+    bounded the total, but didn't stop several concurrent `fillConnections()` calls from each
+    independently picking the *same* untried candidate before any of them had claimed it -
+    wasting the budget on one address instead of spreading across the pool. Fixed with a
+    second set, `inFlightAddresses`, claimed atomically at selection time via `Set.add()`'s
+    own return value. `TorrentSessionTest`'s regression test was renamed
+    (`neverDuplicatesOrExceedsMaxConnectionsEvenUnderABurstOfFailures`) and strengthened to
+    assert every one of 60 candidates is attempted *exactly* once, not just that the peak
+    stays under 30. See `design_docs/0017`'s own second same-day correction.
+  - **Retry a failed peer after a cooldown** - raised and deliberately deferred while scoping
+    the fix above: `failedAddresses` exclusion is currently permanent for the whole session,
+    never retried, confirmed with the user as the simpler option over a
+    timestamp-per-address/expiry mechanism. Real swarms do have transient failures (NAT
+    timing, a peer briefly offline) that a cooldown-based retry would eventually recover from
+    and this doesn't - worth revisiting if evidence shows it actually matters in practice,
+    now that DHT/tracker/PEX keep the candidate pool large and continuously refreshed anyway.
+
+**Confirmed root cause #3 (2026-09-06)**: a qBittorrent trackers-tab screenshot for
 the same torrent shows tiers 0, 2, 3, 4, 6, 7, 8, and 12 *all* independently
 "Working," each with its own distinct, non-duplicate seed/peer/leech count (e.g.
 397/230/174 for tracker.renfei.net vs. 200/309/139 for opentrackr) - proving
@@ -59,15 +127,38 @@ trackers. Raises this item's priority: it's not just "maybe diminishing returns"
 original open question), it's a confirmed real contributor for this torrent
 specifically. Sequencing decision (2026-09-06): land the DHT-concurrency work first,
 then revisit this as a follow-up rather than bundling both into one change.
-  - **UI idea to fold in when this is picked up** (2026-09-06, from a qBittorrent
-    screenshot): qBittorrent's own trackers tab also lists DHT/PeX/LSD as rows
-    alongside real trackers, each with its own peer/seed/leech counts. Worth
-    considering a similar reshape here once tracker concurrency lands - a summary
-    panel (aggregate counts, mirroring the current collapsed "N trackers working"
-    line) plus a new detail view listing every individual tracker's own live
-    seeders/leechers/peers (data already captured in `TrackerStatus` - see
-    `design_docs/0031` - just never surfaced for a working tracker today, only
-    hidden in a tooltip on non-working ones).
+  **Done (2026-09-06)** - see `design_docs/0022`'s own 2026-09-06 revision:
+  `MultiTrackerClient.announce()` now announces to every configured tracker concurrently
+  on every call (virtual-thread-per-task, same pattern `TorrentEngine.raceOneRound()`
+  already used for magnet peer racing), aggregating a deduplicated union of peers and the
+  minimum interval among the successes - not BEP 12 tier fallback (stop at the first
+  success) any more. Considered and explicitly deferred: giving each tracker its own
+  independently-timed schedule (the same shape `discoverPeersViaDht()` uses for DHT) -
+  correctly bigger scope and risk than confirmed with the user was worth taking on the same
+  night as the DHT/connection-layer fixes above; kept the simpler shared-cycle model
+  instead. **Verified (2026-09-06)**: the same real torrent (21 declared trackers, 1 working
+  before this fix) now shows 9 trackers `WORKING` - the rest are genuinely dead (matching the
+  qBittorrent screenshot's own "Host not found"/"timed out"/"Forbidden" trackers), not a
+  regression.
+  - **UI idea, still open** (2026-09-06, from a qBittorrent screenshot): qBittorrent's own
+    trackers tab also lists DHT/PeX/LSD as rows alongside real trackers, each with its own
+    peer/seed/leech counts. Worth considering a similar reshape here - a summary panel
+    (aggregate counts, mirroring the current collapsed "N trackers working" line) plus a
+    new detail view listing every individual tracker's own live seeders/leechers/peers
+    (data already captured in `TrackerStatus` - see `design_docs/0031` - just never
+    surfaced for a working tracker today, only hidden in a tooltip on non-working ones).
+    More trackers now show real WORKING status (not perpetual UNKNOWN) after the fix above,
+    so this UI gap is more visible/valuable to close than before.
+  - **Per-tracker independent scheduling** - the more-correct alternative deferred above.
+    Each tracker on its own interval (matching what it actually reports), architecturally
+    the same shape as `discoverPeersViaDht()`, but a substantially bigger change:
+    `MultiTrackerClient` would own scheduling and push peers back asynchronously instead of
+    `TorrentSession` calling a synchronous `announce()`; STARTED/STOPPED/COMPLETED event
+    fanout across independently-scheduled trackers needs real design; most of
+    `TorrentSessionTest`'s tracker-related coverage (built around one synchronous
+    `reannounce()` cycle) would need rethinking, not just renaming. Worth revisiting if the
+    shared-cycle model's soft politeness cost (some trackers polled more often than their
+    own stated interval) turns out to matter in practice.
 - DHT routing-table sparseness — see the existing item below (21 vs. 379 node case).
   Revisit as part of this investigation: a sparse table would compound the item above.
 - No LSD implementation — see the existing item below. Minor, LAN-only contributor,

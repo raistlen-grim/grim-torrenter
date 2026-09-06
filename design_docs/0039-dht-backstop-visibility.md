@@ -67,6 +67,28 @@ flag reverts to `false` - proving it tracks current reality, not a sticky sessio
 marker. `TorrentResourceTest`'s existing `usesDht`/`trackerCount` assertions gained a
 `dhtBackstopActive: false` check for the ordinary (no backstop) case.
 
+## Addendum (2026-09-06): dhtBackstopActive's meaning narrowed; this doc's own UI already gone
+
+Two things noticed while updating docs after [[0036-dht-backstop-for-tracker-bearing-torrents]]'s
+2026-09-06 revision, neither fully in that revision's own scope:
+
+- **`dhtBackstopActive`'s semantics changed.** It's now purely a tracker-health signal (true
+  whenever the tracker's own most recent announce failed), set directly in `reannounce()`'s
+  try/catch, decoupled from whether a DHT lookup actually ran - DHT peer discovery is now
+  `discoverPeersViaDht()`'s job, on its own independent schedule, regardless of this flag.
+  This doc's own field-by-field description above (tied to `startViaDhtBackstop`/the
+  now-removed `reannounceViaDhtBackstop`) is accurate only for the original 0036 design, not
+  current behavior - not rewritten line-by-line here since 0036 itself is the authoritative
+  source for the current mechanism.
+- **The separate "DHT backstop" `app-status-indicator` this doc specifies was already gone**
+  from the frontend before tonight - `trackers-tab.html`'s single "DHT Enabled/Disabled · PeX
+  Enabled" line is the only DHT-related UI that exists today, `dhtBackstopActive` feeding into
+  its `usesDht` computed signal (as an `||`, until tonight's revision removed even that - see
+  0036) rather than rendering as its own distinct labeled element. Predates this investigation
+  entirely - a pre-existing doc/reality gap noticed in passing, not something tonight's changes
+  caused, and not fixed here since re-documenting that earlier drift is out of scope for this
+  pass.
+
 ## Alternatives considered
 
 - **A sticky "ever used this session" flag** - rejected; see the signal-meaning fork above.

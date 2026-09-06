@@ -7,7 +7,8 @@ import java.util.List;
  * Wraps a single tracker client (HttpTrackerClient/UdpTrackerClient) and records a
  * TrackerStatus snapshot on every announce() call, without changing announce()'s own
  * behavior at all - success/failure still returns/throws exactly as the delegate would, so
- * MultiTrackerClient's existing tier-fallback logic needs no changes. One instance is
+ * MultiTrackerClient's own concurrent-announce/aggregation logic (design_docs/0022's own
+ * 2026-09-06 revision) needs no changes here. One instance is
  * expected to live for a torrent session's whole lifetime, same as the delegate it wraps.
  * See design_docs/0031.
  *

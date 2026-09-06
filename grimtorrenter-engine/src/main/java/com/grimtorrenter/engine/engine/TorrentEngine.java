@@ -211,11 +211,12 @@ public final class TorrentEngine {
     private final Supplier<EncryptionMode> encryptionMode;
     /** Same live-read-per-use shape as encryptionMode above - passed straight through to every
      * TorrentSession this engine creates or restores, which reads it once per start() to
-     * schedule its own periodic DHT re-query when genuinely trackerless. See design_docs/0036's
-     * own addendum. */
-    private final Supplier<Long> trackerlessReannounceIntervalSeconds;
+     * schedule its own periodic DHT peer-discovery task - for any non-private torrent DHT is
+     * eligible for, not just a genuinely trackerless one. See design_docs/0036's own 2026-09-06
+     * revision. */
+    private final Supplier<Long> dhtReannounceIntervalSeconds;
     /** Read once, at construction time, to schedule refreshDhtRoutingTable()'s tick on
-     * maintenanceScheduler below - unlike trackerlessReannounceIntervalSeconds above, this
+     * maintenanceScheduler below - unlike dhtReannounceIntervalSeconds above, this
      * drives an engine-wide scheduled task rather than a per-torrent one, so a live change
      * here takes effect on the engine's next construction/restart, not retroactively (same
      * "a ScheduledExecutorService's period can't change mid-flight" limitation, just at
@@ -401,8 +402,8 @@ public final class TorrentEngine {
         this.dhtNode = enableDht ? createDhtNode(configDirectory, ourListenPort, eventStore) : null;
         this.dhtBindFailed = enableDht && this.dhtNode == null;
         this.encryptionMode = () -> settingsStore.current().encryptionMode();
-        this.trackerlessReannounceIntervalSeconds =
-                () -> (long) settingsStore.current().trackerlessDhtReannounceIntervalSeconds();
+        this.dhtReannounceIntervalSeconds =
+                () -> (long) settingsStore.current().dhtReannounceIntervalSeconds();
         this.dhtRefreshIntervalSeconds = settingsStore.current().dhtRefreshIntervalSeconds();
         this.watchFolderScanIntervalSeconds = settingsStore.current().watchFolderPollIntervalSeconds();
         this.peerServer = acceptIncomingConnections ? createPeerServer(ourListenPort, eventStore) : null;
@@ -922,11 +923,11 @@ public final class TorrentEngine {
                         ? TorrentSession.restoreAsync(metadata, trackerClient, torrentDirectory,
                                 ourPeerId, ourListenPort, listener, dhtNode, rateLimiters, fileHandlePool,
                                 pieceVerificationLimiter, encryptionMode, seedingLimitOverride, addedAt,
-                                trackerlessReannounceIntervalSeconds, true)
+                                dhtReannounceIntervalSeconds, true)
                         : TorrentSession.create(metadata, trackerClient, torrentDirectory, ourPeerId,
                                 ourListenPort, listener, dhtNode, rateLimiters, fileHandlePool,
                                 pieceVerificationLimiter, encryptionMode, seedingLimitOverride, addedAt,
-                                trackerlessReannounceIntervalSeconds);
+                                dhtReannounceIntervalSeconds);
                 if (!resolution.preExisting()) {
                     created.start();
                 }
@@ -1078,10 +1079,9 @@ public final class TorrentEngine {
             Optional<byte[]> infoDictBytes = raceOneRound(magnet, fresh);
             if (infoDictBytes.isPresent()) {
                 // A trackerless magnet has no announce-list to give the resulting torrent -
-                // it relies on the resulting TorrentSession's own trackerless DHT re-query
-                // (start()/reannounce() -> startViaDht()/reannounceViaDht(), design_docs/0036's
-                // own addendum) from here on, same as it relied on DHT to find this first batch
-                // of peers.
+                // it relies on the resulting TorrentSession's own periodic DHT peer discovery
+                // (discoverPeersViaDht(), design_docs/0036's own 2026-09-06 revision) from here
+                // on, same as it relied on DHT to find this first batch of peers.
                 addFetchedTorrent(magnet, infoDictBytes.get(), List.of(), source);
                 return;
             }
@@ -1233,7 +1233,7 @@ public final class TorrentEngine {
             TorrentSession session = TorrentSession.restoreAsync(
                     metadata, trackerClient, directory, ourPeerId, ourListenPort, listener, dhtNode,
                     rateLimiters, fileHandlePool, pieceVerificationLimiter, encryptionMode, seedingLimitOverride,
-                    addedAt, trackerlessReannounceIntervalSeconds, running);
+                    addedAt, dhtReannounceIntervalSeconds, running);
             sessions.put(metadata.infoHash(), session);
             directories.put(metadata.infoHash(), directory);
         } catch (IOException | RuntimeException e) {

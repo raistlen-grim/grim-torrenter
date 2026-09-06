@@ -88,8 +88,9 @@ public final class TorrentSession implements AutoCloseable {
     /** BEP 11's own recommended sanity bound on a single message's "added" list. */
     private static final int MAX_PEX_ADDED_PER_MESSAGE = 50;
     /** What every outbound/inbound connection advertises in its own extended handshake -
-     * just ut_pex for now. */
-    private static final Map<String, Integer> EXTENSIONS_TO_ADVERTISE = Map.of(PEX_EXTENSION_NAME, PEX_EXTENSION_ID);
+     * just ut_pex for now, and not even that for a private torrent (BEP 27) - see
+     * extensionsToAdvertise(). */
+    private static final Map<String, Integer> PEX_EXTENSION_TO_ADVERTISE = Map.of(PEX_EXTENSION_NAME, PEX_EXTENSION_ID);
     /** Generous over our own 16 KiB request size (PieceManager.BLOCK_SIZE) - guards against
      * a peer requesting an absurd block length rather than trusting untrusted input. */
     private static final int MAX_SERVABLE_BLOCK_LENGTH = 128 * 1024;
@@ -126,14 +127,15 @@ public final class TorrentSession implements AutoCloseable {
      * DISABLED via create()/restoreAsync()'s own lower-arity overloads. See
      * design_docs/0052. */
     private final Supplier<EncryptionMode> encryptionMode;
-    /** Read once, at the point enterDownloading() schedules the periodic reannounce for a
-     * genuinely trackerless torrent (startViaDht()) - not re-read mid-flight, same "fixed for
-     * this torrent's run, re-read on the next start()" precedent a real tracker's own
-     * response.interval() already follows (a ScheduledExecutorService's fixed-delay period
-     * can't be changed once scheduled without cancelling and rebuilding it). Never null;
-     * callers that don't care get a fixed 300s default via create()/restoreAsync()'s own
-     * lower-arity overloads. See design_docs/0036's own addendum. */
-    private final Supplier<Long> trackerlessReannounceIntervalSeconds;
+    /** Read once, at the point enterDownloading() schedules discoverPeersViaDht()'s periodic
+     * task - not re-read mid-flight, same "fixed for this torrent's run, re-read on the next
+     * start()" precedent a real tracker's own response.interval() already follows (a
+     * ScheduledExecutorService's fixed-delay period can't be changed once scheduled without
+     * cancelling and rebuilding it). Drives DHT peer discovery for any non-private torrent
+     * DHT is eligible for, not just a genuinely trackerless one - see design_docs/0036's own
+     * 2026-09-06 revision. Never null; callers that don't care get a fixed 300s default via
+     * create()/restoreAsync()'s own lower-arity overloads. */
+    private final Supplier<Long> dhtReannounceIntervalSeconds;
 
     /** This torrent's override of the global seeding-limit defaults - never null, defaults to
      * SeedingLimitOverride.INHERIT (both metrics follow the global default) via create()/
@@ -175,6 +177,52 @@ public final class TorrentSession implements AutoCloseable {
 
     private final Set<PeerConnection> connections = ConcurrentHashMap.newKeySet();
     private final Set<PeerAddress> knownAddresses = ConcurrentHashMap.newKeySet();
+    /** Every address attemptConnect() has ever failed to reach, this session's whole
+     * lifetime - excluded from fillConnections()'s own candidate selection alongside
+     * currently-connected addresses, so a freed slot (a failed attempt, or a disconnect -
+     * both now call fillConnections() again, see attemptConnect()/PeerListener.onDisconnected())
+     * reaches a fresh candidate instead of re-attempting one already known dead. Deliberately
+     * permanent, no retry-after-cooldown - confirmed with the user: matches this class's
+     * existing no-retry-backoff simplicity (attemptConnect()'s own comment), and DHT/tracker/PEX
+     * keep supplying fresh candidates continuously anyway, so there's little to gain from ever
+     * retrying an address that's already failed once. Grows unboundedly over a very
+     * long-running session in principle, same as knownAddresses itself already does (never
+     * pruned) - accepted at this project's real-world swarm-size scale, not a new category of
+     * growth this introduces. */
+    private final Set<PeerAddress> failedAddresses = ConcurrentHashMap.newKeySet();
+    /** Bounds concurrent connection attempts *plus* established connections to
+     * MAX_CONNECTIONS, atomically - not a size-based check like fillConnections() used to
+     * rely on alone. Necessary specifically because of the 2026-09-06 refill-on-failure
+     * revision below: connections.size() only counts *established* connections, not attempts
+     * still in flight, so several failures resolving within milliseconds of each other (a
+     * "connection refused" is near-instant, unlike a 10-20s timeout) could each independently
+     * see the same "N slots free" and each spawn up to N more attempts - an uncontrolled
+     * cascade, not the small, bounded overshoot fillConnections()'s own older comment already
+     * accepted. A real production `OutOfMemoryError` (reported 2026-09-06, right after this
+     * revision shipped) is exactly that cascade: each PREFERRED-mode attempt does a real MSE
+     * Diffie-Hellman handshake attempt first, so an unbounded burst of concurrent attempts is
+     * a genuine memory/thread spike, not just cosmetic overshoot. One permit per attempt,
+     * acquired before attemptConnect() ever starts and held for as long as that attempt is
+     * either in flight or (on success) the resulting connection stays established - released
+     * on failure (attemptConnect()'s own catch block) or on disconnect
+     * (PeerListener.onDisconnected()). See design_docs/0017's own 2026-09-06 revision. */
+    private final Semaphore connectionSlots = new Semaphore(MAX_CONNECTIONS);
+    /** A second, narrower fix needed alongside connectionSlots (found the same day, once the
+     * first fix was deployed): connectionSlots alone bounds the *total* number of concurrent
+     * attempts, but does nothing to stop several concurrent fillConnections() calls from each
+     * independently picking the *same* still-untried address before any of them has resolved -
+     * observed in production as one address attempted over a dozen times within milliseconds,
+     * every attempt wasted on a peer already known to be unreachable/refusing rather than
+     * spreading across the real candidate pool. `.add()`'s own atomic "was this newly added"
+     * return value is the claim: fillConnections() only spawns an attempt if it actually wins
+     * the add for that address, so two concurrent calls can never both claim the same one.
+     * Removed once the attempt resolves either way - on success (attemptConnect(), now covered
+     * by the connections-based filter instead) or failure (attemptConnect()'s catch block,
+     * where failedAddresses's own permanent exclusion takes over). Deliberately not the same
+     * set as failedAddresses: a peer we connect to and later disconnect from must remain
+     * eligible for reconnection (see failedAddresses's own Javadoc), which a shared "claimed
+     * forever" set would have broken. See design_docs/0017's own 2026-09-06 revision. */
+    private final Set<PeerAddress> inFlightAddresses = ConcurrentHashMap.newKeySet();
     /** The connected-peer-address snapshot as of the last PEX broadcast, for computing the
      * next cycle's added/dropped delta - only ever read/written from the scheduler's single
      * thread (sendPexUpdates(), same as reannounce()/sendKeepAlives()/updateChoking()), so
@@ -187,11 +235,12 @@ public final class TorrentSession implements AutoCloseable {
     private volatile TorrentState state = TorrentState.STOPPED;
     private volatile Throwable lastError;
     private volatile ScheduledExecutorService scheduler;
-    /** True only while the most recent tracker-driven peer-discovery attempt (start() or
-     * reannounce()) actually used the DHT backstop rather than the tracker - reflects
-     * current reality, not "ever used this session." Only ever set for a real (non-NoOp)
-     * TrackerClient; a genuinely trackerless torrent's own usesDht signal
-     * (TorrentSession.isTrackerless()) already covers it, so this stays false there. See
+    /** True only while the most recent tracker announce (start() or reannounce()) actually
+     * failed - reflects current tracker health, not "ever failed this session," and not
+     * whether DHT is actually running right now (discoverPeersViaDht() runs on its own
+     * independent schedule regardless of this flag - see design_docs/0036's own 2026-09-06
+     * revision). Only ever set true for a real (non-NoOp) TrackerClient; a genuinely
+     * trackerless torrent's NoOpTrackerClient never fails, so this stays false there. See
      * design_docs/0039. */
     private volatile boolean dhtBackstopActive;
 
@@ -200,7 +249,7 @@ public final class TorrentSession implements AutoCloseable {
                             TorrentSessionListener listener, DhtNode dhtNode, RateLimiters rateLimiters,
                             Semaphore pieceVerificationLimiter, Supplier<EncryptionMode> encryptionMode,
                             SeedingLimitOverride seedingLimitOverride, TorrentState initialState,
-                            Instant addedAt, Supplier<Long> trackerlessReannounceIntervalSeconds) {
+                            Instant addedAt, Supplier<Long> dhtReannounceIntervalSeconds) {
         this.metadata = metadata;
         this.trackerClient = trackerClient;
         this.storage = storage;
@@ -215,7 +264,7 @@ public final class TorrentSession implements AutoCloseable {
         this.seedingLimitOverride = seedingLimitOverride;
         this.state = initialState;
         this.addedAt = addedAt;
-        this.trackerlessReannounceIntervalSeconds = trackerlessReannounceIntervalSeconds;
+        this.dhtReannounceIntervalSeconds = dhtReannounceIntervalSeconds;
     }
 
     /** Same as the eight-arg overload below but with no rate limiting - for every caller
@@ -313,12 +362,12 @@ public final class TorrentSession implements AutoCloseable {
                                          Supplier<EncryptionMode> encryptionMode,
                                          SeedingLimitOverride seedingLimitOverride,
                                          Instant addedAt,
-                                         Supplier<Long> trackerlessReannounceIntervalSeconds) throws IOException {
+                                         Supplier<Long> dhtReannounceIntervalSeconds) throws IOException {
         TorrentStorage storage = TorrentStorage.create(metadata, downloadDirectory, fileHandlePool);
         PieceManager pieceManager = new PieceManager(metadata);
         return new TorrentSession(metadata, trackerClient, storage, pieceManager, ourPeerId, ourListenPort,
                 listener, dhtNode, rateLimiters, pieceVerificationLimiter, encryptionMode, seedingLimitOverride,
-                TorrentState.STOPPED, addedAt, trackerlessReannounceIntervalSeconds);
+                TorrentState.STOPPED, addedAt, dhtReannounceIntervalSeconds);
     }
 
     /** Same as the nine-arg overload below but with no rate limiting - see create()'s own
@@ -440,14 +489,14 @@ public final class TorrentSession implements AutoCloseable {
                                                Supplier<EncryptionMode> encryptionMode,
                                                SeedingLimitOverride seedingLimitOverride,
                                                Instant addedAt,
-                                               Supplier<Long> trackerlessReannounceIntervalSeconds,
+                                               Supplier<Long> dhtReannounceIntervalSeconds,
                                                boolean autoStart) throws IOException {
         TorrentStorage storage = TorrentStorage.create(metadata, downloadDirectory, fileHandlePool);
         PieceManager pieceManager = new PieceManager(metadata);
         TorrentSession session = new TorrentSession(metadata, trackerClient, storage, pieceManager,
                 ourPeerId, ourListenPort, listener, dhtNode, rateLimiters, pieceVerificationLimiter,
                 encryptionMode, seedingLimitOverride, TorrentState.VERIFYING, addedAt,
-                trackerlessReannounceIntervalSeconds);
+                dhtReannounceIntervalSeconds);
         Thread.ofVirtual().start(() -> session.verifyThenSettle(autoStart));
         return session;
     }
@@ -506,18 +555,15 @@ public final class TorrentSession implements AutoCloseable {
      * restoreAsync()'s background recheck. See design_docs/0017 and design_docs/0026.
      *
      * <p>A genuinely trackerless torrent (trackerClient is a NoOpTrackerClient - see
-     * createTrackerClient) skips the tracker announce entirely rather than calling it anyway:
-     * NoOpTrackerClient.announce() never throws and reports a deliberately huge interval so
-     * its own reannounce loop would otherwise never fire - going through startViaDht() instead
-     * gets it the same periodic DHT re-query a tracker-bearing torrent already gets via
-     * startViaDhtBackstop()/reannounceViaDhtBackstop() below. See design_docs/0036's own
-     * addendum. */
+     * createTrackerClient) is no longer special-cased here (see design_docs/0036's own
+     * 2026-09-06 revision) - NoOpTrackerClient.announce() never throws and always succeeds
+     * with zero peers and a deliberately huge interval, so it flows through the exact same
+     * path as any other tracker's success response, harmlessly. DHT peer discovery - the
+     * thing this branch used to exist to reach via startViaDht() - is now enterDownloading()'s
+     * job for every non-private torrent regardless of tracker kind, via the periodic
+     * discoverPeersViaDht() task below. */
     public synchronized void start() {
         if (state != TorrentState.STOPPED) {
-            return;
-        }
-        if (trackerClient instanceof NoOpTrackerClient) {
-            startViaDht();
             return;
         }
         TrackerResponse response;
@@ -533,41 +579,42 @@ public final class TorrentSession implements AutoCloseable {
         enterDownloading(response.peers(), Math.max(response.interval(), 30));
     }
 
-    /** Genuinely trackerless (no tracker to have failed) - unlike startViaDhtBackstop() below,
-     * dhtNode == null or a failed/empty lookup is never ERROR here, just "enter DOWNLOADING
-     * with zero peers so far": there's no prior working state to consider "failed," the same
-     * way a regular tracker responding with zero peers isn't ERROR either. Deliberately does
-     * NOT set dhtBackstopActive - that flag's own Javadoc reserves it for a tracker-bearing
-     * torrent whose tracker is currently down, a genuine degradation; a trackerless torrent
-     * doing DHT lookups is its normal operating mode, already covered by the separate
-     * usesDht()/isTrackerless() signal. See design_docs/0036's own addendum. */
-    private void startViaDht() {
-        List<PeerAddress> peers = List.of();
-        if (dhtNode != null) {
-            try {
-                peers = dhtNode.findPeers(metadata.infoHash(), ourListenPort, false, DHT_QUERY_TIMEOUT);
-            } catch (RuntimeException e) {
-                LOG.log(System.Logger.Level.DEBUG, "DHT lookup failed for trackerless torrent "
-                        + metadata.infoHash(), e);
-            }
-        }
-        enterDownloading(peers, trackerlessReannounceIntervalSeconds.get());
+    /** BEP 27: a private torrent's peer discovery must stay confined to whatever its
+     * tracker(s) coordinate - every DHT touch point in this class (find_peers lookups,
+     * implicitly announce_peer too, since PeerLookup.findPeers does both - see
+     * design_docs/0028) checks this before ever using dhtNode, the same way each already
+     * checks dhtNode != null. Does not affect onPeerAnnouncedDhtPort()'s ping - that only
+     * strengthens this process's general DHT routing table and never queries or announces
+     * anything about this specific torrent's info hash, so it carries no privacy leak. */
+    private boolean dhtEligible() {
+        return dhtNode != null && !metadata.isPrivate();
     }
 
-    /** Every tracker failed (MultiTrackerClient's own BEP 12 tier fallback exhausted, see
-     * design_docs/0022) - rather than going straight to ERROR, falls back to a DHT peer
+    /** BEP 27: never advertise ut_pex support for a private torrent - not sending it in our
+     * own extended handshake's "m" dict means a well-behaved peer never sends us one either.
+     * See sendPexUpdates() for the other, equally necessary half of this: that method's own
+     * decision to send a peer PEX data depends entirely on whether *they* advertised support
+     * in *their* handshake, completely independent of what we advertise here, so this alone
+     * isn't sufficient - both halves gate on metadata.isPrivate(). */
+    private Map<String, Integer> extensionsToAdvertise() {
+        return metadata.isPrivate() ? Map.of() : PEX_EXTENSION_TO_ADVERTISE;
+    }
+
+    /** Every tracker failed (MultiTrackerClient announced to all of them concurrently and
+     * every one failed, see design_docs/0022's own 2026-09-06 revision) - rather than going
+     * straight to ERROR, falls back to a DHT peer
      * lookup, the same motivation as multi-tracker fallback itself: a torrent's tracker(s)
-     * being completely unreachable shouldn't strand the torrent when another
-     * peer-discovery path is available. Only ever reached for a real (non-NoOp)
-     * TrackerClient - a genuinely trackerless torrent takes the startViaDht() path above
-     * instead, straight from start(). See design_docs/0036.
+     * being completely unreachable shouldn't strand the torrent when another peer-discovery
+     * path is available. A genuinely trackerless torrent's NoOpTrackerClient never throws, so
+     * this is only ever reached for a real TrackerClient that's actually failing. See
+     * design_docs/0036.
      *
      * <p>An empty-but-successful DHT lookup still counts as success here (same as a tracker
      * responding with zero peers already does on the normal path) - it means DHT itself is
      * reachable, just that no peer happens to be known for this torrent right now; ERROR is
      * reserved for "no peer-discovery path worked at all," not "found nobody this time." */
     private void startViaDhtBackstop(RuntimeException trackerFailure) {
-        if (dhtNode == null) {
+        if (!dhtEligible()) {
             dhtBackstopActive = false;
             LOG.log(System.Logger.Level.WARNING, "Initial tracker announce failed for " + metadata.infoHash(), trackerFailure);
             lastError = trackerFailure;
@@ -604,6 +651,13 @@ public final class TorrentSession implements AutoCloseable {
                 CHOKING_INTERVAL_SECONDS, CHOKING_INTERVAL_SECONDS, TimeUnit.SECONDS);
         scheduler.scheduleWithFixedDelay(this::sendPexUpdates,
                 PEX_INTERVAL_SECONDS, PEX_INTERVAL_SECONDS, TimeUnit.SECONDS);
+        // Zero initial delay, unlike every task above - a freshly-started torrent shouldn't
+        // wait a full dhtReannounceIntervalSeconds (default 300s) for its first DHT lookup,
+        // the same immediacy the old trackerless-only startViaDht() used to provide
+        // synchronously, just non-blockingly here instead. See discoverPeersViaDht()'s own
+        // Javadoc.
+        scheduler.scheduleWithFixedDelay(this::discoverPeersViaDht,
+                0, dhtReannounceIntervalSeconds.get(), TimeUnit.SECONDS);
 
         fillConnections();
         // A restore()d torrent can already be fully complete before its first start() -
@@ -688,18 +742,18 @@ public final class TorrentSession implements AutoCloseable {
     }
 
     /** Package-private (not private) so tests can trigger exactly one reannounce cycle
-     * directly, rather than waiting out the real scheduled interval (30s minimum, or
-     * trackerlessReannounceIntervalSeconds for a trackerless torrent) - same rationale as
-     * TorrentEngine.selectTrackerTiers's own package-private-for-testing note. Trackerless
-     * torrents skip the no-op tracker announce entirely (it would find nothing - see start()'s
-     * own comment) and go straight to a fresh DHT lookup instead. See design_docs/0036's own
-     * addendum. */
+     * directly, rather than waiting out the real scheduled interval (30s minimum) - same
+     * rationale as TorrentEngine.selectTrackerTiers's own package-private-for-testing note.
+     * A genuinely trackerless torrent's NoOpTrackerClient.announce() always succeeds
+     * instantly with zero peers and a deliberately huge interval, so this cycle is harmless
+     * (if largely pointless) for it - its real peer discovery is discoverPeersViaDht()'s job,
+     * on its own independent schedule. See design_docs/0036's own 2026-09-06 revision.
+     *
+     * <p>dhtBackstopActive now purely reflects the tracker's own last-attempt health (true
+     * on failure, false on success) - decoupled from whether a DHT lookup actually ran, since
+     * discoverPeersViaDht() below runs on its own schedule regardless of tracker health. */
     void reannounce() {
         if (state != TorrentState.DOWNLOADING && state != TorrentState.SEEDING) {
-            return;
-        }
-        if (trackerClient instanceof NoOpTrackerClient) {
-            reannounceViaDht();
             return;
         }
         try {
@@ -710,44 +764,46 @@ public final class TorrentSession implements AutoCloseable {
             fillConnections();
         } catch (RuntimeException e) {
             // Transient tracker failure - existing connections keep working; retry next interval.
+            // DHT peer discovery continues regardless, on its own schedule (discoverPeersViaDht()).
             LOG.log(System.Logger.Level.DEBUG, "Re-announce failed for " + metadata.infoHash(), e);
-            reannounceViaDhtBackstop();
+            dhtBackstopActive = true;
         }
     }
 
-    /** Genuinely trackerless counterpart to reannounceViaDhtBackstop() below - same
-     * runs-on-its-own-virtual-thread reasoning, but never touches dhtBackstopActive (see
-     * startViaDht()'s own comment for why). See design_docs/0036's own addendum. */
-    private void reannounceViaDht() {
-        if (dhtNode == null) {
+    /** BEP 5: independent, periodic DHT peer discovery - concurrent with, not a substitute
+     * for, whatever a tracker itself already provides. Runs for any non-private torrent DHT
+     * is eligible for (dhtEligible()), regardless of tracker health, on its own schedule (see
+     * enterDownloading()) rather than being tied to reannounce()'s tracker-driven cadence -
+     * this is the revision design_docs/0036 describes on 2026-09-06: DHT was previously only
+     * ever consulted as a last-resort backstop once every tracker had failed outright
+     * (startViaDhtBackstop()/the now-removed reannounceViaDhtBackstop()) or as the sole
+     * mechanism for a genuinely trackerless torrent (the now-removed startViaDht()/
+     * reannounceViaDht()) - both of those were real DHT usage, just gated far more narrowly
+     * than a healthy tracker-bearing torrent needs to get any DHT-sourced peers at all.
+     *
+     * <p>Runs on its own virtual thread per tick, same reasoning as every other DHT call site
+     * in this class: a multi-second lookup must never block the session's single scheduler
+     * thread, shared with keepalive/choking/PEX/reannounce. addKnownPeers() is safe to call
+     * regardless of what state the session is in by the time this completes. Package-private,
+     * not private, so tests can trigger exactly one cycle directly rather than waiting out
+     * the real scheduled interval - same rationale as reannounce()'s own package-private-for-
+     * testing note. */
+    void discoverPeersViaDht() {
+        if (!dhtEligible()) {
             return;
         }
         Thread.ofVirtual().start(() -> {
             try {
                 List<PeerAddress> peers = dhtNode.findPeers(metadata.infoHash(), ourListenPort, false, DHT_QUERY_TIMEOUT);
+                // DEBUG, not silent - this was the missing half of the attemptConnect() logging
+                // added while diagnosing the original peer-count gap: without this, "DHT ran but
+                // found almost nothing" and "DHT hasn't run yet" were indistinguishable from the
+                // outside.
+                LOG.log(System.Logger.Level.DEBUG, "DHT peer discovery for " + metadata.infoHash()
+                        + " found " + peers.size() + " peer(s)");
                 addKnownPeers(peers);
             } catch (RuntimeException e) {
-                LOG.log(System.Logger.Level.DEBUG, "DHT re-query failed for trackerless torrent "
-                        + metadata.infoHash(), e);
-            }
-        });
-    }
-
-    /** Runs on its own virtual thread rather than blocking the session's single scheduler
-     * thread (shared with the keepalive/choking timers) for the lookup's multi-second
-     * duration. addKnownPeers() is safe to call regardless of what state the session is in by
-     * the time this completes. See design_docs/0036. */
-    private void reannounceViaDhtBackstop() {
-        if (dhtNode == null) {
-            return;
-        }
-        Thread.ofVirtual().start(() -> {
-            try {
-                List<PeerAddress> peers = dhtNode.findPeers(metadata.infoHash(), ourListenPort, false, DHT_QUERY_TIMEOUT);
-                dhtBackstopActive = true;
-                addKnownPeers(peers);
-            } catch (RuntimeException e) {
-                LOG.log(System.Logger.Level.DEBUG, "DHT re-announce fallback failed for " + metadata.infoHash(), e);
+                LOG.log(System.Logger.Level.DEBUG, "DHT peer discovery failed for " + metadata.infoHash(), e);
             }
         });
     }
@@ -772,8 +828,17 @@ public final class TorrentSession implements AutoCloseable {
      * <p>Package-private (not private) so tests can trigger exactly one PEX cycle
      * directly, rather than waiting out the real 60s scheduled interval - same rationale as
      * reannounce()'s own package-private-for-testing note.
-     */
+     *
+     * <p>BEP 27: never sends anything for a private torrent, regardless of what a connected
+     * peer advertised in their own handshake - extensionsToAdvertise() only stops us
+     * advertising ut_pex ourselves (so a well-behaved peer never sends us one), but a peer
+     * choosing to advertise ut_pex support in *their* own handshake is entirely their own
+     * decision, unaffected by ours; this is the check that actually stops us gossiping a
+     * private swarm's membership regardless. */
     void sendPexUpdates() {
+        if (metadata.isPrivate()) {
+            return;
+        }
         Set<PeerAddress> current = new HashSet<>();
         for (PeerConnection connection : connections) {
             current.add(connection.remoteAddress());
@@ -821,9 +886,14 @@ public final class TorrentSession implements AutoCloseable {
      * this is even called), is ignored. "added" feeds straight into the existing
      * addKnownPeers() - same mechanism tracker/DHT-discovered peers already use; "dropped"
      * is decoded but deliberately never acted on (see design_docs/0040). A malformed
-     * message is dropped silently rather than disconnecting a peer over one bad message. */
+     * message is dropped silently rather than disconnecting a peer over one bad message.
+     *
+     * <p>BEP 27: ignored entirely for a private torrent, belt-and-suspenders against a
+     * peer sending one anyway despite us never advertising support (extensionsToAdvertise())
+     * - private-torrent peer discovery must stay confined to the tracker, so an unsolicited
+     * PEX "added" list is never allowed to feed knownAddresses here even if one arrives. */
     private void handleExtended(PeerConnection connection, Extended extended) {
-        if (extended.extendedMessageId() != PEX_EXTENSION_ID) {
+        if (metadata.isPrivate() || extended.extendedMessageId() != PEX_EXTENSION_ID) {
             return;
         }
         try {
@@ -836,34 +906,64 @@ public final class TorrentSession implements AutoCloseable {
     }
 
     /**
-     * Not a hard limit under concurrent connect attempts (design_docs/0017)
-     * - a small overshoot past MAX_CONNECTIONS is an acceptable imprecision
-     * rather than something worth adding reservation bookkeeping for.
+     * connectionSlots (a Semaphore, not a size check) is what bounds *total* concurrency -
+     * see its own field Javadoc for why a plain MAX_CONNECTIONS - connections.size() check
+     * stopped being safe once attemptConnect()/onDisconnected() started calling this
+     * reactively. inFlightAddresses.add()'s own atomic return value is what stops two
+     * concurrent calls from both claiming the *same* candidate - see its own field Javadoc.
+     * The .limit(MAX_CONNECTIONS) below is purely a cheap upper bound on how much of
+     * knownAddresses this one call ever needs to scan; tryAcquire() is what actually stops
+     * the loop once slots run out, every single call, regardless of how many other threads are
+     * calling this concurrently.
      */
     private void fillConnections() {
         if (state != TorrentState.DOWNLOADING && state != TorrentState.SEEDING) {
             return;
         }
-        int slots = MAX_CONNECTIONS - connections.size();
-        if (slots <= 0) {
-            return;
-        }
         List<PeerAddress> candidates = knownAddresses.stream()
+                .filter(address -> !failedAddresses.contains(address))
+                .filter(address -> !inFlightAddresses.contains(address))
                 .filter(address -> connections.stream().noneMatch(c -> c.remoteAddress().equals(address)))
-                .limit(slots)
+                .limit(MAX_CONNECTIONS)
                 .toList();
         for (PeerAddress address : candidates) {
+            if (!inFlightAddresses.add(address)) {
+                // Lost the claim race to another concurrent fillConnections() call - it's
+                // already being attempted, skip without touching a slot.
+                continue;
+            }
+            if (!connectionSlots.tryAcquire()) {
+                inFlightAddresses.remove(address);
+                break;
+            }
             Thread.ofVirtual().start(() -> attemptConnect(address));
         }
     }
 
-    /** No retry backoff for a failed address - the tracker's re-announce cadence naturally rate-limits retries. */
+    /** No retry backoff for a failed address within one fillConnections() batch - permanently
+     * excluded instead (failedAddresses), not retried later this session at all. On failure,
+     * releases this attempt's connectionSlots permit and calls fillConnections() again so a
+     * fresh candidate fills the slot this one would have taken - previously, only four
+     * external triggers (start()/reannounce()/discoverPeersViaDht()/addKnownPeers()) ever
+     * refilled connections, so a burst of fast failures (the common case - most tracker/DHT-
+     * supplied addresses are unreachable at any given moment) left the session under-connected
+     * until the next one of those, up to dhtReannounceIntervalSeconds (default 300s) away. See
+     * design_docs/0036's own 2026-09-06 revision - and connectionSlots's own Javadoc for why
+     * the release-then-refill pair is safe against concurrent stampeding where a plain
+     * connections.size() check was not. */
     private void attemptConnect(PeerAddress address) {
         try {
             PeerConnection connection = PeerConnection.connect(address, metadata.infoHash(), ourPeerId,
-                    new PeerListener(), EXTENSIONS_TO_ADVERTISE, rateLimiters, encryptionMode.get());
+                    new PeerListener(), extensionsToAdvertise(), rateLimiters, encryptionMode.get());
             connections.add(connection);
+            // Now covered by the connections-based filter in fillConnections() instead -
+            // removing the inFlightAddresses claim just avoids that set growing forever with
+            // entries that no other check ever needed again.
+            inFlightAddresses.remove(address);
             onPeerConnected(connection);
+            // This attempt's connectionSlots permit deliberately stays held - it now represents
+            // the established connection itself, released only on disconnect (see
+            // PeerListener.onDisconnected()).
         } catch (IOException | RuntimeException e) {
             // Most tracker-provided addresses are unreachable - this is the common case, not exceptional -
             // but silently swallowing every failure left no way to tell that apart from a systemic
@@ -871,6 +971,10 @@ public final class TorrentSession implements AutoCloseable {
             // still the expected common case, just now observable when needed.
             LOG.log(System.Logger.Level.DEBUG, "Connection attempt to " + address + " for "
                     + metadata.infoHash() + " failed: " + e, e);
+            failedAddresses.add(address);
+            inFlightAddresses.remove(address);
+            connectionSlots.release();
+            fillConnections();
         }
     }
 
@@ -898,12 +1002,23 @@ public final class TorrentSession implements AutoCloseable {
             socket.close();
             return;
         }
-        if (connections.size() >= MAX_CONNECTIONS) {
+        // connectionSlots, not a connections.size() check - inbound and outbound connections
+        // share the same MAX_CONNECTIONS budget, and only the semaphore accounts for outbound
+        // attempts still in flight (see connectionSlots's own Javadoc). A size check here
+        // would let inbound and outbound connections each independently race past the real
+        // cap, unaware of each other.
+        if (!connectionSlots.tryAcquire()) {
             socket.close();
             return;
         }
-        PeerConnection connection = PeerConnection.accept(socket, in, out, remoteHandshake, ourPeerId,
-                new PeerListener(), EXTENSIONS_TO_ADVERTISE, rateLimiters);
+        PeerConnection connection;
+        try {
+            connection = PeerConnection.accept(socket, in, out, remoteHandshake, ourPeerId,
+                    new PeerListener(), extensionsToAdvertise(), rateLimiters);
+        } catch (IOException | RuntimeException e) {
+            connectionSlots.release();
+            throw e;
+        }
         connections.add(connection);
         onPeerConnected(connection);
     }
@@ -1289,15 +1404,33 @@ public final class TorrentSession implements AutoCloseable {
 
     /** True for a torrent with no tracker at all - a trackerless magnet resolved via DHT,
      * or a plain .torrent upload that genuinely listed none (see design_docs/0028's
-     * NoOpTrackerClient). Exposed as TorrentView.usesDht - see design_docs/0031. */
+     * NoOpTrackerClient). A distinct concept from usesDht() below: this is about whether a
+     * tracker exists at all, not whether DHT is actually contributing peers - a private
+     * trackerless torrent (isTrackerless() true, usesDht() false) or a tracker-bearing
+     * torrent with DHT globally disabled (isTrackerless() false, usesDht() false) both show
+     * that the two can diverge. No longer what TorrentView.usesDht reads - see usesDht()
+     * below, added by design_docs/0036's own 2026-09-06 revision. */
     public boolean isTrackerless() {
         return trackerClient instanceof NoOpTrackerClient;
     }
 
+    /** True whenever DHT is actually eligible as a peer source for this torrent right now -
+     * dhtEligible(), exposed publicly. Replaces isTrackerless() as what TorrentView.usesDht
+     * reads (see design_docs/0031, design_docs/0036's own 2026-09-06 revision): DHT is now a
+     * routine concurrent peer source for any non-private torrent with DHT configured, not
+     * just a trackerless-only or last-resort mechanism, so "does this torrent have zero
+     * trackers" is no longer the question the frontend's "DHT Enabled/Disabled" label
+     * actually needs answered. */
+    public boolean usesDht() {
+        return dhtEligible();
+    }
+
     /** True only while the most recent tracker announce (start() or reannounce()) actually
-     * fell back to DHT rather than succeeding via the tracker - see design_docs/0036 for
-     * the backstop itself, design_docs/0039 for why this is exposed. Always false for a
-     * trackerless torrent (isTrackerless() already covers that case). */
+     * failed - see design_docs/0036 for the backstop this originally tracked, design_docs/0039
+     * for why this is exposed. Purely a tracker-health signal now (decoupled from whether a
+     * DHT lookup happens to be running - see discoverPeersViaDht(), which runs on its own
+     * schedule regardless). Always false for a trackerless torrent, whose NoOpTrackerClient
+     * never fails. */
     public boolean isDhtBackstopActive() {
         return dhtBackstopActive;
     }
@@ -1366,6 +1499,14 @@ public final class TorrentSession implements AutoCloseable {
             accumulatedUploaded.addAndGet(connection.uploadedBytes());
             accumulatedReceived.addAndGet(connection.downloadedBytes());
             connections.remove(connection);
+            // Releases this connection's own connectionSlots permit, held since attemptConnect()/
+            // acceptIncomingConnection() first succeeded - then backfills the slot it just freed.
+            // Deliberately not added to failedAddresses: this peer was reachable and connected
+            // successfully once, so there's no reason to treat it as dead going forward (unlike
+            // attemptConnect()'s own catch block, which never got that far). See
+            // design_docs/0017's own 2026-09-06 revision.
+            connectionSlots.release();
+            fillConnections();
         }
     }
 }

@@ -173,11 +173,11 @@ pipeline untouched.
   other, because by the time it's persisted, it *is* any other.
 - **A magnet's flat `tr=` list becomes a single announce-list tier**, not
   one tier per tracker - it has no BEP 12 tier structure to begin with,
-  and `MultiTrackerClient`'s current fallback logic tries every tracker
-  in list order regardless of tier boundaries anyway (tiers only matter
-  for future refinements like per-tier shuffling, not implemented yet -
-  see [[0022-multi-tracker-fallback]]), so inventing tier boundaries
-  would imply structure that isn't there.
+  and `MultiTrackerClient` announces to every tracker concurrently
+  regardless of tier boundaries anyway ([[0022-multi-tracker-fallback]]'s
+  own 2026-09-06 revision - tier no longer confers any priority/fallback
+  behavior there at all, only a per-tracker display label), so inventing
+  tier boundaries would imply structure that isn't there.
 - **`addMagnet()` validates trackers synchronously** (throws
   `TorrentEngineException`, already mapped to 400, for a trackerless
   magnet) but does everything else - the tracker announce and the

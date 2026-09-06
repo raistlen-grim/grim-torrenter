@@ -108,26 +108,29 @@ import com.grimtorrenter.engine.mse.EncryptionMode;
  * rejected at the REST boundary, and not a lever for "never give up" or "no concurrency bound
  * at all."
  *
- * <p>trackerlessDhtReannounceIntervalSeconds (design_docs/0036's own addendum) governs how
- * often a genuinely trackerless torrent re-queries DHT for fresh peers while running -
- * mirrors what a real tracker's own announce interval already does for a tracker-bearing
- * torrent, just user-tunable rather than tracker-dictated, since there's no tracker here to
- * dictate it. Read once per `start()` (same "fixed for this torrent's run, re-read on the
- * next start()" precedent a real tracker's own interval already follows - a live-scheduled
- * task's period can't be changed mid-flight without cancelling and rebuilding it). Default
- * 300s (5 minutes) - deliberately not shortened to "every few seconds": DHT re-querying the
- * same info hash that often is poor DHT citizenship (real clients typically use a
- * multi-minute cadence, similar to tracker announce intervals) and risks well-behaved remote
- * nodes deprioritizing overly-frequent queries; the actual bottleneck this doesn't fix is
- * routing-table richness, a separate concern. Same **no** "0/negative means unlimited"
+ * <p>dhtReannounceIntervalSeconds (design_docs/0036's own addendum, broadened by its
+ * 2026-09-06 revision) governs how often DHT is re-queried for fresh peers while a torrent is
+ * running - for *every* non-private torrent with DHT eligible (see
+ * TorrentSession.dhtEligible()), not just a genuinely trackerless one as originally scoped:
+ * DHT is now a routine concurrent peer source alongside whatever a tracker itself provides,
+ * not just a trackerless-only mechanism or a last-resort backstop for total tracker failure.
+ * Mirrors what a real tracker's own announce interval already does, just user-tunable rather
+ * than tracker-dictated. Read once per `start()` (same "fixed for this torrent's run, re-read
+ * on the next start()" precedent a real tracker's own interval already follows - a
+ * live-scheduled task's period can't be changed mid-flight without cancelling and rebuilding
+ * it). Default 300s (5 minutes) - deliberately not shortened to "every few seconds": DHT
+ * re-querying the same info hash that often is poor DHT citizenship (real clients typically
+ * use a multi-minute cadence, similar to tracker announce intervals) and risks well-behaved
+ * remote nodes deprioritizing overly-frequent queries; the actual bottleneck this doesn't fix
+ * is routing-table richness, a separate concern. Same **no** "0/negative means unlimited"
  * treatment as the fields above, for the same reason.
  *
  * <p>dhtRefreshIntervalSeconds (design_docs/0028's own 2026-08-30 addendum) is the "routing-
- * table richness" fix trackerlessDhtReannounceIntervalSeconds's own Javadoc above defers to -
+ * table richness" fix dhtReannounceIntervalSeconds's own Javadoc above defers to -
  * how often a background tick re-queries whichever DHT routing-table bucket has gone longest
  * without activity, reaching parts of the 160-bit id space a one-time startup bootstrap lookup
  * never touches (that lookup only explores the neighborhood near our own node id). Unlike
- * trackerlessDhtReannounceIntervalSeconds, this drives an engine-wide scheduled task
+ * dhtReannounceIntervalSeconds, this drives an engine-wide scheduled task
  * (TorrentEngine's maintenanceScheduler) rather than a per-torrent one, so a live change here
  * takes effect on the engine's next construction/restart, not retroactively - the same
  * "a ScheduledExecutorService's period can't change mid-flight" limitation, just at engine
@@ -158,7 +161,7 @@ public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
                         ThemePreference theme,
                         int magnetFetchTimeBudgetSeconds, int magnetFetchCandidatesPerRound,
                         int magnetFetchConcurrencyLimit,
-                        int trackerlessDhtReannounceIntervalSeconds,
+                        int dhtReannounceIntervalSeconds,
                         int dhtRefreshIntervalSeconds,
                         int watchFolderPollIntervalSeconds) {
 
@@ -185,7 +188,7 @@ public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
     private static final int DEFAULT_MAGNET_FETCH_CONCURRENCY_LIMIT = 64;
     /** design_docs/0036's own addendum - see this record's own class-level Javadoc for the
      * DHT-etiquette reasoning behind 300s rather than something much shorter. */
-    private static final int DEFAULT_TRACKERLESS_DHT_REANNOUNCE_INTERVAL_SECONDS = 300;
+    private static final int DEFAULT_DHT_REANNOUNCE_INTERVAL_SECONDS = 300;
     /** design_docs/0028's own 2026-08-30 addendum - see this record's own class-level Javadoc
      * for why 300s is reasonable here despite being much shorter than libtorrent's own ~15
      * minute bucket-refresh cadence. */
@@ -227,8 +230,8 @@ public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
         if (magnetFetchConcurrencyLimit <= 0) {
             magnetFetchConcurrencyLimit = DEFAULT_MAGNET_FETCH_CONCURRENCY_LIMIT;
         }
-        if (trackerlessDhtReannounceIntervalSeconds <= 0) {
-            trackerlessDhtReannounceIntervalSeconds = DEFAULT_TRACKERLESS_DHT_REANNOUNCE_INTERVAL_SECONDS;
+        if (dhtReannounceIntervalSeconds <= 0) {
+            dhtReannounceIntervalSeconds = DEFAULT_DHT_REANNOUNCE_INTERVAL_SECONDS;
         }
         if (dhtRefreshIntervalSeconds <= 0) {
             dhtRefreshIntervalSeconds = DEFAULT_DHT_REFRESH_INTERVAL_SECONDS;
@@ -257,7 +260,7 @@ public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
                      ThemePreference theme,
                      int magnetFetchTimeBudgetSeconds, int magnetFetchCandidatesPerRound,
                      int magnetFetchConcurrencyLimit,
-                     int trackerlessDhtReannounceIntervalSeconds,
+                     int dhtReannounceIntervalSeconds,
                      int dhtRefreshIntervalSeconds) {
         this(dhtEnabled, acceptIncomingConnections, uploadRateLimitBytesPerSec, downloadRateLimitBytesPerSec,
                 rateLimitScheduleEnabled, rateLimitScheduleStart, rateLimitScheduleEnd,
@@ -265,7 +268,7 @@ public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
                 rateLimitBurstSeconds, seedRatioLimitEnabled, seedRatioLimit, seedTimeLimitEnabled,
                 seedTimeLimitMinutes, eventLogRetentionDays, watchFolderEnabled, watchFolderRetentionDays, theme,
                 magnetFetchTimeBudgetSeconds, magnetFetchCandidatesPerRound, magnetFetchConcurrencyLimit,
-                trackerlessDhtReannounceIntervalSeconds, dhtRefreshIntervalSeconds, 0);
+                dhtReannounceIntervalSeconds, dhtRefreshIntervalSeconds, 0);
     }
 
     /** Same as the canonical constructor above but without dhtRefreshIntervalSeconds - for
@@ -287,17 +290,17 @@ public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
                      ThemePreference theme,
                      int magnetFetchTimeBudgetSeconds, int magnetFetchCandidatesPerRound,
                      int magnetFetchConcurrencyLimit,
-                     int trackerlessDhtReannounceIntervalSeconds) {
+                     int dhtReannounceIntervalSeconds) {
         this(dhtEnabled, acceptIncomingConnections, uploadRateLimitBytesPerSec, downloadRateLimitBytesPerSec,
                 rateLimitScheduleEnabled, rateLimitScheduleStart, rateLimitScheduleEnd,
                 scheduledUploadRateLimitBytesPerSec, scheduledDownloadRateLimitBytesPerSec, encryptionMode,
                 rateLimitBurstSeconds, seedRatioLimitEnabled, seedRatioLimit, seedTimeLimitEnabled,
                 seedTimeLimitMinutes, eventLogRetentionDays, watchFolderEnabled, watchFolderRetentionDays, theme,
                 magnetFetchTimeBudgetSeconds, magnetFetchCandidatesPerRound, magnetFetchConcurrencyLimit,
-                trackerlessDhtReannounceIntervalSeconds, 0);
+                dhtReannounceIntervalSeconds, 0);
     }
 
-    /** Same as the canonical constructor above but without trackerlessDhtReannounceIntervalSeconds
+    /** Same as the canonical constructor above but without dhtReannounceIntervalSeconds
      * - for every caller that predates this addition (every secondary constructor below, plus
      * any direct twenty-two-arg caller), defaulting it (the compact constructor above
      * normalizes 0 to the real default, so passing 0 here is equivalent to passing the default

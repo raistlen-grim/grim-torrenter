@@ -200,6 +200,45 @@ path - even if the honest answer is "no stability implication here." `CLAUDE.md`
 so it applies to every decision going forward, not only engine-internals work like the audit
 above.
 
+## A real production OutOfMemoryError, found and fixed (2026-09-06)
+
+Exactly the kind of regression the closing paragraph below warns about, arriving within
+hours: a real user-facing fix to close a genuine peer-count gap (`TorrentSession`'s own
+`fillConnections()` becoming reactive - refilling on every connection failure or disconnect,
+not just four well-spaced external triggers, see [[0017-torrent-session]]'s own 2026-09-06
+revision) crashed the running backend with an `OutOfMemoryError` the same night it deployed.
+
+The "per-torrent connection cap" bullet above (`MAX_CONNECTIONS = 30`, "a small overshoot is
+an acceptable imprecision") was true and safe under the original, infrequent trigger pattern
+- but the new reactive trigger broke the assumption it quietly depended on:
+`fillConnections()`'s slot check only ever counted *established* connections
+(`connections.size()`), never attempts still in flight. A burst of near-instant failures
+(far more common than slow timeouts) could each independently observe the same "N slots
+free" and each spawn up to N more attempts - an uncontrolled multiplicative cascade, not the
+bounded, occasional overshoot the cap's own comment had accepted. `PREFERRED` encryption
+mode's per-attempt Diffie-Hellman handshake turned that into real memory pressure, not just
+excess threads.
+
+**Fixed with an actual atomic bound** - a `Semaphore connectionSlots` (`MAX_CONNECTIONS`
+permits), acquired before any attempt (inbound or outbound) starts and released only on
+failure or disconnect, so the total in-flight-or-established count structurally cannot
+exceed the cap regardless of how many threads race to refill concurrently - closing the gap
+the old comment's philosophy had actually left open once triggers became reactive, not just
+tightening it further. A second, related bug (multiple concurrent `fillConnections()` calls
+independently claiming the *same* untried address - one address attempted a dozen-plus times
+within milliseconds, observed the very next real run after the first fix deployed) needed a
+second atomic claim, `inFlightAddresses`, for the same underlying reason: reactive triggers
+make races that used to be rare and inconsequential into races that happen constantly and
+matter. Both have dedicated regression tests reproducing the exact failure shape (a burst of
+far-more-candidates-than-`MAX_CONNECTIONS` failing close together).
+
+**The lesson, not just the fix**: a resource-control philosophy tuned for "called
+occasionally, from well-spaced triggers" doesn't automatically stay safe once something
+makes the same code reactive/high-frequency - the two changed together, and only one was
+scrutinized for stability implications before shipping. See [[0017-torrent-session]]'s own
+2026-09-06 corrections (both same-day) for the full detail, and `TODO.md`'s matching
+Performance entry for the end-to-end investigation this was found during.
+
 ## Where this leaves things
 
 Every finding from the audit - unbounded file descriptors, unbounded verification bursts, no
@@ -210,4 +249,6 @@ unlimited scale, and there's no continuous/automated stress-testing infrastructu
 for regressions here beyond that one test. If the engine is later pushed to noticeably larger
 torrent counts or peer counts than anything exercised so far, that's the next place to look -
 not because a specific gap is already known, but because "provably bounded at N" isn't the
-same claim as "provably bounded at 10N."
+same claim as "provably bounded at 10N." **2026-09-06 confirmed this isn't just a
+hypothetical**: peer-count-side changes broke a resource-control assumption in production
+within the same night, caught by real usage rather than by anticipating it in review.

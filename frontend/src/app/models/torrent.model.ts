@@ -27,14 +27,14 @@ export interface Torrent {
   completedPieces: number;
   totalPieces: number;
   lastError: string | null;
-  /** True for a trackerless torrent relying on DHT for peer discovery - see
-   * TorrentSession.isTrackerless()/design_docs/0028. */
+  /** True whenever DHT is actually eligible as a peer source for this torrent right now -
+   * DHT configured and the torrent isn't private (BEP 27), regardless of tracker presence or
+   * health. See TorrentSession.usesDht()/design_docs/0036's own 2026-09-06 revision. */
   usesDht: boolean;
   trackerCount: number;
-  /** True only while the most recent tracker announce actually fell back to DHT rather
-   * than succeeding via the tracker - distinct from usesDht, which only ever means "has
-   * zero trackers at all." A tracker-bearing torrent (usesDht false) can still have this
-   * true while its tracker is unreachable. See design_docs/0036/0039. */
+  /** True only while the most recent tracker announce actually failed - a separate,
+   * tracker-health-only signal from usesDht, independent of whether DHT happens to be
+   * eligible at all. See design_docs/0036/0039. */
   dhtBackstopActive: boolean;
   /** ISO instant string, or null when unknown - a torrent directory added before this field
    * existed has no marker to read it back from and is never backfilled with a guess. See

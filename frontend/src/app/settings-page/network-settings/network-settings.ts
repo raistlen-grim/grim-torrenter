@@ -11,7 +11,7 @@ export type NetworkSettingsForm = FormGroup<{
   dhtEnabled: FormControl<boolean>;
   acceptIncomingConnections: FormControl<boolean>;
   encryptionMode: FormControl<EncryptionMode>;
-  trackerlessDhtReannounceIntervalSeconds: FormControl<number>;
+  dhtReannounceIntervalSeconds: FormControl<number>;
   dhtRefreshIntervalSeconds: FormControl<number>;
 }>;
 
@@ -20,7 +20,7 @@ export function buildNetworkSettingsForm(settings: Settings): NetworkSettingsFor
     dhtEnabled: new FormControl(settings.dhtEnabled, { nonNullable: true }),
     acceptIncomingConnections: new FormControl(settings.acceptIncomingConnections, { nonNullable: true }),
     encryptionMode: new FormControl(settings.encryptionMode, { nonNullable: true }),
-    trackerlessDhtReannounceIntervalSeconds: new FormControl(settings.trackerlessDhtReannounceIntervalSeconds, {
+    dhtReannounceIntervalSeconds: new FormControl(settings.dhtReannounceIntervalSeconds, {
       nonNullable: true,
     }),
     dhtRefreshIntervalSeconds: new FormControl(settings.dhtRefreshIntervalSeconds, { nonNullable: true }),
@@ -31,14 +31,14 @@ export function networkSettingsPatch(value: {
   dhtEnabled: boolean;
   acceptIncomingConnections: boolean;
   encryptionMode: EncryptionMode;
-  trackerlessDhtReannounceIntervalSeconds: number;
+  dhtReannounceIntervalSeconds: number;
   dhtRefreshIntervalSeconds: number;
 }): Partial<Settings> {
   return {
     dhtEnabled: value.dhtEnabled,
     acceptIncomingConnections: value.acceptIncomingConnections,
     encryptionMode: value.encryptionMode,
-    trackerlessDhtReannounceIntervalSeconds: value.trackerlessDhtReannounceIntervalSeconds,
+    dhtReannounceIntervalSeconds: value.dhtReannounceIntervalSeconds,
     dhtRefreshIntervalSeconds: value.dhtRefreshIntervalSeconds,
   };
 }
@@ -50,7 +50,7 @@ export function networkSettingsPatch(value: {
  * created once, at engine construction - see Settings' own Javadoc and design_docs/0041);
  * encryptionMode is live instead (design_docs/0052) - each row's own description calls out
  * which applies, rather than a single group-level hint that would be wrong for one of them.
- * trackerlessDhtReannounceIntervalSeconds is also live, but only takes effect on a torrent's
+ * dhtReannounceIntervalSeconds is also live, but only takes effect on a torrent's
  * next start() - see Settings.java's own Javadoc (design_docs/0036's own addendum).
  * dhtRefreshIntervalSeconds is live too, but takes effect on the engine's next
  * construction/restart rather than a torrent's next start() - see Settings.java's own Javadoc

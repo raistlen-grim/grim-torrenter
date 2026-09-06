@@ -61,10 +61,12 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -134,6 +136,16 @@ class TorrentSessionTest {
     private static TorrentMetadata singlePieceMetadata(byte[] content) {
         return new SingleFileTorrent("file.bin", content.length, content.length,
                 new PieceHashes(sha1(content)), InfoHash.of(fill(20, 9)), null, List.of());
+    }
+
+    /** BEP 27 - same shape as singlePieceMetadata but with isPrivate true, for tests proving
+     * DHT/PEX are never touched for a private torrent. Distinct info hash from
+     * singlePieceMetadata's so a private-torrent test's DhtNode fixtures never collide with a
+     * non-private test's, even though each test method already uses its own isolated DhtNode
+     * set. */
+    private static TorrentMetadata privateSinglePieceMetadata(byte[] content) {
+        return new SingleFileTorrent("file.bin", content.length, content.length,
+                new PieceHashes(sha1(content)), InfoHash.of(fill(20, 77)), null, List.of(), true);
     }
 
     private static TorrentMetadata twoPieceMetadata(byte[] piece0, byte[] piece1) {
@@ -340,14 +352,48 @@ class TorrentSessionTest {
         assertArrayEquals(content, Files.readAllBytes(tempDir.resolve("file.bin")));
     }
 
-    /** reannounce() is package-private specifically so this can trigger one cycle directly
-     * instead of waiting out the real 30s-minimum scheduled interval. Starts normally
-     * (tracker succeeds, zero peers), then fails the tracker and drives one reannounce -
-     * the DHT-discovered peer should get connected exactly as if it had come from a normal
-     * tracker response, and isDhtBackstopActive() should reflect that. Then simulates the
-     * tracker recovering on the next reannounce and confirms the flag reverts to false -
-     * proving it tracks current reality, not "ever used this session." See
-     * design_docs/0036/0039. */
+    /** BEP 27 counterpart to fallsBackToDhtWhenAllTrackersFailOnStart directly above - same
+     * setup (a peer genuinely is discoverable via DHT for this info hash), but the torrent is
+     * private, so dhtEligible() must exclude it even though dhtNode is configured and healthy.
+     * Proves the private torrent goes straight to ERROR instead of silently getting a DHT
+     * peer-discovery leak the moment its tracker fails - the exact live gap design_docs/0036's
+     * 2026-09-06 revision closed (BEP 27 was never parsed or respected anywhere before it). */
+    @Test
+    void privateTorrentNeverFallsBackToDhtWhenTrackerFails(@TempDir Path tempDir) throws Exception {
+        TorrentMetadata metadata = privateSinglePieceMetadata(fill(20, 1));
+        InfoHash infoHash = metadata.infoHash();
+
+        DhtNode sessionDht = createDhtNode(1);
+        DhtNode dhtResponder = createDhtNode(2);
+        DhtNode peerAnnouncer = createDhtNode(3);
+        sessionDht.routingTable().insert(contactOf(dhtResponder));
+        peerAnnouncer.routingTable().insert(contactOf(dhtResponder));
+        peerAnnouncer.findPeers(infoHash, 6882, false, DHT_TEST_TIMEOUT);
+
+        FakeTrackerClient tracker = new FakeTrackerClient();
+        tracker.failure = new RuntimeException("tracker down");
+        TorrentSession session = TorrentSession.create(
+                metadata, tracker, tempDir, fakeRemotePeerId(), 6881, new RecordingListener(), sessionDht);
+        try {
+            session.start();
+
+            assertEquals(TorrentState.ERROR, session.state());
+            assertFalse(session.isDhtBackstopActive());
+        } finally {
+            session.stop();
+        }
+    }
+
+    /** reannounce() and discoverPeersViaDht() are both package-private specifically so this
+     * can trigger cycles directly instead of waiting out real scheduled intervals. Starts
+     * normally (tracker succeeds, zero peers), fails the tracker and drives one reannounce -
+     * isDhtBackstopActive() should reflect the failure immediately, purely as a tracker-health
+     * signal now (design_docs/0036's own 2026-09-06 revision decoupled it from whether a DHT
+     * lookup actually runs). A separate, directly-triggered discoverPeersViaDht() cycle is
+     * what actually connects the DHT-discovered peer - proving DHT peer discovery no longer
+     * depends on reannounce() at all. Then simulates the tracker recovering on the next
+     * reannounce and confirms the flag reverts to false - proving it tracks current reality,
+     * not "ever failed this session." See design_docs/0036/0039. */
     @Test
     void fallsBackToDhtWhenReannounceFails(@TempDir Path tempDir) throws Exception {
         TorrentMetadata metadata = singlePieceMetadata(fill(20, 1));
@@ -388,14 +434,69 @@ class TorrentSessionTest {
 
             tracker.failure = new RuntimeException("tracker down");
             session.reannounce();
+            assertTrue(session.isDhtBackstopActive());
 
+            session.discoverPeersViaDht();
             List<TorrentSession.PeerSnapshot> peers = awaitOnePeer(session);
             assertEquals(1, peers.size());
             assertEquals(fakePeerAddress, peers.get(0).address());
-            assertTrue(session.isDhtBackstopActive());
 
             tracker.failure = null;
             session.reannounce();
+            assertFalse(session.isDhtBackstopActive());
+        } finally {
+            session.stop();
+        }
+        fakePeer.join(2000);
+    }
+
+    /** The actual new capability design_docs/0036's 2026-09-06 revision adds: DHT peer
+     * discovery concurrent with a perfectly healthy tracker, not just a last-resort backstop
+     * once the tracker has failed. The tracker here never fails and never even offers this
+     * peer itself (FakeTrackerClient's default empty peersToReturn) - the only way this
+     * session ever learns about it is discoverPeersViaDht(), triggered directly the same way
+     * fallsBackToDhtWhenReannounceFails triggers it, but without ever touching tracker.failure
+     * at all. isDhtBackstopActive() staying false throughout is the proof this isn't the
+     * degraded/backstop path - a genuinely healthy tracker session got a DHT-sourced peer. */
+    @Test
+    void discoverPeersViaDhtSupplementsAHealthyTracker(@TempDir Path tempDir) throws Exception {
+        TorrentMetadata metadata = singlePieceMetadata(fill(20, 1));
+        InfoHash infoHash = metadata.infoHash();
+        PeerId remoteId = PeerId.of(fill(20, 50));
+
+        serverSocket = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+        PeerAddress fakePeerAddress = new PeerAddress(InetAddress.getLoopbackAddress(), serverSocket.getLocalPort());
+        Thread fakePeer = new Thread(() -> {
+            try (Socket socket = serverSocket.accept()) {
+                PeerWireCodec.readHandshake(socket.getInputStream());
+                PeerWireCodec.writeHandshake(socket.getOutputStream(), Handshake.of(infoHash, remoteId));
+                Thread.sleep(500); // keep the connection open long enough for the assertion below
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+        fakePeer.start();
+
+        DhtNode sessionDht = createDhtNode(1);
+        DhtNode dhtResponder = createDhtNode(2);
+        DhtNode peerAnnouncer = createDhtNode(3);
+        sessionDht.routingTable().insert(contactOf(dhtResponder));
+        peerAnnouncer.routingTable().insert(contactOf(dhtResponder));
+        peerAnnouncer.findPeers(infoHash, fakePeerAddress.port(), false, DHT_TEST_TIMEOUT);
+
+        FakeTrackerClient tracker = new FakeTrackerClient();
+        TorrentSession session = TorrentSession.create(metadata, tracker, tempDir,
+                fakeRemotePeerId(), 6881, new RecordingListener(), sessionDht);
+        try {
+            session.start();
+            assertEquals(TorrentState.DOWNLOADING, session.state());
+            assertFalse(session.isDhtBackstopActive());
+            assertTrue(session.peers().isEmpty());
+
+            session.discoverPeersViaDht();
+            List<TorrentSession.PeerSnapshot> peers = awaitOnePeer(session);
+            assertEquals(1, peers.size());
+            assertEquals(fakePeerAddress, peers.get(0).address());
             assertFalse(session.isDhtBackstopActive());
         } finally {
             session.stop();
@@ -614,15 +715,150 @@ class TorrentSessionTest {
         fakePeer.join(2000);
     }
 
-    /** Genuinely trackerless (NoOpTrackerClient) - start() itself now performs a real DHT
-     * lookup via startViaDht(), replacing the old external one-shot
-     * TorrentEngine.seedFromDhtIfTrackerless() (removed - see design_docs/0036's own
-     * addendum). Same DHT-over-real-loopback-UDP setup as fallsBackToDhtWhenAllTrackersFailOnStart,
-     * but for the genuinely-trackerless path rather than the tracker-degraded backstop path -
-     * and isDhtBackstopActive() should stay false throughout, since a trackerless torrent
-     * doing DHT lookups is its normal operating mode, not a degradation. */
+    /** The connection-refill fix (design_docs/0017's own 2026-09-06 revision,
+     * design_docs/0036's matching addendum): a failed address must never be retried again
+     * this session, even though the tracker keeps re-offering it on every reannounce - proof
+     * the new failedAddresses set actually excludes it from fillConnections()'s candidate
+     * selection, not just from the one fillConnections() call immediately following its own
+     * failure. badServer accepts the TCP connection (so a real attempt genuinely happens,
+     * counted precisely) but closes immediately without completing the peer-wire handshake,
+     * failing attemptConnect() the same way an unresponsive real peer would. */
     @Test
-    void startViaDhtFindsPeersImmediatelyForATrackerlessTorrent(@TempDir Path tempDir) throws Exception {
+    void failedAddressIsNeverRetriedEvenWhenTheTrackerKeepsOfferingIt(@TempDir Path tempDir) throws Exception {
+        TorrentMetadata metadata = singlePieceMetadata(fill(20, 1));
+
+        ServerSocket badServer = new ServerSocket(0, 5, InetAddress.getLoopbackAddress());
+        PeerAddress badAddress = new PeerAddress(InetAddress.getLoopbackAddress(), badServer.getLocalPort());
+        AtomicInteger attemptCount = new AtomicInteger();
+        Thread badPeer = new Thread(() -> {
+            try {
+                while (true) {
+                    Socket socket = badServer.accept();
+                    attemptCount.incrementAndGet();
+                    socket.close();
+                }
+            } catch (IOException ignored) {
+                // badServer.close() in the test's finally unblocks accept() - expected exit.
+            }
+        });
+        badPeer.start();
+
+        FakeTrackerClient tracker = new FakeTrackerClient();
+        tracker.peersToReturn = List.of(badAddress);
+        TorrentSession session = TorrentSession.create(metadata, tracker, tempDir,
+                fakeRemotePeerId(), 6881, new RecordingListener(), null);
+        try {
+            session.start();
+
+            long deadline = System.currentTimeMillis() + 5000;
+            while (attemptCount.get() < 1 && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10);
+            }
+            assertEquals(1, attemptCount.get());
+
+            // The tracker still offers the same (now-failed) address on this reannounce -
+            // fillConnections() must exclude it via failedAddresses regardless.
+            session.reannounce();
+            Thread.sleep(200);
+            assertEquals(1, attemptCount.get());
+        } finally {
+            session.stop();
+            badServer.close();
+        }
+        badPeer.join(2000);
+    }
+
+    /** Regression test for two real production bugs (both 2026-09-06, both traced to
+     * fillConnections()'s own reactive refill-on-failure): an `OutOfMemoryError` (fixed with
+     * connectionSlots, a Semaphore bounding *total* concurrent attempts) and, once that alone
+     * was deployed, a second bug where the *same* address got attempted over a dozen times
+     * within milliseconds instead of spreading across the known pool (fixed with
+     * inFlightAddresses, claimed atomically at candidate-selection time - see both fields'
+     * own Javadoc). Each fake server loops accepting connections and counts them by port,
+     * closing each one immediately without completing the handshake (failing attemptConnect())
+     * - proves both properties in one pass: peak concurrent attempts never exceeds
+     * MAX_CONNECTIONS (30), and every one of the 60 candidates is attempted *exactly once*,
+     * never zero (every candidate eventually reached) and never more than once (no duplicate/
+     * wasted attempts at an address already claimed or already permanently failed). See
+     * design_docs/0017's own 2026-09-06 revision. */
+    @Test
+    void neverDuplicatesOrExceedsMaxConnectionsEvenUnderABurstOfFailures(@TempDir Path tempDir) throws Exception {
+        TorrentMetadata metadata = singlePieceMetadata(fill(20, 1));
+
+        int candidateCount = 60;
+        List<PeerAddress> candidates = new ArrayList<>();
+        List<ServerSocket> badServers = new ArrayList<>();
+        List<Thread> badPeers = new ArrayList<>();
+        AtomicInteger currentlyOpen = new AtomicInteger();
+        AtomicInteger peakOpen = new AtomicInteger();
+        Map<Integer, AtomicInteger> attemptsByPort = new ConcurrentHashMap<>();
+
+        for (int i = 0; i < candidateCount; i++) {
+            ServerSocket badServer = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+            badServers.add(badServer);
+            int port = badServer.getLocalPort();
+            candidates.add(new PeerAddress(InetAddress.getLoopbackAddress(), port));
+            attemptsByPort.put(port, new AtomicInteger());
+            Thread badPeer = new Thread(() -> {
+                try {
+                    while (true) {
+                        Socket socket = badServer.accept();
+                        attemptsByPort.get(port).incrementAndGet();
+                        int open = currentlyOpen.incrementAndGet();
+                        peakOpen.updateAndGet(peak -> Math.max(peak, open));
+                        // Closes immediately, without completing the peer-wire handshake -
+                        // attemptConnect() fails reading it. Deliberately not held open (unlike
+                        // this file's other single-address tests) - a duplicate attempt racing
+                        // in in this test needs to resolve fast enough that both attempts land
+                        // within the same fillConnections() cascade, not be delayed past it.
+                        socket.close();
+                        currentlyOpen.decrementAndGet();
+                    }
+                } catch (IOException ignored) {
+                    // badServer.close() in the test's finally unblocks accept() - expected exit.
+                }
+            });
+            badPeers.add(badPeer);
+            badPeer.start();
+        }
+
+        FakeTrackerClient tracker = new FakeTrackerClient();
+        tracker.peersToReturn = candidates;
+        TorrentSession session = TorrentSession.create(metadata, tracker, tempDir,
+                fakeRemotePeerId(), 6881, new RecordingListener(), null);
+        try {
+            session.start();
+            // Enough time for every candidate to be attempted and fail, across as many
+            // fillConnections() refill cascades as it takes.
+            Thread.sleep(4000);
+
+            assertTrue(peakOpen.get() <= 30,
+                    "peak concurrent attempts was " + peakOpen.get() + ", expected <= MAX_CONNECTIONS (30)");
+            for (Map.Entry<Integer, AtomicInteger> entry : attemptsByPort.entrySet()) {
+                assertEquals(1, entry.getValue().get(),
+                        "port " + entry.getKey() + " was attempted " + entry.getValue().get() + " time(s), expected exactly 1");
+            }
+        } finally {
+            session.stop();
+            for (ServerSocket badServer : badServers) {
+                badServer.close();
+            }
+        }
+        for (Thread badPeer : badPeers) {
+            badPeer.join(2000);
+        }
+    }
+
+    /** Genuinely trackerless (NoOpTrackerClient) - enterDownloading()'s discoverPeersViaDht()
+     * task, scheduled with a zero initial delay, fires essentially immediately after start()
+     * returns, replacing the old startViaDht()/TorrentEngine.seedFromDhtIfTrackerless()
+     * mechanisms (both removed - see design_docs/0036's own 2026-09-06 revision). Same
+     * DHT-over-real-loopback-UDP setup as fallsBackToDhtWhenAllTrackersFailOnStart, but for
+     * the genuinely-trackerless path rather than the tracker-degraded backstop path -
+     * isDhtBackstopActive() should stay false throughout, since a trackerless torrent's
+     * NoOpTrackerClient never fails. */
+    @Test
+    void discoverPeersViaDhtFindsPeersImmediatelyForATrackerlessTorrent(@TempDir Path tempDir) throws Exception {
         TorrentMetadata metadata = singlePieceMetadata(fill(20, 1));
         InfoHash infoHash = metadata.infoHash();
 
@@ -663,15 +899,17 @@ class TorrentSessionTest {
         fakePeer.join(2000);
     }
 
-    /** Proves the trackerless DHT re-query is genuinely periodic, not the old one-shot lookup -
-     * start()'s own DHT lookup runs before the peer is announced to DHT at all, so it finds
-     * nothing; the peer only becomes discoverable afterwards, and is picked up on a later
-     * scheduled cycle without reannounce() ever being called directly (unlike
-     * fallsBackToDhtWhenReannounceFails, which drives one cycle manually) - a short
-     * trackerlessReannounceIntervalSeconds keeps the test itself fast. See design_docs/0036's
-     * own addendum. */
+    /** Proves discoverPeersViaDht()'s periodic re-query genuinely works on its own schedule,
+     * not just the immediate first tick - that first tick runs before the peer is announced
+     * to DHT at all, so it finds nothing; the peer only becomes discoverable afterwards, and
+     * is picked up on a later scheduled cycle without the task ever being triggered directly
+     * (unlike fallsBackToDhtWhenReannounceFails, which does trigger one cycle manually) - a
+     * short dhtReannounceIntervalSeconds keeps the test itself fast. This also demonstrates
+     * the mechanism is now independent of reannounce()/the tracker entirely - a genuinely
+     * trackerless torrent's NoOpTrackerClient plays no role in finding this peer at all. See
+     * design_docs/0036's own 2026-09-06 revision. */
     @Test
-    void reannounceViaDhtPicksUpANewlyAnnouncedPeerOnALaterCycle(@TempDir Path tempDir) throws Exception {
+    void discoverPeersViaDhtPicksUpANewlyAnnouncedPeerOnALaterCycle(@TempDir Path tempDir) throws Exception {
         TorrentMetadata metadata = singlePieceMetadata(fill(20, 1));
         InfoHash infoHash = metadata.infoHash();
 
@@ -871,6 +1109,60 @@ class TorrentSessionTest {
             // of the actual cause.
             throw new RuntimeException(e);
         }
+    }
+
+    /** BEP 27 counterpart to sendPexUpdatesTellsEachConnectedPeerAboutTheOther above - same
+     * two-fake-peer setup, but the torrent is private. Both fake peers still advertise their
+     * own ut_pex support (proving extensionsToAdvertise() alone - us simply not advertising
+     * support ourselves - isn't what's actually being relied on here); sendPexUpdates() must
+     * still refuse to send anything regardless, which is the critical half of the fix that
+     * doesn't depend on what we advertise (see extensionsToAdvertise()'s own Javadoc). Proven
+     * by bothReceived never counting down within a short bounded wait - runFakePexPeer's
+     * second readUntil(Extended.class) blocks forever otherwise, so absence can only be shown
+     * within a timeout, not by waiting forever for something that (correctly) never arrives. */
+    @Test
+    void privateTorrentNeverSendsPexUpdates(@TempDir Path tempDir) throws Exception {
+        TorrentMetadata metadata = privateSinglePieceMetadata(fill(20, 1));
+        InfoHash infoHash = metadata.infoHash();
+
+        ServerSocket serverA = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+        ServerSocket serverB = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+        PeerAddress addressA = new PeerAddress(InetAddress.getLoopbackAddress(), serverA.getLocalPort());
+        PeerAddress addressB = new PeerAddress(InetAddress.getLoopbackAddress(), serverB.getLocalPort());
+
+        AtomicReference<PexMessage> receivedByA = new AtomicReference<>();
+        AtomicReference<PexMessage> receivedByB = new AtomicReference<>();
+        CountDownLatch bothReceived = new CountDownLatch(2);
+        Thread fakePeerA = new Thread(() -> runFakePexPeer(serverA, infoHash, 5, receivedByA, bothReceived));
+        Thread fakePeerB = new Thread(() -> runFakePexPeer(serverB, infoHash, 7, receivedByB, bothReceived));
+        fakePeerA.start();
+        fakePeerB.start();
+
+        FakeTrackerClient tracker = new FakeTrackerClient();
+        tracker.peersToReturn = List.of(addressA, addressB);
+        TorrentSession session = TorrentSession.create(metadata, tracker, tempDir,
+                fakeRemotePeerId(), 6881, new RecordingListener(), null);
+        try {
+            session.start();
+            long deadline = System.currentTimeMillis() + 5000;
+            while ((!session.hasReceivedExtendedHandshakeFrom(addressA)
+                    || !session.hasReceivedExtendedHandshakeFrom(addressB))
+                    && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10);
+            }
+            assertTrue(session.hasReceivedExtendedHandshakeFrom(addressA));
+            assertTrue(session.hasReceivedExtendedHandshakeFrom(addressB));
+
+            session.sendPexUpdates();
+
+            assertFalse(bothReceived.await(500, TimeUnit.MILLISECONDS));
+        } finally {
+            session.stop();
+        }
+        fakePeerA.join(2000);
+        fakePeerB.join(2000);
+        serverA.close();
+        serverB.close();
     }
 
     /** The receiving half: a connected peer sends us a ut_pex message introducing a third

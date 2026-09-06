@@ -1,6 +1,12 @@
 # 0036 — DHT backstop for tracker-bearing torrents
 
-**Status:** Accepted
+**Status:** Accepted. Superseded in part by this doc's own 2026-09-06 revision below: DHT
+is no longer only a backstop for a tracker-bearing torrent (consulted solely once every
+tracker has failed outright) - it's now a routine concurrent peer source for any non-private
+torrent, alongside whatever a tracker itself already provides. The original backstop
+mechanism this doc describes below is kept for the one thing the revision doesn't replace:
+deciding ERROR vs. DOWNLOADING when a torrent's *very first* announce, on `start()`, fails
+outright with no tracker response to seed peers from at all.
 
 ## Decision
 
@@ -221,3 +227,160 @@ before this addendum, just reached through a different internal path now.
 and friends) only assert `addMagnet()` doesn't throw synchronously, never on
 `seedFromDhtIfTrackerless()`'s specific one-shot behavior, so the removal needed no test
 changes there.
+
+## Revision (2026-09-06): DHT as a concurrent peer source, not just a backstop
+
+**Root-caused via a real side-by-side comparison against qBittorrent** for a public,
+non-private torrent (see `TODO.md`'s own matching Performance entry for the full
+investigation): GrimTorrenter showed 0 connected peers after several minutes despite one
+healthy `WORKING` tracker self-reporting 308 seeders/140 leechers - ruling out "the tracker
+gave us nothing." Added temporary (now permanent, low-risk) DEBUG logging to
+`TorrentSession.attemptConnect()` and confirmed the connection failures themselves were
+ordinary swarm churn (`SocketTimeoutException`, one `EOFException` after a real TCP
+handshake), not a networking-environment problem. The real issue: this doc's own backstop
+model meant DHT was *never* consulted at all as long as that one tracker kept working, so
+the whole candidate pool was ~`NUM_WANT` (50) addresses from a single tracker, refreshed on
+that tracker's own (often hour-plus) interval - confirmed directly in the frontend, where
+the Trackers tab's `DHT` row correctly read `Disabled` for this exact reason (`usesDht` was
+`isTrackerless()`, false here since a tracker exists and works). qBittorrent/libtorrent, by
+contrast, query tracker + DHT + PEX simultaneously for any non-private torrent, giving a
+continuously-growing candidate pool regardless of any one source's health.
+
+**The fix**: DHT peer discovery becomes a routine, independent, periodic concern for *any*
+non-private torrent DHT is eligible for - concurrent with a tracker, not gated by its health
+at all, and not limited to a genuinely trackerless torrent either.
+
+- **New `dhtEligible()`**: `dhtNode != null && !metadata.isPrivate()`. Every DHT touch point
+  in `TorrentSession` now checks this instead of a bare `dhtNode != null` check - see the
+  private-torrent prerequisite below for why.
+- **New `discoverPeersViaDht()`**, package-private (test-triggerable, same rationale as
+  `reannounce()`'s own package-private-for-testing note): an independent scheduled task,
+  added in `enterDownloading()` alongside the existing keepalive/choking/PEX timers, with a
+  **zero initial delay** (unlike every other scheduled task there) and a period of
+  `Settings.dhtReannounceIntervalSeconds` (renamed from `trackerlessDhtReannounceIntervalSeconds`
+  - see below). Runs a `dhtNode.findPeers(...)` call on its own virtual thread per tick (same
+  "never block the shared scheduler thread" reasoning every other DHT call site in this class
+  already followed) and feeds results into the existing `addKnownPeers()`. The zero initial
+  delay replaces the old synchronous `startViaDht()` call's immediacy for a freshly-added
+  trackerless torrent, non-blockingly this time - `start()` no longer blocks on a DHT lookup
+  at all, for any torrent kind.
+- **Three methods retired entirely**: `startViaDht()`, `reannounceViaDht()`, and
+  `reannounceViaDhtBackstop()`. All three existed to reach a DHT lookup from a narrower gate
+  (genuinely trackerless only, or only once a tracker had already failed) - `discoverPeersViaDht()`
+  now covers every one of those cases uniformly, since it runs regardless of tracker kind or
+  health. `start()`/`reannounce()` lost their `trackerClient instanceof NoOpTrackerClient`
+  special-casing entirely as a result: `NoOpTrackerClient.announce()` already always succeeds
+  instantly with zero peers, so it now just flows through the ordinary tracker-success path,
+  harmlessly.
+- **`startViaDhtBackstop()` is the one piece kept as-is**, per the Status line above - it
+  still owns the ERROR-vs-DOWNLOADING decision when `start()`'s very first announce fails
+  outright with no tracker response to seed anything from. `discoverPeersViaDht()` doesn't
+  replace that decision; it only replaces the *ongoing, periodic* DHT-querying role the two
+  retired `reannounceViaDht*` methods used to split between "trackerless" and
+  "tracker-currently-down."
+- **`dhtBackstopActive` decoupled from whether a DHT lookup ran at all** - it's now a pure
+  tracker-health signal, set directly in `reannounce()`'s try/catch (`false` on success,
+  `true` on failure) and in `startViaDhtBackstop()` unchanged. Previously it was only ever
+  set *inside* a DHT-triggering method, conflating "the tracker is down" with "a DHT lookup
+  just happened to run" - now that DHT lookups happen on their own independent schedule
+  regardless of tracker health, that conflation no longer holds.
+- **New public `TorrentSession.usesDht()`** (`= dhtEligible()`), replacing `isTrackerless()`
+  as what `TorrentView.usesDht` reads. `isTrackerless()` itself is unchanged and kept - it's
+  a genuinely distinct concept ("does this torrent have zero trackers at all") that can now
+  diverge from "is DHT actually contributing peers" (a private trackerless torrent, or a
+  tracker-bearing torrent with DHT globally disabled, are both cases where the two answers
+  differ). The frontend's `usesDht` computed signal in `trackers-tab.ts` simplified to read
+  the backend field directly, dropping its old `|| torrent.dhtBackstopActive` OR - that OR
+  existed specifically to cover the tracker-degraded case under the old model, which
+  `usesDht` (now `dhtEligible()`-backed) already covers on its own.
+- **`Settings.trackerlessDhtReannounceIntervalSeconds` renamed to `dhtReannounceIntervalSeconds`**
+  (and its default constant similarly), reflecting its broadened scope - confirmed with the
+  user as worth the one-time cost of any customized value silently resetting to the 300s
+  default on upgrade, over keeping a name that would otherwise say "trackerless" forever for
+  a field that now drives DHT reannounce for every eligible torrent. Confirmed with the user
+  to reuse this single field/interval for both the trackerless and tracker-bearing cases
+  rather than adding a second knob - simplest option, matching "don't add config beyond
+  what's needed."
+
+### Prerequisite closed in the same change: BEP 27 "private" flag support
+
+Surfaced while scoping this revision: **the private flag was never parsed anywhere in this
+codebase.** Latent while DHT was rarely used for a tracker-bearing torrent; a real, live
+regression risk once DHT becomes routine - a private-tracker torrent would otherwise start
+getting DHT-announced and PEX-gossiped, which real private trackers treat as a bannable
+offense. Confirmed with the user to fold this into the same change rather than sequence it
+separately, since shipping DHT concurrency without it would itself be a regression.
+
+- **`TorrentMetadata.isPrivate()`** (new interface method), backed by a new trailing
+  `isPrivate` component on `SingleFileTorrent`/`MultiFileTorrent`, parsed by
+  `MetainfoParser` from the info dict's `private` key (BEP 27) - tolerant of any nonzero
+  value, not just exactly `1`, so a malformed writer doesn't accidentally leak a torrent
+  clearly meant to be private. Both records gained a lower-arity constructor defaulting
+  `isPrivate` to `false`, so every existing call site (all in tests) needed no changes.
+- **PEX gated two ways**, both necessary: `extensionsToAdvertise()` (replacing the old static
+  `EXTENSIONS_TO_ADVERTISE` constant, now `PEX_EXTENSION_TO_ADVERTISE`) returns `Map.of()` for
+  a private torrent, so a well-behaved peer never even learns we support `ut_pex`; separately,
+  `sendPexUpdates()` now returns immediately for a private torrent regardless, since whether
+  *we* send a peer PEX data depends only on whether *they* advertised support in *their own*
+  handshake - completely independent of what we advertise - so the first gate alone isn't
+  sufficient. `handleExtended()` also ignores any incoming PEX message for a private torrent,
+  belt-and-suspenders against an adversarial peer sending one unsolicited anyway.
+- **`onPeerAnnouncedDhtPort()`'s routing-table ping is deliberately left ungated** - it only
+  strengthens this process's general DHT routing table and never queries or announces
+  anything about the specific torrent's info hash, so it carries no privacy leak regardless
+  of that torrent's private flag.
+- **Not addressed**: a trackerless magnet's metadata-fetch-time DHT usage
+  (`TorrentEngine`'s `fetchMagnetMetadataViaDhtThenAdd`) necessarily queries DHT for the
+  magnet's info hash *before* the info dict - and therefore the private flag - is even known.
+  A trackerless magnet that turns out to be private is a contradiction in terms in practice
+  (no tooling mints one), so this unavoidable one-time bootstrap exposure is accepted rather
+  than solved.
+
+### Stability ([[0051-stability-as-a-standing-consideration]])
+
+- **No new unbounded growth**: `discoverPeersViaDht()` adds one more per-torrent scheduled
+  task, same shape (and same `DHT_QUERY_TIMEOUT`-bounded lookup) as every other scheduled
+  task this class already runs per torrent - not a new category of resource, just one more
+  fixed-rate timer alongside keepalive/choking/PEX/reannounce.
+- **No new concurrency pattern**: runs on its own virtual thread per tick, exactly like the
+  retired `reannounceViaDht*` methods did - multiple torrents' independent DHT lookups
+  running concurrently against the one shared `DhtNode` already had to work correctly before
+  this change (see this doc's original Stability section above).
+- **Hostile-peer/tracker angle**: DHT lookups now happen more often, in aggregate, across a
+  process's whole torrent set (every eligible torrent, not just degraded/trackerless ones) -
+  bounded the same way as before, by `dhtReannounceIntervalSeconds`'s own no-unlimited-value
+  normalization and each lookup's fixed `DHT_QUERY_TIMEOUT`. The BEP 27 fix closes a real
+  hostile-*network*-angle regression (private-swarm membership leaking to DHT/PEX) that this
+  same revision would otherwise have introduced.
+- **Cleanup unaffected**: `shutdownNetworking()`'s existing `scheduler.shutdownNow()` already
+  cancels whatever's scheduled regardless of how many scheduled tasks a session has - no new
+  exit path to account for.
+
+### Testing
+
+`TorrentSessionTest`: the two trackerless-DHT cases from the section above were renamed
+(`discoverPeersViaDhtFindsPeersImmediatelyForATrackerlessTorrent`,
+`discoverPeersViaDhtPicksUpANewlyAnnouncedPeerOnALaterCycle`) and their doc comments updated
+to describe the new mechanism - both still pass unchanged behaviorally, since
+`discoverPeersViaDht()`'s zero-initial-delay first tick and later scheduled ticks cover
+exactly what `startViaDht()`/`reannounceViaDht()` used to. `fallsBackToDhtWhenReannounceFails`
+was restructured: `reannounce()` alone no longer triggers a DHT lookup, so the test now
+asserts `isDhtBackstopActive()` immediately after a failed `reannounce()` (proving the
+decoupled tracker-health signal), then separately triggers `discoverPeersViaDht()` directly
+to get the DHT-discovered peer connected. New cases:
+
+- `discoverPeersViaDhtSupplementsAHealthyTracker` - the actual new capability: a tracker that
+  never fails and never itself offers a DHT-discoverable peer, with `discoverPeersViaDht()`
+  triggered directly finding and connecting to that peer anyway, `isDhtBackstopActive()`
+  staying `false` throughout - proof this isn't the degraded/backstop path.
+- `privateTorrentNeverFallsBackToDhtWhenTrackerFails` - the BEP 27 counterpart to
+  `fallsBackToDhtWhenAllTrackersFailOnStart`: same DHT-discoverable-peer setup, but a private
+  torrent goes straight to `ERROR` instead, since `dhtEligible()` excludes it even with a
+  healthy `dhtNode` and a real peer available.
+- `privateTorrentNeverSendsPexUpdates` - the BEP 27 counterpart to
+  `sendPexUpdatesTellsEachConnectedPeerAboutTheOther`: both fake peers still advertise their
+  own `ut_pex` support (proving `extensionsToAdvertise()` alone isn't what's relied on),
+  `sendPexUpdates()` still sends nothing, shown by the receiving latch never counting down
+  within a bounded wait.
+
+`MetainfoParserTest` gained `parsesPrivateFlag` and `isPrivateDefaultsToFalseWhenAbsent`.

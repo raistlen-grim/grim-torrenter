@@ -41,17 +41,17 @@
 
   <div class="settings-row">
     <div class="settings-row-label">
-      <label for="trackerlessDhtReannounceIntervalSeconds">Trackerless DHT re-query</label>
+      <label for="dhtReannounceIntervalSeconds">DHT re-query</label>
       <p class="settings-row-description">
-        How often to re-announce to the DHT network. Takes effect the next time that torrent
-        starts, not instantly.
+        How often each torrent re-queries the DHT network for peers, alongside its tracker(s)
+        if it has any. Takes effect the next time that torrent starts, not instantly.
       </p>
     </div>
     <div class="settings-row-control">
       <p-inputgroup class="settings-number-group">
         <p-inputnumber
-          inputId="trackerlessDhtReannounceIntervalSeconds"
-          formControlName="trackerlessDhtReannounceIntervalSeconds"
+          inputId="dhtReannounceIntervalSeconds"
+          formControlName="dhtReannounceIntervalSeconds"
           [min]="1"
           [showButtons]="false"
           inputStyleClass="settings-number-input"
