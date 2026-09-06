@@ -10,6 +10,69 @@ nothing here gets acted on until it's explicitly picked up.
   `@primeuix/themes`, the maintained replacement.~~ **Done (2026-09-03)** - see
   `design_docs/0032`'s own addendum. Only `npm install` (to catch up the lockfile) remains,
   left for the user per this project's "builds run manually" convention.
+## Performance: peer/seed count gap vs qBittorrent
+
+Real user report (2026-09-06): the same torrent shows far fewer peers/seeds in
+GrimTorrenter than in qBittorrent on the same system, and the Trackers tab only ever
+shows one tracker as working — every other declared tracker sits at "Not yet
+announced" indefinitely. Working through these one at a time rather than jumping
+straight to a libtorrent-rasterbar comparison. Both test torrents are public
+(non-private), from a popular torrent site.
+
+**Confirmed root cause #1 (2026-09-06)**: a real side-by-side comparison for one
+torrent - qBittorrent showed 29/305 seeds, 7/174 peers connected/known, 122 [sic -
+GrimTorrenter's own DHT node count, separately confirmed] vs. qBittorrent's 360 total
+DHT nodes; GrimTorrenter showed 0 connected peers after several minutes, one working
+tracker (`udp://tracker.opentrackr.org:1337/announce`, self-reporting a healthy
+308 seeders/140 leechers via its own announce response - ruling out "the tracker gave
+us nothing"). Added temporary DEBUG logging to `TorrentSession.attemptConnect()`
+(kept, low-risk, matches the existing DEBUG-tolerance pattern elsewhere in that class)
+confirmed the connection attempts themselves are failing the *normal* way (mostly
+`SocketTimeoutException`, one `EOFException` after a real TCP handshake succeeded) -
+not a Docker networking block, just ordinary swarm churn where most tracker-supplied
+addresses are unreachable at any given moment. The real problem: GrimTorrenter's
+candidate pool is far too small to absorb that normal attrition, because:
+- **DHT is only a backstop for tracker-bearing torrents, never a concurrent peer
+  source** (design_docs/0036) - only consulted once *every* tracker fails. Confirmed:
+  this torrent's Trackers tab also showed "DHT Disabled" for exactly this reason (the
+  UI's `usesDht` label is accurate, not a separate bug - it's `isTrackerless()`, which
+  is false here since a tracker exists and works). qBittorrent/libtorrent query
+  tracker + DHT + PEX simultaneously for any non-private torrent, giving a
+  continuously-growing pool; GrimTorrenter's pool here was ~50 candidates from one
+  tracker, refreshed roughly hourly (that tracker's own announce interval).
+  **In progress**: making DHT a concurrent source for any non-private torrent (not
+  just trackerless/backstop) - revises design_docs/0036. Prerequisite surfaced along
+  the way: BEP 27's "private" flag was never parsed anywhere in this codebase, so
+  before DHT/PEX can run unconditionally they need a real gate to respect it (a
+  private-tracker torrent must never be DHT/PEX-exposed) - folded into the same piece
+  of work rather than done separately.
+
+**Confirmed root cause #2 (2026-09-06)**: a qBittorrent trackers-tab screenshot for
+the same torrent shows tiers 0, 2, 3, 4, 6, 7, 8, and 12 *all* independently
+"Working," each with its own distinct, non-duplicate seed/peer/leech count (e.g.
+397/230/174 for tracker.renfei.net vs. 200/309/139 for opentrackr) - proving
+qBittorrent/libtorrent does not implement strict "stop at the first working tracker"
+BEP 12 fallback the way `MultiTrackerClient` (design_docs/0022) does. It announces to
+every reachable tracker independently, every cycle, and aggregates - the same
+concurrent-sources-not-fallback-chain pattern as the DHT item above, just applied to
+trackers. Raises this item's priority: it's not just "maybe diminishing returns" (the
+original open question), it's a confirmed real contributor for this torrent
+specifically. Sequencing decision (2026-09-06): land the DHT-concurrency work first,
+then revisit this as a follow-up rather than bundling both into one change.
+  - **UI idea to fold in when this is picked up** (2026-09-06, from a qBittorrent
+    screenshot): qBittorrent's own trackers tab also lists DHT/PeX/LSD as rows
+    alongside real trackers, each with its own peer/seed/leech counts. Worth
+    considering a similar reshape here once tracker concurrency lands - a summary
+    panel (aggregate counts, mirroring the current collapsed "N trackers working"
+    line) plus a new detail view listing every individual tracker's own live
+    seeders/leechers/peers (data already captured in `TrackerStatus` - see
+    `design_docs/0031` - just never surfaced for a working tracker today, only
+    hidden in a tooltip on non-working ones).
+- DHT routing-table sparseness — see the existing item below (21 vs. 379 node case).
+  Revisit as part of this investigation: a sparse table would compound the item above.
+- No LSD implementation — see the existing item below. Minor, LAN-only contributor,
+  low priority relative to the two items above.
+
 - **DHT service status doesn't distinguish "healthy" from "bootstrapped but sparse."** —
   **Done (2026-09-01)**, see `design_docs/0059`'s own DEGRADED-state addendum:
   `TorrentEngine.serviceStatuses()` now reports `DEGRADED` (not `RUNNING`) whenever

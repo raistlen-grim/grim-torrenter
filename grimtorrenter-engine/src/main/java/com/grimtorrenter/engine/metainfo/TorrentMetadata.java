@@ -18,6 +18,12 @@ public sealed interface TorrentMetadata permits SingleFileTorrent, MultiFileTorr
     /** Tiers per BEP 12; empty if the torrent has no announce-list. */
     List<List<String>> announceList();
 
+    /** BEP 27's "private" flag (info dict, value 1) - true means peer discovery for this
+     * torrent must stay confined to whatever the tracker(s) coordinate: no DHT, no PEX, no
+     * local peer discovery. False (including every torrent predating this field's addition,
+     * via the lower-arity constructor on each implementation) means no restriction. */
+    boolean isPrivate();
+
     default long totalLength() {
         return switch (this) {
             case SingleFileTorrent s -> s.length();

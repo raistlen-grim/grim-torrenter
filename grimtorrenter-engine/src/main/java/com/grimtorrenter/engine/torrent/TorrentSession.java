@@ -865,7 +865,12 @@ public final class TorrentSession implements AutoCloseable {
             connections.add(connection);
             onPeerConnected(connection);
         } catch (IOException | RuntimeException e) {
-            // Most tracker-provided addresses are unreachable - this is the common case, not exceptional.
+            // Most tracker-provided addresses are unreachable - this is the common case, not exceptional -
+            // but silently swallowing every failure left no way to tell that apart from a systemic
+            // connection-layer problem (e.g. every attempt failing) without this. DEBUG, not WARNING -
+            // still the expected common case, just now observable when needed.
+            LOG.log(System.Logger.Level.DEBUG, "Connection attempt to " + address + " for "
+                    + metadata.infoHash() + " failed: " + e, e);
         }
     }
 

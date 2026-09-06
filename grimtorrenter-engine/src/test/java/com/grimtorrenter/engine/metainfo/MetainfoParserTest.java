@@ -134,6 +134,30 @@ class MetainfoParserTest {
     }
 
     @Test
+    void parsesPrivateFlag() {
+        BDictionary info = new BDictionary(Map.of(
+                BString.of("name"), BString.of("x"),
+                BString.of("piece length"), new BInteger(16384),
+                BString.of("pieces"), BString.of(fakePieceHashes(1)),
+                BString.of("length"), new BInteger(1),
+                BString.of("private"), new BInteger(1)));
+        BDictionary top = new BDictionary(Map.of(BString.of("info"), info));
+
+        TorrentMetadata metadata = MetainfoParser.parse(BencodeEncoder.encode(top));
+
+        assertEquals(true, metadata.isPrivate());
+    }
+
+    @Test
+    void isPrivateDefaultsToFalseWhenAbsent() {
+        BDictionary top = new BDictionary(Map.of(BString.of("info"), minimalInfo()));
+
+        TorrentMetadata metadata = MetainfoParser.parse(BencodeEncoder.encode(top));
+
+        assertEquals(false, metadata.isPrivate());
+    }
+
+    @Test
     void rejectsMissingInfoDictionary() {
         BDictionary top = new BDictionary(Map.of(BString.of("announce"), BString.of("http://x")));
         byte[] bytes = BencodeEncoder.encode(top);

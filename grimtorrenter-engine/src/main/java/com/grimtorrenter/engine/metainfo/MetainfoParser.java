@@ -43,15 +43,16 @@ public final class MetainfoParser {
 
         String announce = optionalString(top, "announce");
         List<List<String>> announceList = parseAnnounceList(top);
+        boolean isPrivate = parsePrivateFlag(info);
 
         BValue filesValue = info.get("files");
         if (filesValue == null) {
             long length = requireLong(info, "length");
-            return new SingleFileTorrent(name, length, pieceLength, pieces, infoHash, announce, announceList);
+            return new SingleFileTorrent(name, length, pieceLength, pieces, infoHash, announce, announceList, isPrivate);
         }
 
         List<TorrentFile> files = parseFiles(filesValue);
-        return new MultiFileTorrent(name, files, pieceLength, pieces, infoHash, announce, announceList);
+        return new MultiFileTorrent(name, files, pieceLength, pieces, infoHash, announce, announceList, isPrivate);
     }
 
     private static byte[] sha1(byte[] data) {
@@ -95,6 +96,14 @@ public final class MetainfoParser {
             throw new MetainfoException("Field '" + key + "' expected to be a string");
         }
         return s.utf8();
+    }
+
+    /** BEP 27: "private", an optional integer in the info dict, 1 meaning private. Tolerates
+     * any nonzero value as private rather than requiring exactly 1 - a malformed writer
+     * putting e.g. "true"'s bencode equivalent in an integer field shouldn't accidentally
+     * leak a torrent that was clearly meant to be private. Absent or zero means public. */
+    private static boolean parsePrivateFlag(BDictionary info) {
+        return info.get("private") instanceof BInteger i && i.value() != 0;
     }
 
     private static List<List<String>> parseAnnounceList(BDictionary top) {
