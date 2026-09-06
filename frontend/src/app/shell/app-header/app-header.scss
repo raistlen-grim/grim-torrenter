@@ -19,6 +19,14 @@
   text-transform: uppercase;
 }
 
+/* .display-font (styles.scss) only sets font-family - design_docs/0032 always earmarked Cinzel
+ * for this wordmark specifically ("available for whichever future work touches the header"),
+ * finally used here; weight set explicitly since Cinzel's guide usage elsewhere (settings-page)
+ * is 600, not the browser's normal-weight default. */
+.wordmark .display-font {
+  font-weight: 600;
+}
+
 /* STYLE_GUIDE_NOTES.md's constructed skull mark (shared/skull-mark) - font-size-driven, so
  * this sets the font-size that determines its rendered size (previously a hardcoded
  * 13px/17px) rather than sizing the mark directly. --void is the one thing every call site

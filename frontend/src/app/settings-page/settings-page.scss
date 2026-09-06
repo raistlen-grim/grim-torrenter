@@ -10,18 +10,17 @@
   flex-direction: column;
   flex: 1;
   min-height: 0;
-  /* Wide enough for .settings-nav's fixed 208px column plus a content pane matching the
-   * original single-column page's own ~640px reading width. */
-  max-width: 900px;
+  /* Shared with Events/Services (2026-09-05) so all three page frames render at the same
+   * width rather than each page picking its own - see design_docs/0045's own addendum for the
+   * sizing reasoning (Events' 3-column row needs more room than Settings' own form content
+   * alone would call for). */
+  max-width: 1100px;
 }
 
-/* .display-font (styles.scss) only sets font-family - font-weight is set here explicitly
- * since the guide's own Cinzel headings are 600, not the browser's bold-by-default h1/h2. */
+/* Margin/size/weight now come from the shared global `h1.display-font` (styles.scss), once
+ * Events/Services needed to match exactly - flex: none stays here, specific to this page's own
+ * flex-column layout (:host above). */
 h1 {
-  margin: 0 0 var(--space-6);
-  font-weight: 600;
-  font-size: 25px;
-  letter-spacing: 0.02em;
   flex: none;
 }
 
@@ -96,10 +95,12 @@ h1 {
  * .settings-nav beside it (which stays fully visible - it's short and is how the user gets to
  * the other groups) and of .save-bar below (pinned, not part of this scroll region at all -
  * see :host's own comment). */
+/* Padding/background come from the shared global `.page-frame` (styles.scss) - consolidated
+ * there once Events/Services needed the identical treatment (2026-09-05 rollout); flex/scroll
+ * behavior stays here since those are specific to this page's own pinned-footer layout. */
 .settings-content {
   flex: 1;
   min-width: 0;
-  padding: 22px 28px 28px;
   overflow-y: auto;
 }
 

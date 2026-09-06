@@ -188,12 +188,19 @@ p-tablist {
  * measured against the active tab's own geometry (e.g. via ResizeObserver) - a real structural
  * change, not a one-line motion tweak, so flagged here rather than silently built or silently
  * skipped; left for a future pass if the crossfade doesn't read as intended live. */
+/* design_docs/0032: --font-heading is "sub-headings and control labels" - a tab label
+ * qualifies, so this and font-weight apply here; .tab-count below explicitly resets both back
+ * to the body font/default weight, since its live count is data, not a label, and would
+ * otherwise inherit this rule along with the bare "Files"/"Peers"/etc. text node it sits
+ * beside. */
 p-tab {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   padding: 9px 11px;
   cursor: pointer;
+  font-family: var(--font-heading);
+  font-weight: 600;
   font-size: 12.5px;
   letter-spacing: 0.04em;
   color: inherit;
@@ -206,6 +213,8 @@ p-tab[data-p-active='true'] {
 }
 
 .tab-count {
+  font-family: var(--font-body);
+  font-weight: 400;
   font-size: 11px;
   opacity: 0.55;
 }

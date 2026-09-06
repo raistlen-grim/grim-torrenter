@@ -277,3 +277,53 @@ widths) was still present after the initial rollout (fixing only the *input* to 
 addon free to size itself to "seconds" vs. "peers" vs. "connections"), flagged live by the user.
 84px comfortably fits "connections," the longest unit word in use; `text-align: center` so
 shorter units don't look flush against the divider with empty trailing space.
+
+## 2026-09-05 addendum: the two treatments extended to Events and Services
+
+Once Settings' redesign was confirmed live, the user asked for the same visual language on the
+rest of the app "where appropriate" - scoped deliberately, not a blanket site-wide pass (see
+`TODO.md`'s own corner-mark rollout item). Landed on Events and Services specifically; the
+torrent list's full-bleed layout ([[0043-app-shell-and-filtering]]) stays untouched - reversing
+that deliberate decision was treated as a separate, bigger call the user didn't ask for here.
+
+**Cinzel (`.display-font`) now on three things**: the app header's wordmark (`design_docs/0032`
+always earmarked this exact spot - "available... for whichever future work touches the header,"
+never used until now), and Events'/Services' own page titles, matching Settings'. Consolidated
+into one global `h1.display-font` rule (`styles.scss`) rather than three components each
+carrying their own copy of the same margin/size/weight - the user confirmed Settings' original
+25px/600-weight sizing as the reference once asked, so that's what the shared rule uses.
+`torrent-detail`'s own `<h1>` (the torrent's filename) is correctly excluded - `design_docs/0032`
+already ruled that out ("filenames are data, never display type, never Cinzel"), unrelated to
+this rollout.
+
+**`.blueprint` frame added to Events and Services**, each now a bordered `.page-frame` (a new
+shared global class - the padding/background Settings' own `.settings-content` already used,
+consolidated once a second and third page needed the identical treatment) wrapping their
+existing list markup, with the same 4-corner-mark markup pattern Settings uses. Neither page had
+any bordered panel before this - they were plain full-width lists - so this is a real new layout
+element for them, not just a decoration swap.
+
+**All three pages share one `:host { max-width: 1100px }`**, picked deliberately over reusing
+Settings' original 900px. Settings' 900px was sized for its own two-column layout (a 208px nav
+plus a content pane calibrated to a ~640px form-reading width); applying that same total width
+to Events/Services (which have no nav column) would still have left them a wider content pane
+than Settings' own (896px vs. 636px) since they don't spend width on a sidebar, but Events'
+3-column row (a 120px fixed time column, a 190px fixed type column, plus a body column that
+needs real room for long torrent names) plus its own frame padding wanted more headroom than
+that math alone suggested was safe, flagged by the user before implementing rather than assumed.
+1100px gives Events/Services a ~1016px content pane and Settings a ~836px one - Settings' rows
+end up a bit more spread out than the original 636px calibration (label max-width stays 48ch, so
+the extra room just shows as more empty space before the fixed-width control side), a deliberate,
+discussed tradeoff rather than an oversight.
+
+**The torrent list stays the deliberate exception, full stop - no frame, no shared width, no
+new heading.** Considered and rejected extending the `.blueprint` frame or the shared 1100px
+width here: its full-bleed `:host` ([[0043-app-shell-and-filtering]]) isn't legacy styling, it's
+load-bearing - the docked detail panel needs to reach the browser's true right edge, and the
+list/panel scroll independently of each other, both of which depend on this page opting out of
+`.shell-main`'s normal layout entirely. It's also the app's one genuinely wide multi-column
+table, where the guide's own "density is respect" principle argues for more width, not less.
+A `<h1 class="display-font">Torrents</h1>` was added and then reverted the same session - the
+user's "keep it consistent" ask turned out to mean font usage generally, not a new page-level
+heading on a page that never had one; this page still has no page-level heading, by design (the
+toolbar is its only chrome).

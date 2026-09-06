@@ -138,6 +138,18 @@ body {
   font-family: var(--font-display);
 }
 
+/* Page-title sizing, shared so Settings/Events/Services (and any future page title) match
+ * exactly rather than each page guessing its own margin/size - Settings' own values (2026-09-04)
+ * kept as the reference size once the user confirmed they liked it. font-weight explicit since
+ * .display-font itself only sets font-family. Scoped to h1.display-font, not a blanket h1
+ * selector - .display-font is also used for non-h1 things elsewhere (the header wordmark). */
+h1.display-font {
+  margin: 0 0 var(--space-6);
+  font-weight: 600;
+  font-size: 25px;
+  letter-spacing: 0.02em;
+}
+
 /* Every rate, size, and count - anything that ticks - uses this so columns don't jitter. */
 .tabular-nums {
   font-variant-numeric: tabular-nums;
@@ -292,6 +304,15 @@ body {
 .blueprint > .corner.br {
   bottom: -6px;
   right: -6px;
+}
+
+/* A plain content pane inside a `.blueprint` frame - same padding/background
+ * `.settings-content` (settings-page.scss) already uses, shared here since Events and Services
+ * (2026-09-05 rollout) need the identical treatment and it'd otherwise just be duplicated
+ * per-component .scss, the exact drift the settings redesign existed to avoid. */
+.page-frame {
+  padding: 22px 28px 28px;
+  background: var(--color-surface);
 }
 
 /* The row shell: every settings row, any group, is label/description on the left and one of

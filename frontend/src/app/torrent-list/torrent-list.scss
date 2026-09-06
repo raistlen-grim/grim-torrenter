@@ -167,7 +167,12 @@ th {
   letter-spacing: 0.08em;
 }
 
+/* design_docs/0032: --font-heading is "sub-headings and control labels" - a column header
+ * qualifies (and has no live data mixed into the same element, unlike the sidebar nav/tab
+ * labels, so no sibling needs excluding here). */
 .header-label {
+  font-family: var(--font-heading);
+  font-weight: 600;
   opacity: 0.55;
 }
 
@@ -179,6 +184,8 @@ th {
   border: none;
   padding: 0;
   font: inherit;
+  font-family: var(--font-heading);
+  font-weight: 600;
   color: inherit;
   cursor: pointer;
   opacity: 0.55;

@@ -47,7 +47,9 @@ nothing here gets acted on until it's explicitly picked up.
 - Multi-select on the torrent list — checkboxes (or shift/ctrl-click) to select several rows
   at once, then bulk Pause/Resume/Remove across the selection, rather than one row (or the
   existing global Pause all/Resume all) at a time.
-- Roll the blueprint registration-mark corner treatment out to other panels/cards app-wide
-  (torrent list, torrent detail drawer, Services, Events) — added to the Settings page's frame
-  first (2026-09-04, `design_docs/0032`'s own addendum), scoped there for now rather than
-  site-wide.
+- ~~Roll the blueprint registration-mark corner treatment out to other panels/cards
+  app-wide.~~ **Done for Events/Services (2026-09-05)** — see `design_docs/0045`'s own
+  2026-09-05 addendum. Torrent list and torrent-detail deliberately excluded, not deferred:
+  the torrent list's full-bleed layout is load-bearing for the docked detail panel
+  (`design_docs/0043`), and both are dense multi-column/data views where the guide's own
+  "density is respect" principle argues against a narrower framed treatment.

@@ -1244,3 +1244,36 @@ decided.
 app-wide (torrent list, torrent detail drawer, Services, Events) where it fits, now that Settings
 will be the first real example to check it against - unscoped and not committed to, the same
 "come back to it" treatment every other `TODO.md` item gets.
+
+## 2026-09-05 addendum: `--font-heading` gap closed on nav/tab/column-header labels
+
+Prompted by the user asking whether the app's 3-font-role system should really be 3 fonts at
+all, or was drift toward one. A full audit (every `.heading-font`/`.display-font` usage, every
+direct `font-family` declaration, every known data-value rendering spot) found no wrong usage
+anywhere and no data value ever rendered in the wrong role - the "filenames are data, never
+Cinzel" rule specifically was intact everywhere it applies, including a deliberate `monospace`
+exception for tracker URLs/peer addresses (`trackers-tab.scss`/`peers-tab.scss`) that's outside
+the 3-role system on its own separate, reasonable grounds.
+
+The one real, systemic gap: `--font-heading`'s documented role is "sub-headings *and control
+labels*," but in practice it had only ever been used for section headings/legends - the app's
+nav/tab/column-header surfaces (structurally the same kind of "control label" a settings-group
+legend already used it for) had always defaulted to plain body font instead, until this session's
+new Settings nav (`settings-page.scss`'s `.nav-item`) became the first thing to actually follow
+the documented rule. Closed rather than left as a newly-discovered inconsistency (user's explicit
+call): the main sidebar's nav labels (`app-sidebar.scss`'s `.nav-label`), torrent-detail's own
+tab labels (`torrent-detail.scss`'s `p-tab`), and the torrent list's sortable column headers
+(`torrent-list.scss`'s `.sort-header`/`.header-label`) all now carry `font-family:
+var(--font-heading); font-weight: 600;` directly (matching the existing convention of a hardcoded
+declaration rather than adding a `.heading-font` class to already-established markup, the same
+technique `settings-page.scss`'s own `.nav-item` already used).
+
+**Scoped carefully around live data mixed into the same element** - the sidebar's `.nav-count`
+and torrent-detail's `.tab-count` (both live numbers sitting beside a label in the same parent)
+would otherwise have inherited the new heading-font/600-weight styling along with the label text
+next to them, which is exactly the "data value rendered in the wrong role" mistake this whole
+audit was checking for elsewhere. `.nav-label` (not `.nav-item`) is what actually got the new
+rule, so `.nav-count` is untouched; `.tab-count` needed an explicit reset back to `var(--font-
+body)`/400 weight, since its bare-text sibling ("Files"/"Peers"/etc.) has no wrapping element of
+its own to scope the new rule to instead. Torrent list's column headers have no such sibling data
+in the same element, so `.sort-header`/`.header-label` needed no equivalent carve-out.
