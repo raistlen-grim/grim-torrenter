@@ -44,7 +44,10 @@ export function trackerStateDisplay(state: TrackerState): StatusDisplay {
  * that same reason. MAGNET_ADD_FAILED (design_docs/0060) is likewise 'alarm' - the real
  * failure reason lives in the event's own message field (torrentName is always null for this
  * type, see EventType's own Javadoc), which the Events page template already renders as
- * plain text. */
+ * plain text. TRACKER_UNREACHABLE is 'alarm' like every other reachability problem in this
+ * table; TRACKER_RECOVERED is 'active' like COMPLETED/SERVER_STARTED - genuinely good news,
+ * not routine. Both fold the specific tracker URL into the message field rather than the
+ * label, matching MAGNET_ADD_FAILED's own precedent for per-instance detail. */
 const EVENT_TYPE_DISPLAY: Record<EventType, StatusDisplay> = {
   ADDED: { icon: 'pi-plus-circle', label: 'Added', tone: 'active' },
   COMPLETED: { icon: 'pi-check-circle', label: 'Completed', tone: 'active' },
@@ -55,6 +58,8 @@ const EVENT_TYPE_DISPLAY: Record<EventType, StatusDisplay> = {
   DHT_UNAVAILABLE: { icon: 'pi-sitemap', label: 'DHT unavailable', tone: 'alarm' },
   PEER_SERVER_UNAVAILABLE: { icon: 'pi-sign-in', label: 'Peer server unavailable', tone: 'alarm' },
   MAGNET_ADD_FAILED: { icon: 'pi-link', label: 'Magnet add failed', tone: 'alarm' },
+  TRACKER_UNREACHABLE: { icon: 'pi-wifi', label: 'Tracker unreachable', tone: 'alarm' },
+  TRACKER_RECOVERED: { icon: 'pi-wifi', label: 'Tracker recovered', tone: 'active' },
 };
 
 export function eventTypeDisplay(type: EventType): StatusDisplay {

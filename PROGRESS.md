@@ -392,6 +392,17 @@ complete**, per the phased scope in [[0009-phased-scope]]:
   `navigator.clipboard` is unavailable - used at both call sites. A repo-wide grep for every
   other secure-context-gated API (service worker, geolocation, media devices, WebAuthn, share,
   Bluetooth/USB/HID, wake lock, `crypto.subtle`/`getRandomValues`) turned up nothing else.
+- **`TRACKER_UNREACHABLE`/`TRACKER_RECOVERED` library events (2026-09-06)** — picked from
+  `PROGRESS.md`'s own "Known gaps" list, the tracker-events half of [[0055-library-events]]'s
+  originally-deferred pair (`MAGNET_RESOLVED` remains deferred). A new engine-only
+  `TrackerStatusListener` callback on `TrackedTrackerClient` (the one place with a genuine
+  before/after view of a single tracker's own status — `MultiTrackerClient` only aggregates),
+  debounced against flapping: `TRACKER_UNREACHABLE` fires only after 2 consecutive failed
+  reannounce cycles with no intervening success, `TRACKER_RECOVERED` fires on the very next
+  success once unreachability was actually reported — asymmetric on purpose, confirmed with the
+  user. Wired only for a torrent's own persistent tracker client (`addTorrent()`/`restoreOne()`),
+  deliberately not the throwaway tracker client used to probe candidates during magnet metadata
+  resolution. ([[0055-library-events]]'s own 2026-09-06 addendum)
 - **Settings page restyled: vertical section nav + one consistent row shell (2026-09-04/05)** —
   the 7 groups moved from a stacked single page (each its own `<fieldset>`, its own slightly
   different row CSS — cataloged in `SETTINGS_LAYOUT_PATTERNS.md`, 21 rows, 7 different control
@@ -523,9 +534,9 @@ from `TODO.md`) are done:
    user-configured script automatically on torrent completion, and LSD (BEP 14, minor).
 2. The pending-action-vs-2s-snapshot-lag gap noted above, if it proves to
    matter in practice.
-3. Library events' two deferred event types ([[0055-library-events]]'s own "Deferred from this
-   pass" section) — tracker unreachable/recovered, and a distinctly-labeled magnet-resolved —
-   if they prove to matter in practice.
+3. Library events' one remaining deferred event type — a distinctly-labeled `MAGNET_RESOLVED`
+   ([[0055-library-events]]'s own "Deferred from this pass" section; the tracker
+   unreachable/recovered half is now done, see above) — if it proves to matter in practice.
 4. The watch folder's two deferred items ([[0056-watch-folder]]'s own "Alternatives considered"
    section) — magnet-link files and a configurable poll interval — if either proves to matter.
 5. The rate-limiting settings group's remaining natural additions (per-torrent overrides,

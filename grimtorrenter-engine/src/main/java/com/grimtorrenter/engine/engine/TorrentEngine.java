@@ -40,6 +40,7 @@ import com.grimtorrenter.engine.tracker.TrackerClient;
 import com.grimtorrenter.engine.tracker.TrackerEvent;
 import com.grimtorrenter.engine.tracker.TrackerRequest;
 import com.grimtorrenter.engine.tracker.TrackerResponse;
+import com.grimtorrenter.engine.tracker.TrackerStatusListener;
 import com.grimtorrenter.engine.tracker.UdpTrackerClient;
 
 import java.io.IOException;
@@ -1451,11 +1452,43 @@ public final class TorrentEngine {
         return sanitized;
     }
 
-    private static TrackerClient createTrackerClient(TorrentMetadata metadata) {
-        return createTrackerClient(selectTrackerTiers(metadata));
+    /** Wires up TRACKER_UNREACHABLE/TRACKER_RECOVERED reporting (design_docs/0055's own
+     * addendum) - only for a torrent's own persistent tracker client (addTorrent()/
+     * restoreOne()). The listener-less overload below is for the throwaway tracker client used
+     * to probe trackers during magnet metadata resolution, which isn't a tracked torrent yet
+     * and shouldn't generate library events off its own retry churn. */
+    private TrackerClient createTrackerClient(TorrentMetadata metadata) {
+        return createTrackerClient(selectTrackerTiers(metadata), trackerStatusListenerFor(metadata));
+    }
+
+    /** Package-private (not private) so tests can invoke a tracker-status transition directly,
+     * without needing to drive a real TorrentSession through two full reannounce cycles against
+     * a fake tracker server - same test-visibility rationale as selectTrackerTiers/
+     * sanitizeDirectoryName above. */
+    TrackerStatusListener trackerStatusListenerFor(TorrentMetadata metadata) {
+        String infoHash = metadata.infoHash().hex();
+        String name = metadata.name();
+        return new TrackerStatusListener() {
+            @Override
+            public void onTrackerUnreachable(String url, String lastError) {
+                String message = "Tracker unreachable: " + url
+                        + (lastError != null ? " (" + lastError + ")" : "");
+                eventStore.record(new LibraryEvent(Instant.now(), EventType.TRACKER_UNREACHABLE, infoHash, name, message));
+            }
+
+            @Override
+            public void onTrackerRecovered(String url) {
+                eventStore.record(new LibraryEvent(
+                        Instant.now(), EventType.TRACKER_RECOVERED, infoHash, name, "Tracker recovered: " + url));
+            }
+        };
     }
 
     private static TrackerClient createTrackerClient(List<List<String>> tierUrls) {
+        return createTrackerClient(tierUrls, null);
+    }
+
+    private static TrackerClient createTrackerClient(List<List<String>> tierUrls, TrackerStatusListener listener) {
         if (tierUrls.isEmpty()) {
             return new NoOpTrackerClient();
         }
@@ -1463,7 +1496,9 @@ public final class TorrentEngine {
         for (int tier = 0; tier < tierUrls.size(); tier++) {
             int tierIndex = tier;
             tiers.add(tierUrls.get(tier).stream()
-                    .<TrackerClient>map(url -> new TrackedTrackerClient(url, tierIndex, createSingleTrackerClient(url)))
+                    .<TrackerClient>map(url -> listener == null
+                            ? new TrackedTrackerClient(url, tierIndex, createSingleTrackerClient(url))
+                            : new TrackedTrackerClient(url, tierIndex, createSingleTrackerClient(url), listener))
                     .toList());
         }
         return new MultiTrackerClient(tiers);

@@ -3,6 +3,8 @@
 **Status:** Accepted - built for a first event set (ADDED/COMPLETED/ERROR/REMOVED/
 SEEDING_LIMIT_REACHED); see "Deferred from this pass" below for what's intentionally not
 wired up yet. `SERVER_STARTED` added 2026-08-26 - see its own section below.
+`TRACKER_UNREACHABLE`/`TRACKER_RECOVERED` added 2026-09-06 - see their own addendum below;
+`MAGNET_RESOLVED` remains deferred.
 
 ## Decision
 
@@ -186,23 +188,105 @@ itself is seeded then kept live.
 
 ## Deferred from this pass
 
-Two event types from the original scoping were **not** wired up when this was built
-(2026-08-26), and are not in the `EventType` enum at all yet rather than sitting unused:
+One event type from the original scoping was **not** wired up when this was built
+(2026-08-26), and is not in the `EventType` enum at all yet rather than sitting unused:
 
-- **`TRACKER_UNREACHABLE`/`TRACKER_RECOVERED`** - `TrackedTrackerClient`/`TrackerStatus`
-  (`grimtorrenter-engine`, `tracker` package) track per-tracker WORKING/ERROR state today but
-  have no listener/callback seam at all - only a poll-on-demand REST read
-  ([[0031-torrent-detail-endpoints]]). Adding these would mean designing that seam first (a
-  real decision - whether it lives on `TrackedTrackerClient` itself or `MultiTrackerClient`,
-  and how to avoid flapping between WORKING/ERROR on a single missed announce generating a
-  storm of events), not just plumbing an existing one. Left as a natural follow-up.
 - **`MAGNET_RESOLVED`** - a resolved magnet already flows straight into the same `addTorrent()`
   pipeline every other torrent uses, which already records `ADDED`. A distinctly-labeled
   "resolved" event would need `addTorrent()` to know it arrived via magnet resolution rather
   than a direct upload, which it doesn't distinguish today - a small but real addition, judged
   low-value enough (the `ADDED` event still shows up either way) to defer.
 
-Both remain reasonable additions if they prove to matter in practice - see `PROGRESS.md`.
+Remains a reasonable addition if it proves to matter in practice - see `PROGRESS.md`.
+
+## `TRACKER_UNREACHABLE`/`TRACKER_RECOVERED` (added 2026-09-06)
+
+Picked from `TODO.md`/`PROGRESS.md`'s "remaining known gaps" list - the other deferred item
+from the original scoping above. The real decision this needed, per the original deferral note,
+was designing a callback seam onto `TrackedTrackerClient`/`TrackerStatus`
+(`grimtorrenter-engine`, `tracker` package) where none existed before (only a poll-on-demand
+REST read, [[0031-torrent-detail-endpoints]]), and picking a debounce policy so a single missed
+announce doesn't generate an event storm.
+
+### Where the seam lives: `TrackedTrackerClient`, not `MultiTrackerClient`
+
+`TrackedTrackerClient` (wraps one tracker; `recordSuccess()`/`recordFailure()` already run on
+every `announce()`) is the one place with a genuine before/after view of a *single* tracker's
+own status. `MultiTrackerClient` only aggregates already-decided `TrackerStatus` values from its
+wrapped clients - it has no independent state to add here, so putting the seam there would just
+mean forwarding. Per-tracker granularity also matches how `TrackerStatus`/the Trackers detail
+tab are already per-URL, not per-torrent-aggregate.
+
+A new engine-only `TrackerStatusListener` interface (`tracker` package:
+`onTrackerUnreachable(String url, String lastError)` / `onTrackerRecovered(String url)`)
+deliberately doesn't reference `EventStore`/`LibraryEvent` at all, keeping
+`grimtorrenter-engine` free of any dependency on those `grimtorrenter-app`-adjacent concepts -
+same reasoning as every other engine/app split in this codebase. `TrackedTrackerClient` gained a
+new 4-arg constructor taking a listener (the existing 3-arg constructor delegates to a private
+`NoOpTrackerStatusListener` enum singleton, the same "widen constructor, old one defaults"
+precedent used for `configDirectory`/`watchDirectory` elsewhere).
+
+### Debounce policy (confirmed with the user)
+
+Each `announce()` call already survives its own transport-level retries
+(`UdpTrackerClient`/`HttpTrackerClient`) before ever throwing `TrackerException` - but reannounce
+cycles happen every interval (often many minutes), and an ordinary tracker restart/brief
+overload can plausibly fail one cycle and recover the next. Firing on the very first failed
+cycle risked being noisy for that ordinary case, so the policy is asymmetric:
+
+- **`TRACKER_UNREACHABLE`** fires only after **2 consecutive** failed announce cycles with no
+  intervening success. A `consecutiveFailures` counter and a `reportedUnreachable` boolean on
+  `TrackedTrackerClient` track this; a third, fourth, ... consecutive failure doesn't re-fire -
+  already reported, stays reported until a success resets it.
+- **`TRACKER_RECOVERED`** fires on the **very next success** once `TRACKER_UNREACHABLE` was
+  actually reported - not debounced the same way, on purpose: recovery is unambiguous good news,
+  with no real cost to reporting it immediately. If unreachability was never reported (still on
+  failure #1 when a success arrives), nothing fires - there's nothing to "recover" from in the
+  user's eyes.
+
+### Wiring: `TorrentEngine.createTrackerClient(TorrentMetadata)`, not the magnet-fetch overload
+
+`createTrackerClient(TorrentMetadata)` (used by `addTorrent()` and `restoreOne()` - a torrent's
+real, persistent tracker client) stopped being `static` and now builds a listener via a new
+`trackerStatusListenerFor(metadata)` (package-private for direct testing, same rationale as
+`selectTrackerTiers`/`sanitizeDirectoryName`) that adapts each callback into a
+`eventStore.record(new LibraryEvent(...))` call with `infoHash`/`torrentName` from the metadata
+and the tracker's own URL (plus `lastError` for `TRACKER_UNREACHABLE`) folded into the message -
+same pattern already used for `DHT_UNAVAILABLE`/`PEER_SERVER_UNAVAILABLE` at construction time
+([[0059-service-status]]).
+
+The **listener-less** `createTrackerClient(List<List<String>>)` overload - used by
+`fetchMagnetMetadataViaTrackerThenAdd()` to probe candidate trackers while resolving a magnet's
+metadata - deliberately keeps no listener. That tracker client is short-lived and races/retries
+candidates within a time budget ([[0028-magnet-links-and-dht]]'s own 2026-08-30 addendum); its
+info hash isn't a tracked torrent yet, so reporting library events off its retry churn would be
+noise, not signal.
+
+### Testing
+
+- `TrackedTrackerClientTest` (new cases) - the debounce policy itself: a single failure reports
+  nothing; two consecutive failures report `onTrackerUnreachable` exactly once (a third doesn't
+  re-fire); a success after unreachability was reported fires `onTrackerRecovered`; a success
+  after only one failure (never reported unreachable) fires nothing.
+- `TorrentEngineTest` (new case) - `trackerStatusListenerFor()` is the adapter under test here,
+  not the debounce policy (already covered above): invoking the listener directly records a
+  `TRACKER_UNREACHABLE`/`TRACKER_RECOVERED` `LibraryEvent` with the right `torrentName` and the
+  tracker URL folded into the message.
+
+## Stability addendum ([[0051-stability-as-a-standing-consideration]])
+
+- **Hostile/flaky-tracker angle**: this is exactly the risk the debounce policy above exists to
+  bound - a tracker flapping between reachable/unreachable on a short cycle could otherwise
+  generate an event on every single reannounce; the 2-consecutive-failures/1-success asymmetry
+  means the worst case is still one event pair per genuine down-then-up transition, not per
+  announce attempt.
+- **No new unbounded growth**: these two types are subject to the exact same
+  `eventLogRetentionDays`-bounded rolling-file storage as every other library event - no new
+  storage mechanism introduced.
+- **Concurrency**: `TrackedTrackerClient.recordSuccess()`/`recordFailure()` are already called
+  from whatever single thread drives that session's `announce()`/`reannounce()` calls (no new
+  concurrent access introduced); the listener callback runs synchronously on that same thread,
+  same as the rest of `record()`'s call chain.
 
 ## Stability ([[0051-stability-as-a-standing-consideration]])
 

@@ -3,12 +3,14 @@ package com.grimtorrenter.engine.tracker;
 import com.grimtorrenter.engine.metainfo.InfoHash;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class TrackedTrackerClientTest {
 
@@ -103,5 +105,104 @@ class TrackedTrackerClientTest {
         assertEquals(12, status.seeders());
         assertEquals(3, status.leechers());
         assertEquals("now failing", status.lastError());
+    }
+
+    private record Notification(String kind, String url, String lastError) {
+    }
+
+    private static TrackerStatusListener recordingListener(List<Notification> notifications) {
+        return new TrackerStatusListener() {
+            @Override
+            public void onTrackerUnreachable(String url, String lastError) {
+                notifications.add(new Notification("unreachable", url, lastError));
+            }
+
+            @Override
+            public void onTrackerRecovered(String url) {
+                notifications.add(new Notification("recovered", url, null));
+            }
+        };
+    }
+
+    /** See design_docs/0055's own TRACKER_UNREACHABLE addendum: a single failed announce cycle
+     * is tolerated (a tracker can fail one reannounce and recover the next) - only two
+     * consecutive failures with no intervening success are reported. */
+    @Test
+    void doesNotReportUnreachableAfterOnlyOneFailure() {
+        List<Notification> notifications = new ArrayList<>();
+        TrackerException failure = new TrackerException("simulated failure");
+        TrackedTrackerClient client = new TrackedTrackerClient(
+                "http://tracker.example/announce", 0, request -> {
+                    throw failure;
+                }, recordingListener(notifications));
+
+        assertThrows(TrackerException.class, () -> client.announce(fakeRequest()));
+
+        assertTrue(notifications.isEmpty());
+    }
+
+    @Test
+    void reportsUnreachableOnlyAfterTwoConsecutiveFailures() {
+        List<Notification> notifications = new ArrayList<>();
+        TrackerException failure = new TrackerException("simulated failure");
+        TrackedTrackerClient client = new TrackedTrackerClient(
+                "http://tracker.example/announce", 0, request -> {
+                    throw failure;
+                }, recordingListener(notifications));
+
+        assertThrows(TrackerException.class, () -> client.announce(fakeRequest()));
+        assertThrows(TrackerException.class, () -> client.announce(fakeRequest()));
+
+        assertEquals(1, notifications.size());
+        assertEquals(new Notification("unreachable", "http://tracker.example/announce", "simulated failure"),
+                notifications.get(0));
+
+        // A third consecutive failure doesn't re-report - already reported, stays reported.
+        assertThrows(TrackerException.class, () -> client.announce(fakeRequest()));
+        assertEquals(1, notifications.size());
+    }
+
+    @Test
+    void reportsRecoveredOnTheFirstSuccessAfterUnreachableWasReported() {
+        List<Notification> notifications = new ArrayList<>();
+        TrackerResponse success = new TrackerResponse(1800, null, 12, 3, List.of(), null, null);
+        boolean[] shouldFail = {true};
+        TrackedTrackerClient client = new TrackedTrackerClient("http://tracker.example/announce", 0, request -> {
+            if (shouldFail[0]) {
+                throw new TrackerException("simulated failure");
+            }
+            return success;
+        }, recordingListener(notifications));
+
+        assertThrows(TrackerException.class, () -> client.announce(fakeRequest()));
+        assertThrows(TrackerException.class, () -> client.announce(fakeRequest()));
+        assertEquals(1, notifications.size());
+
+        shouldFail[0] = false;
+        client.announce(fakeRequest());
+
+        assertEquals(2, notifications.size());
+        assertEquals(new Notification("recovered", "http://tracker.example/announce", null), notifications.get(1));
+    }
+
+    /** A success after only one failure (unreachable never reported) has nothing to "recover"
+     * from in the user's eyes, and shouldn't fire a spurious RECOVERED event. */
+    @Test
+    void doesNotReportRecoveredWhenUnreachableWasNeverReported() {
+        List<Notification> notifications = new ArrayList<>();
+        TrackerResponse success = new TrackerResponse(1800, null, 12, 3, List.of(), null, null);
+        boolean[] shouldFail = {true};
+        TrackedTrackerClient client = new TrackedTrackerClient("http://tracker.example/announce", 0, request -> {
+            if (shouldFail[0]) {
+                throw new TrackerException("simulated failure");
+            }
+            return success;
+        }, recordingListener(notifications));
+
+        assertThrows(TrackerException.class, () -> client.announce(fakeRequest()));
+        shouldFail[0] = false;
+        client.announce(fakeRequest());
+
+        assertTrue(notifications.isEmpty());
     }
 }

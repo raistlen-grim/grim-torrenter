@@ -777,6 +777,37 @@ class TorrentEngineTest {
         assertEquals(1, events.stream().filter(e -> e.type() == EventType.REMOVED).count());
     }
 
+    /** trackerStatusListenerFor() is the adapter between TrackedTrackerClient's engine-only
+     * TrackerStatusListener callback and a real library event - the debounce policy itself
+     * (only report after two consecutive failures, recover on the first success) is
+     * TrackedTrackerClient's own concern and is covered directly in TrackedTrackerClientTest;
+     * this only proves the adapter records the right EventType/infoHash/torrentName/message.
+     * See design_docs/0055's own TRACKER_UNREACHABLE addendum. */
+    @Test
+    void trackerStatusListenerRecordsUnreachableAndRecoveredLibraryEvents(@TempDir Path tempDir) {
+        InMemoryEventStore eventStore = new InMemoryEventStore();
+        TorrentEngine engine = new TorrentEngine(tempDir, 6881, new NoOpListener(), false, false,
+                new InMemorySettingsStore(), FileHandlePool.unbounded(), Integer.MAX_VALUE, eventStore);
+        TorrentMetadata metadata = new SingleFileTorrent("tracker-status.bin", 1, 1, new PieceHashes(fill(20, 0)),
+                InfoHash.of(fill(20, 16)), "http://tracker.example/announce", List.of());
+
+        var listener = engine.trackerStatusListenerFor(metadata);
+        listener.onTrackerUnreachable("http://tracker.example/announce", "simulated failure");
+        listener.onTrackerRecovered("http://tracker.example/announce");
+
+        List<LibraryEvent> events = eventStore.forTorrent(metadata.infoHash().hex());
+        LibraryEvent unreachable = events.stream()
+                .filter(e -> e.type() == EventType.TRACKER_UNREACHABLE).findFirst().orElseThrow();
+        assertEquals("tracker-status.bin", unreachable.torrentName());
+        assertTrue(unreachable.message().contains("http://tracker.example/announce"));
+        assertTrue(unreachable.message().contains("simulated failure"));
+
+        LibraryEvent recovered = events.stream()
+                .filter(e -> e.type() == EventType.TRACKER_RECOVERED).findFirst().orElseThrow();
+        assertEquals("tracker-status.bin", recovered.torrentName());
+        assertTrue(recovered.message().contains("http://tracker.example/announce"));
+    }
+
     /** The "override can enable a limit the global default leaves disabled" direction isn't
      * covered here as a triggering scenario: with no real peer connection, actual ratio is
      * always exactly 0.0, so the only way to make a check deterministically trigger without a

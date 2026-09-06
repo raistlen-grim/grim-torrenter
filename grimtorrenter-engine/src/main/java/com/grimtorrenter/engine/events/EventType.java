@@ -19,6 +19,13 @@ package com.grimtorrenter.engine.events;
  * even when the magnet carried a display name - unlike every other torrent-scoped type, this
  * infoHash was never actually added as a real torrent, so the Events page can't safely render
  * it as a link to one. Any display name is folded into the free-text message instead.
+ *
+ * <p>TRACKER_UNREACHABLE/TRACKER_RECOVERED (design_docs/0055's own addendum) are recorded by
+ * TrackedTrackerClient's TrackerStatusListener callback, adapted into library events by
+ * TorrentEngine.createTrackerClient() - torrent-scoped like every type above them, with the
+ * tracker's own URL folded into the message. Only wired up for a torrent's own persistent
+ * tracker client (addTorrent()/restoreOne()), not the throwaway client used to probe trackers
+ * during magnet metadata resolution.
  */
 public enum EventType {
     ADDED,
@@ -29,5 +36,7 @@ public enum EventType {
     SERVER_STARTED,
     DHT_UNAVAILABLE,
     PEER_SERVER_UNAVAILABLE,
-    MAGNET_ADD_FAILED
+    MAGNET_ADD_FAILED,
+    TRACKER_UNREACHABLE,
+    TRACKER_RECOVERED
 }
