@@ -411,6 +411,19 @@ complete**, per the phased scope in [[0009-phased-scope]]:
   tracker-based and DHT-based magnet metadata-fetch paths already funnel through) now passes
   `MAGNET_SOURCE` through the existing mechanism. ([[0055-library-events]]'s own 2026-09-06
   addendum)
+- **Watch folder's two deferred items, both closed (2026-09-06)** — a configurable poll interval
+  (a new live `watchFolderPollIntervalSeconds` `Settings` field, same "engine-wide scheduled
+  task, takes effect on the backend's next restart" shape as `dhtRefreshIntervalSeconds`,
+  replacing the previous fixed 30s constant) and `.magnet` file support (a dropped file is just a
+  bare magnet URI as its whole text content; `addMagnet()` gained the same `source`-threading
+  mechanism `addTorrent()` already had, so a watch-folder-dropped magnet's eventual `ADDED`
+  event also reads "Added via watch folder" rather than the generic "Added via magnet"). A
+  magnet add is fundamentally asynchronous (a background peer metadata fetch, not a synchronous
+  outcome like a `.torrent` file) - "added" for a `.magnet` file means the fetch attempt was
+  *accepted*, not that it actually resolved; a real background failure still surfaces as its own
+  `MAGNET_ADD_FAILED` event rather than by the file's on-disk location, the same "success at
+  request time isn't the same as success" shape already established for the REST magnet-add
+  endpoint. ([[0056-watch-folder]]'s own 2026-09-06 addendum)
 - **Settings page restyled: vertical section nav + one consistent row shell (2026-09-04/05)** —
   the 7 groups moved from a stacked single page (each its own `<fieldset>`, its own slightly
   different row CSS — cataloged in `SETTINGS_LAYOUT_PATTERNS.md`, 21 rows, 7 different control
@@ -542,10 +555,8 @@ from `TODO.md`) are done:
    user-configured script automatically on torrent completion, and LSD (BEP 14, minor).
 2. The pending-action-vs-2s-snapshot-lag gap noted above, if it proves to
    matter in practice.
-3. The watch folder's two deferred items ([[0056-watch-folder]]'s own "Alternatives considered"
-   section) — magnet-link files and a configurable poll interval — if either proves to matter.
-4. The rate-limiting settings group's remaining natural additions (per-torrent overrides,
+3. The rate-limiting settings group's remaining natural additions (per-torrent overrides,
    multi-rule schedule) — pushed to the back of the backlog (2026-08-25), marginal real-world
    value relative to the items above.
-5. Multi-select on the torrent list (checkboxes/shift-click for bulk Pause/Resume/Remove) —
+4. Multi-select on the torrent list (checkboxes/shift-click for bulk Pause/Resume/Remove) —
    noted in `TODO.md`, 2026-09-03, unscoped.

@@ -63,7 +63,13 @@ export type ThemePreference = 'SYSTEM' | 'LIGHT' | 'DARK';
  * retroactively. Default 300s (5 minutes) - each tick is one lightweight lookup against a single
  * bucket, so a shorter-than-trackerlessDhtReannounceIntervalSeconds-style default is reasonable
  * DHT etiquette here. Same no-unlimited-value, silently-normalized-below-1 treatment as the
- * other tunable fields above. */
+ * other tunable fields above.
+ * watchFolderPollIntervalSeconds (design_docs/0056's own 2026-09-06 addendum) is how often the
+ * watch folder is checked for new/stabilized files - same "engine-wide scheduled task, takes
+ * effect on the backend's next construction/restart, not retroactively" shape as
+ * dhtRefreshIntervalSeconds just above. Default 30s (the fixed cadence this field replaces).
+ * Same no-unlimited-value, silently-normalized-below-1 treatment as the other tunable fields
+ * above. */
 export interface Settings {
   dhtEnabled: boolean;
   acceptIncomingConnections: boolean;
@@ -89,4 +95,5 @@ export interface Settings {
   magnetFetchConcurrencyLimit: number;
   trackerlessDhtReannounceIntervalSeconds: number;
   dhtRefreshIntervalSeconds: number;
+  watchFolderPollIntervalSeconds: number;
 }

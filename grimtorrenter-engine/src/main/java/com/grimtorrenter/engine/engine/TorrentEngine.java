@@ -138,8 +138,10 @@ public final class TorrentEngine {
     private static final String WATCH_ADDED_SUBDIRECTORY = "added";
     private static final String WATCH_FAILED_SUBDIRECTORY = "failed";
     private static final String TORRENT_FILE_EXTENSION = ".torrent";
+    /** See design_docs/0056's own 2026-09-06 addendum - a dropped magnet-link file is just its
+     * bare magnet: URI as the file's entire (trimmed) text content, nothing more structured. */
+    private static final String MAGNET_FILE_EXTENSION = ".magnet";
     private static final String WATCH_FOLDER_SOURCE = "watch folder";
-    private static final long WATCH_FOLDER_SCAN_INTERVAL_SECONDS = 30;
 
     /** See design_docs/0055's own MAGNET_RESOLVED addendum - addTorrent()'s existing source
      * mechanism (built for WATCH_FOLDER_SOURCE above) reused rather than a new EventType, same
@@ -219,6 +221,11 @@ public final class TorrentEngine {
      * "a ScheduledExecutorService's period can't change mid-flight" limitation, just at
      * engine scope). See design_docs/0028's own 2026-08-30 addendum. */
     private final long dhtRefreshIntervalSeconds;
+    /** Same "read once at construction, engine-wide scheduled task, a live change takes effect
+     * on the engine's next construction/restart, not retroactively" shape as
+     * dhtRefreshIntervalSeconds just above, for the same reason. See design_docs/0056's own
+     * 2026-09-06 addendum. */
+    private final long watchFolderScanIntervalSeconds;
     /** Kept as a field (not just a constructor-local capture) since checkSeedingLimits()
      * reads it fresh on every scheduled tick, not from a single lambda built once at
      * construction. See design_docs/0054. */
@@ -240,7 +247,7 @@ public final class TorrentEngine {
      * from maintenanceScheduler's single thread (or a test calling scanWatchFolder() directly,
      * never concurrently with the real scheduler in the same test). See design_docs/0056. */
     private volatile Map<String, WatchCandidateSnapshot> watchFolderSnapshot = Map.of();
-    /** Ticks every SEEDING_LIMIT_CHECK_INTERVAL_SECONDS/WATCH_FOLDER_SCAN_INTERVAL_SECONDS/
+    /** Ticks every SEEDING_LIMIT_CHECK_INTERVAL_SECONDS/watchFolderScanIntervalSeconds/
      * dhtRefreshIntervalSeconds, running checkSeedingLimits(), scanWatchFolder(), and (when DHT
      * is enabled) refreshDhtRoutingTable() - independent periodic engine-maintenance concerns
      * sharing one thread rather than each getting its own (originally named
@@ -397,6 +404,7 @@ public final class TorrentEngine {
         this.trackerlessReannounceIntervalSeconds =
                 () -> (long) settingsStore.current().trackerlessDhtReannounceIntervalSeconds();
         this.dhtRefreshIntervalSeconds = settingsStore.current().dhtRefreshIntervalSeconds();
+        this.watchFolderScanIntervalSeconds = settingsStore.current().watchFolderPollIntervalSeconds();
         this.peerServer = acceptIncomingConnections ? createPeerServer(ourListenPort, eventStore) : null;
         this.peerServerBindFailed = acceptIncomingConnections && this.peerServer == null;
         this.rateLimiters = RateLimiters.from(settingsStore);
@@ -409,7 +417,7 @@ public final class TorrentEngine {
         this.maintenanceScheduler.scheduleWithFixedDelay(this::checkSeedingLimits,
                 SEEDING_LIMIT_CHECK_INTERVAL_SECONDS, SEEDING_LIMIT_CHECK_INTERVAL_SECONDS, TimeUnit.SECONDS);
         this.maintenanceScheduler.scheduleWithFixedDelay(this::scanWatchFolder,
-                WATCH_FOLDER_SCAN_INTERVAL_SECONDS, WATCH_FOLDER_SCAN_INTERVAL_SECONDS, TimeUnit.SECONDS);
+                this.watchFolderScanIntervalSeconds, this.watchFolderScanIntervalSeconds, TimeUnit.SECONDS);
         if (this.dhtNode != null) {
             this.maintenanceScheduler.scheduleWithFixedDelay(this::refreshDhtRoutingTable,
                     this.dhtRefreshIntervalSeconds, this.dhtRefreshIntervalSeconds, TimeUnit.SECONDS);
@@ -501,7 +509,7 @@ public final class TorrentEngine {
      * on every tick, same live-toggle spirit as the rate limits.
      *
      * <p>Package-private, not private, purely so a test can call this directly rather than
-     * waiting on the real WATCH_FOLDER_SCAN_INTERVAL_SECONDS-second scheduler tick - same
+     * waiting on the real watchFolderScanIntervalSeconds-second scheduler tick - same
      * spirit as checkSeedingLimits() above.
      */
     void scanWatchFolder() {
@@ -525,7 +533,10 @@ public final class TorrentEngine {
         try (var entries = Files.list(watchDirectory)) {
             candidates = entries
                     .filter(Files::isRegularFile)
-                    .filter(p -> p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(TORRENT_FILE_EXTENSION))
+                    .filter(p -> {
+                        String lowerName = p.getFileName().toString().toLowerCase(Locale.ROOT);
+                        return lowerName.endsWith(TORRENT_FILE_EXTENSION) || lowerName.endsWith(MAGNET_FILE_EXTENSION);
+                    })
                     .toList();
         } catch (IOException e) {
             LOG.log(System.Logger.Level.WARNING, "Could not scan watch folder " + watchDirectory, e);
@@ -563,25 +574,59 @@ public final class TorrentEngine {
     /** Reads and adds the file, then moves it to addedDir or failedDir depending on the
      * outcome - the move is attempted regardless of which, but a move failure is only ever
      * logged (not re-recorded as a second event): the outcome of the *add* is the thing worth
-     * an event, the outcome of the subsequent housekeeping move is not. See design_docs/0056. */
+     * an event, the outcome of the subsequent housekeeping move is not. Dispatches on extension
+     * - a .torrent file is added synchronously (addTorrent() itself has already fully resolved
+     * success/failure by the time it returns/throws), a .magnet file only ever accepted or
+     * rejected synchronously (see processWatchedMagnetFile()'s own Javadoc for why "added" here
+     * doesn't mean "resolved"). See design_docs/0056. */
     private void processWatchedFile(Path file, Path addedDir, Path failedDir) {
         String filename = file.getFileName().toString();
-        boolean added;
-        try {
-            byte[] torrentFileBytes = Files.readAllBytes(file);
-            addTorrent(torrentFileBytes, WATCH_FOLDER_SOURCE);
-            added = true;
-        } catch (IOException | RuntimeException e) {
-            added = false;
-            LOG.log(System.Logger.Level.WARNING, "Watch folder could not add " + filename, e);
-            eventStore.record(new LibraryEvent(Instant.now(), EventType.ERROR, null, null,
-                    "Watch folder: could not add " + filename + " (" + e.getMessage() + ")"));
-        }
+        boolean added = filename.toLowerCase(Locale.ROOT).endsWith(MAGNET_FILE_EXTENSION)
+                ? processWatchedMagnetFile(file, filename)
+                : processWatchedTorrentFile(file, filename);
         try {
             moveWithCollisionSuffix(file, added ? addedDir : failedDir);
         } catch (IOException e) {
             LOG.log(System.Logger.Level.WARNING,
                     "Could not move watch-folder file " + filename + " to " + (added ? addedDir : failedDir), e);
+        }
+    }
+
+    private boolean processWatchedTorrentFile(Path file, String filename) {
+        try {
+            byte[] torrentFileBytes = Files.readAllBytes(file);
+            addTorrent(torrentFileBytes, WATCH_FOLDER_SOURCE);
+            return true;
+        } catch (IOException | RuntimeException e) {
+            LOG.log(System.Logger.Level.WARNING, "Watch folder could not add " + filename, e);
+            eventStore.record(new LibraryEvent(Instant.now(), EventType.ERROR, null, null,
+                    "Watch folder: could not add " + filename + " (" + e.getMessage() + ")"));
+            return false;
+        }
+    }
+
+    /** "Added" here means only that a metadata-fetch attempt was successfully kicked off
+     * (addMagnet() returned without throwing) - not that the magnet has actually resolved into
+     * a real torrent yet, since that happens on a background virtual thread with its own
+     * bounded retry budget (see addMagnet()'s own Javadoc). This is the same "success at
+     * request time isn't the same as success" shape the REST magnet-add endpoint and its own
+     * optimistic pending-row UI already embrace (design_docs/0060) - waiting here for the real
+     * outcome would mean blocking this whole scan tick for up to
+     * Settings.magnetFetchTimeBudgetSeconds per file, serializing every other watch-folder
+     * candidate behind it. A background failure still surfaces - just as a MAGNET_ADD_FAILED
+     * library event (message prefixed "Watch folder: ", see recordMagnetAddFailed()) rather
+     * than by this file's on-disk location. */
+    private boolean processWatchedMagnetFile(Path file, String filename) {
+        try {
+            String content = Files.readString(file).trim();
+            MagnetLink magnet = MagnetLink.parse(content);
+            addMagnet(magnet, WATCH_FOLDER_SOURCE);
+            return true;
+        } catch (IOException | RuntimeException e) {
+            LOG.log(System.Logger.Level.WARNING, "Watch folder could not add " + filename, e);
+            eventStore.record(new LibraryEvent(Instant.now(), EventType.ERROR, null, null,
+                    "Watch folder: could not add " + filename + " (" + e.getMessage() + ")"));
+            return false;
         }
     }
 
@@ -923,25 +968,47 @@ public final class TorrentEngine {
      * leaving it spinning forever.
      */
     public void addMagnet(MagnetLink magnet) {
+        addMagnet(magnet, null);
+    }
+
+    /** source is null for the public overload above (REST/UI-triggered) or WATCH_FOLDER_SOURCE
+     * (scanWatchFolder(), once design_docs/0056's own 2026-09-06 addendum added magnet-file
+     * support) - threaded through to whichever fetch path is taken so a resulting ADDED event
+     * reads "Added via watch folder" (addFetchedTorrent()) and a resulting MAGNET_ADD_FAILED
+     * event's message is prefixed "Watch folder: " (recordMagnetAddFailed()), the same
+     * distinction addTorrent()'s own source parameter already makes for .torrent files. */
+    void addMagnet(MagnetLink magnet, String source) {
         List<String> trackerUrls = magnet.trackers().stream().filter(TorrentEngine::isSupportedTrackerUrl).toList();
         if (!trackerUrls.isEmpty()) {
-            Thread.ofVirtual().start(() -> fetchMagnetMetadataViaTrackerThenAdd(magnet, trackerUrls));
+            Thread.ofVirtual().start(() -> fetchMagnetMetadataViaTrackerThenAdd(magnet, trackerUrls, source));
             return;
         }
         if (dhtNode == null) {
-            recordMagnetAddFailed(magnet, "No usable tracker, and DHT is unavailable - trackerless magnets need DHT");
+            recordMagnetAddFailed(magnet,
+                    "No usable tracker, and DHT is unavailable - trackerless magnets need DHT", source);
             throw new TorrentEngineException(
                     "Magnet link has no usable tracker, and DHT is unavailable - trackerless magnets need DHT");
         }
-        Thread.ofVirtual().start(() -> fetchMagnetMetadataViaDhtThenAdd(magnet));
+        Thread.ofVirtual().start(() -> fetchMagnetMetadataViaDhtThenAdd(magnet, source));
     }
 
     /** design_docs/0060. message is folded into the event rather than just infoHash/type
      * alone, since MAGNET_ADD_FAILED has no torrentName (see EventType's own Javadoc) to
      * carry any human-readable context otherwise. */
     private void recordMagnetAddFailed(MagnetLink magnet, String message) {
+        recordMagnetAddFailed(magnet, message, null);
+    }
+
+    /** source is folded in as a "Watch folder: " prefix rather than a generic "via " + source
+     * tag (unlike addTorrent()'s ADDED message) - message here is already a full failure-reason
+     * sentence ("No peer had the metadata..."), and this mirrors the exact prefix
+     * processWatchedTorrentFile()'s own ERROR event already uses for the identical situation on
+     * the .torrent side. Assumes source, when non-null, is always WATCH_FOLDER_SOURCE - the only
+     * non-null value that exists today. */
+    private void recordMagnetAddFailed(MagnetLink magnet, String message, String source) {
+        String finalMessage = source != null ? "Watch folder: " + message : message;
         eventStore.record(new LibraryEvent(
-                Instant.now(), EventType.MAGNET_ADD_FAILED, magnet.infoHash().hex(), null, message));
+                Instant.now(), EventType.MAGNET_ADD_FAILED, magnet.infoHash().hex(), null, finalMessage));
     }
 
     /** How long to wait before re-announcing/re-querying when a round found literally nothing
@@ -954,7 +1021,7 @@ public final class TorrentEngine {
      * addendum. */
     private static final Duration EMPTY_ROUND_RETRY_DELAY = Duration.ofSeconds(5);
 
-    private void fetchMagnetMetadataViaTrackerThenAdd(MagnetLink magnet, List<String> trackerUrls) {
+    private void fetchMagnetMetadataViaTrackerThenAdd(MagnetLink magnet, List<String> trackerUrls, String source) {
         Settings settings = settingsStore.current();
         metadataFetchLimiter.resizeTo(settings.magnetFetchConcurrencyLimit());
         TrackerClient trackerClient = createTrackerClient(List.of(trackerUrls));
@@ -967,7 +1034,7 @@ public final class TorrentEngine {
                         0, 0, Long.MAX_VALUE, TrackerEvent.STARTED, settings.magnetFetchCandidatesPerRound()));
             } catch (RuntimeException e) {
                 LOG.log(System.Logger.Level.WARNING, "Could not announce for magnet " + magnet.infoHash(), e);
-                recordMagnetAddFailed(magnet, "Could not announce to any tracker");
+                recordMagnetAddFailed(magnet, "Could not announce to any tracker", source);
                 return;
             }
             List<PeerAddress> fresh = response.peers().stream()
@@ -977,7 +1044,7 @@ public final class TorrentEngine {
             alreadyTried.addAll(fresh);
             Optional<byte[]> infoDictBytes = raceOneRound(magnet, fresh);
             if (infoDictBytes.isPresent()) {
-                addFetchedTorrent(magnet, infoDictBytes.get(), trackerUrls);
+                addFetchedTorrent(magnet, infoDictBytes.get(), trackerUrls, source);
                 return;
             }
             if (fresh.isEmpty() && !sleepUnlessDeadlinePassed(EMPTY_ROUND_RETRY_DELAY, deadline)) {
@@ -986,10 +1053,10 @@ public final class TorrentEngine {
         } while (Instant.now().isBefore(deadline));
         LOG.log(System.Logger.Level.WARNING, "Could not fetch metadata for magnet " + magnet.infoHash()
                 + " from any of " + alreadyTried.size() + " peer(s) tried");
-        recordMagnetAddFailed(magnet, "No peer had the metadata (tried " + alreadyTried.size() + ")");
+        recordMagnetAddFailed(magnet, "No peer had the metadata (tried " + alreadyTried.size() + ")", source);
     }
 
-    private void fetchMagnetMetadataViaDhtThenAdd(MagnetLink magnet) {
+    private void fetchMagnetMetadataViaDhtThenAdd(MagnetLink magnet, String source) {
         Settings settings = settingsStore.current();
         metadataFetchLimiter.resizeTo(settings.magnetFetchConcurrencyLimit());
         Instant deadline = Instant.now().plusSeconds(settings.magnetFetchTimeBudgetSeconds());
@@ -1000,7 +1067,7 @@ public final class TorrentEngine {
                 peers = dhtNode.findPeers(magnet.infoHash(), ourListenPort, false, DHT_QUERY_TIMEOUT);
             } catch (RuntimeException e) {
                 LOG.log(System.Logger.Level.WARNING, "DHT peer lookup failed for magnet " + magnet.infoHash(), e);
-                recordMagnetAddFailed(magnet, "DHT peer lookup failed");
+                recordMagnetAddFailed(magnet, "DHT peer lookup failed", source);
                 return;
             }
             List<PeerAddress> fresh = peers.stream()
@@ -1015,7 +1082,7 @@ public final class TorrentEngine {
                 // (start()/reannounce() -> startViaDht()/reannounceViaDht(), design_docs/0036's
                 // own addendum) from here on, same as it relied on DHT to find this first batch
                 // of peers.
-                addFetchedTorrent(magnet, infoDictBytes.get(), List.of());
+                addFetchedTorrent(magnet, infoDictBytes.get(), List.of(), source);
                 return;
             }
             if (fresh.isEmpty() && !sleepUnlessDeadlinePassed(EMPTY_ROUND_RETRY_DELAY, deadline)) {
@@ -1024,7 +1091,7 @@ public final class TorrentEngine {
         } while (Instant.now().isBefore(deadline));
         LOG.log(System.Logger.Level.WARNING, "Could not fetch metadata for magnet " + magnet.infoHash()
                 + " from any of " + alreadyTried.size() + " peer(s) tried");
-        recordMagnetAddFailed(magnet, "No peer had the metadata (tried " + alreadyTried.size() + ")");
+        recordMagnetAddFailed(magnet, "No peer had the metadata (tried " + alreadyTried.size() + ")", source);
     }
 
     /** Sleeps up to delay, but never past deadline, and never at all if deadline has already
@@ -1094,17 +1161,21 @@ public final class TorrentEngine {
 
     /** Shared by both magnet metadata-fetch paths above once raceOneRound() finds a winner.
      * trackerUrls becomes the resulting torrent's announce-list (empty for the DHT path).
-     * Package-private (not private) so tests can drive this directly rather than through a real
-     * peer metadata fetch - same test-visibility rationale as trackerStatusListenerFor above. */
-    void addFetchedTorrent(MagnetLink magnet, byte[] infoDictBytes, List<String> trackerUrls) {
+     * source is null for an ordinary REST/UI-triggered magnet add (resulting message "Added via
+     * magnet", the MAGNET_SOURCE constant) or WATCH_FOLDER_SOURCE for a watch-folder-dropped
+     * magnet file (resulting message "Added via watch folder" instead - the same label a
+     * watch-folder-dropped .torrent file already gets). Package-private (not private) so tests
+     * can drive this directly rather than through a real peer metadata fetch - same
+     * test-visibility rationale as trackerStatusListenerFor above. */
+    void addFetchedTorrent(MagnetLink magnet, byte[] infoDictBytes, List<String> trackerUrls, String source) {
         try {
-            addTorrent(synthesizeTorrentFileBytes(infoDictBytes, trackerUrls), MAGNET_SOURCE);
+            addTorrent(synthesizeTorrentFileBytes(infoDictBytes, trackerUrls), source != null ? source : MAGNET_SOURCE);
         } catch (IOException | RuntimeException e) {
             // The problem is on our side (storage, directory creation, ...), not this
             // peer's - trying another peer for the same doomed outcome wouldn't help.
             LOG.log(System.Logger.Level.WARNING,
                     "Fetched metadata for magnet " + magnet.infoHash() + " but could not add the torrent", e);
-            recordMagnetAddFailed(magnet, "Fetched metadata but could not add the torrent");
+            recordMagnetAddFailed(magnet, "Fetched metadata but could not add the torrent", source);
         }
     }
 

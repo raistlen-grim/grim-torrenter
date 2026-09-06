@@ -1,6 +1,8 @@
 # 0056 — Watch folder
 
-**Status:** Accepted
+**Status:** Accepted. `.magnet` file support and a configurable poll interval - both originally
+deferred, see the "Alternatives considered" section below - were built 2026-09-06; see their own
+addenda further down.
 
 ## Decision
 
@@ -10,7 +12,8 @@ into **`added/`/`failed/` subfolders** (not deleted, not left in place), with **
 cleanup** of those subfolders so they don't grow unbounded - matching the bounded-retention
 discipline [[0055-library-events]] already established for the event log
 ([[0051-stability-as-a-standing-consideration]]). Magnet-link files (e.g. a dropped `.magnet`
-text file) are explicitly **out of scope for this pass** - `.torrent` files only.
+text file) were explicitly **out of scope for this first pass** - `.torrent` files only - see the
+2026-09-06 addendum below for why and how that was later added.
 
 ### Directory layout and config
 
@@ -192,8 +195,128 @@ in practice.
     as how long the structured event log is worth keeping.
 - **A configurable poll interval** - deferred, not rejected outright; a fixed 30-second constant
   is simple and matches the existing seeding-limit cadence, and nothing about this feature's
-  first real usage is likely to demand tighter latency than that. Revisit if it does.
+  first real usage is likely to demand tighter latency than that. **Built 2026-09-06** - see the
+  addendum below.
 - **Magnet-link files** (e.g. a `.magnet` text file convention) - deferred (user decision,
   scoping conversation); `.torrent` files cover the concrete stated use case, and the mechanism
   built here (poll, stabilize, process-or-fail, move) extends to a second file type later without
-  rework.
+  rework. **Built 2026-09-06** - see the addendum below.
+
+## Configurable poll interval (added 2026-09-06)
+
+Closes this doc's own deferred "configurable poll interval" item. New live `Settings` field
+`watchFolderPollIntervalSeconds` (default 30s, matching the fixed cadence it replaces), same
+**no** "0/negative means unlimited" treatment as every other tunable interval field
+(`eventLogRetentionDays`, `dhtRefreshIntervalSeconds`, ...) - silently normalized to the default
+by `Settings`' own compact constructor.
+
+Same "engine-wide scheduled task, read once at construction, a live change takes effect on the
+engine's next construction/restart, not retroactively" shape `dhtRefreshIntervalSeconds`
+([[0028-magnet-links-and-dht]]'s own 2026-08-30 addendum) already established - the underlying
+`ScheduledExecutorService.scheduleWithFixedDelay()` period genuinely can't change mid-flight
+without cancelling and rebuilding the whole task, so this is a property of what
+`maintenanceScheduler` is, not a limitation particular to this field. `TorrentEngine` replaces
+the previous `WATCH_FOLDER_SCAN_INTERVAL_SECONDS` constant with a `watchFolderScanIntervalSeconds`
+field read from `Settings` at construction. Exposed as a new row in the Watch folder settings
+group, its own description calling out the restart caveat explicitly (same convention every
+other restart-required row on the Settings page already follows).
+
+## Magnet-link files (added 2026-09-06)
+
+Closes this doc's own deferred "magnet-link files" item. A dropped `.magnet` file is just a bare
+`magnet:` URI as the file's entire (trimmed) text content - no other structure. `scanWatchFolder()`'s
+candidate filter now matches either `.torrent` or `.magnet` (case-insensitive), and
+`processWatchedFile()` dispatches on extension to one of two extracted methods
+(`processWatchedTorrentFile()`, the pre-existing logic unchanged in behavior; a new
+`processWatchedMagnetFile()`).
+
+### "Added" means "accepted," not "resolved" - a real asymmetry from the `.torrent` case
+
+A `.torrent` file's outcome is fully synchronous - `addTorrent()` either returns (the torrent
+really is tracked) or throws (it really isn't) by the time `processWatchedTorrentFile()` decides
+which subfolder to move it to. A magnet add is fundamentally different:
+`TorrentEngine.addMagnet()` only ever synchronously resolves *one* case (no usable tracker and
+DHT unavailable - throws immediately) - every other case kicks off a real peer metadata fetch on
+a background virtual thread and returns immediately, with the real success/failure known only
+much later (bounded by `Settings.magnetFetchTimeBudgetSeconds`, default 90s).
+
+`processWatchedMagnetFile()` therefore moves a file to `added/` as soon as `addMagnet()` accepts
+it without throwing - **not** once it's actually resolved into a real torrent. This mirrors the
+same "success at request time isn't the same as success" shape already established for the REST
+magnet-add endpoint and its own optimistic pending-row UI ([[0060-magnet-add-failure-feedback]]):
+a background failure still surfaces, just as a `MAGNET_ADD_FAILED` library event rather than by
+this file's on-disk location. Waiting here for the real outcome before moving the file was
+rejected outright (see Alternatives) - it would block this whole scan tick for up to the full
+fetch time budget *per file*, serializing every other watch-folder candidate behind whichever
+magnet happens to be resolving slowest.
+
+### Source threading, for parity with the `.torrent` case
+
+A watch-folder-dropped `.torrent` file's resulting `ADDED` event already reads "Added via watch
+folder", distinguishing it from a direct upload. Making a watch-folder-dropped *magnet* file's
+eventual `ADDED` event carry the same distinction (rather than the generic "Added via magnet"
+every other magnet resolution gets, per this doc's own `MAGNET_RESOLVED` addendum) meant
+threading a `source` parameter the rest of the way through the magnet pipeline, which didn't
+carry one before now:
+
+- `addMagnet(MagnetLink)` (public) now delegates to a new package-private
+  `addMagnet(MagnetLink, String source)` - `null` from the public overload (ordinary REST/UI
+  adds, unchanged behavior), `WATCH_FOLDER_SOURCE` from `processWatchedMagnetFile()`.
+- `fetchMagnetMetadataViaTrackerThenAdd()`/`fetchMagnetMetadataViaDhtThenAdd()` both gained a
+  `source` parameter, threaded straight through to whichever they call next.
+- `addFetchedTorrent()` (already threading a `source` through to `addTorrent()` since the
+  `MAGNET_RESOLVED` addendum) now resolves it as `source != null ? source : MAGNET_SOURCE` -
+  `"magnet"` for the ordinary case (unchanged), the watch folder's own source string otherwise.
+- `recordMagnetAddFailed()` gained the same `source` parameter, prefixing a non-null source as
+  `"Watch folder: "` onto the message - the same literal prefix
+  `processWatchedTorrentFile()`'s own `ERROR` event already uses for a failed `.torrent` add, so
+  a watch-folder-triggered `MAGNET_ADD_FAILED` reads consistently with its `.torrent` counterpart
+  rather than looking like any other magnet failure.
+
+### Testing
+
+- `WatchFolderTest` (new cases) - a `.magnet` file with a usable (if unreachable) tracker URL is
+  accepted and moved to `added/` with no `ERROR` event recorded (the background fetch's own
+  eventual failure is a separate, unasserted `MAGNET_ADD_FAILED`, matching how this file's
+  existing `.torrent` tests already leave a resulting `ERROR` *session* state unasserted); a
+  `.magnet` file with no tracker and DHT disabled is moved to `failed/` with an `ERROR` event
+  naming the file (the one synchronous-throw case); a malformed `.magnet` file (not a magnet URI
+  at all) is likewise moved to `failed/` with an `ERROR` event naming the file.
+- `TorrentEngineTest` (new case) - `addFetchedTorrent()` called with a non-null source records
+  `"Added via watch folder"` instead of `"Added via magnet"` - the one piece of new logic in the
+  source-threading chain above that's cheaply, deterministically testable without a real peer
+  metadata fetch (every other link in the chain is a straight parameter pass-through).
+
+## Stability addendum ([[0051-stability-as-a-standing-consideration]])
+
+- **Hostile/malformed input**: a dropped `.magnet` file goes through the exact same
+  `MagnetLink.parse()`/`addMagnet()` path a REST-submitted magnet already does, with the same
+  limits - no new attack surface. A file that's neither valid UTF-8 text nor a parseable magnet
+  URI is simply a synchronous failure, moved to `failed/` like any other malformed input.
+- **No new unbounded growth**: `.magnet` files share the exact same `added/`/`failed/`
+  retention-and-prune discipline as `.torrent` files - no new storage mechanism.
+- **Resource cleanup**: reading a `.magnet` file's text content is a single bounded read (a
+  magnet URI is always a short, single-line string in practice), not a stream held open across
+  ticks - same "list, stat, move/delete, then go idle" shape as everything else in this method.
+- **The "accepted, not resolved" asymmetry above is itself worth flagging as a real, accepted
+  narrow edge case**: a `.magnet` file that ends up in `added/` still cost this feature nothing
+  extra to *bound* - the metadata-fetch attempt it kicked off is subject to the exact same
+  engine-wide `magnetFetchConcurrencyLimit`/`magnetFetchTimeBudgetSeconds` bounds every other
+  magnet add already respects (design_docs/0028's own addendum), regardless of whether it was
+  triggered by this feature or the REST endpoint.
+
+## Alternatives considered (2026-09-06 addendum)
+
+- **Waiting for the real fetch outcome before deciding `added/` vs. `failed/`** - rejected; would
+  serialize `scanWatchFolder()`'s entire tick behind whichever magnet in the batch takes longest
+  to resolve (up to the full `magnetFetchTimeBudgetSeconds` budget), defeating the point of a
+  background, concurrent, virtual-thread-based fetch design elsewhere in this codebase. The
+  existing `MAGNET_ADD_FAILED` event already gives a real, if asynchronous, failure signal.
+- **A distinctly-labeled "pending" third subfolder** for magnet files whose fetch hasn't resolved
+  yet - rejected; would need `scanWatchFolder()` to track in-flight fetches across ticks and move
+  the file a *second* time once resolved, real added complexity for a distinction the Events tab
+  (`MAGNET_ADD_FAILED`/`ADDED`) already makes without it.
+- **Leaving watch-folder-dropped magnets labeled generically "Added via magnet"** (no source
+  threading) - considered, for less invasive scope; rejected in favor of the fuller threading
+  above once it was clear the change was a straightforward parameter pass-through at every link,
+  for consistency with the `.torrent` case's own existing "Added via watch folder" precedent.

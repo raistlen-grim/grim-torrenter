@@ -35,7 +35,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** See design_docs/0056. scanWatchFolder() is called directly, twice per file (a stability
  * check needs one full "unchanged since last tick" interval before a file is ever read), rather
- * than waiting on the real WATCH_FOLDER_SCAN_INTERVAL_SECONDS-second scheduler tick - same
+ * than waiting on the real watchFolderScanIntervalSeconds-second scheduler tick - same
  * spirit as TorrentEngineTest's own checkSeedingLimits() tests. Announce URLs are deliberately
  * unreachable (same trick TorrentResourceTest/EventsResourceTest use) - these tests exercise
  * the watch-folder mechanism itself, not tracker communication; a resulting ERROR state
@@ -206,6 +206,69 @@ class WatchFolderTest {
         assertTrue(Files.exists(file), "a file that's still changing must not be read or moved yet");
         assertFalse(Files.exists(watchDir.resolve("added").resolve("still-writing.torrent")));
         assertFalse(Files.exists(watchDir.resolve("failed").resolve("still-writing.torrent")));
+    }
+
+    /** design_docs/0056's own 2026-09-06 addendum: a .magnet file is just a bare magnet: URI as
+     * the file's entire text content. "Accepted" here means addMagnet() didn't throw
+     * synchronously (it kicks off a background metadata fetch on a virtual thread and returns) -
+     * not that the magnet has actually resolved yet, same "success at request time isn't the
+     * same as success" shape design_docs/0060 already established for the REST endpoint. A real
+     * background failure (this magnet's tracker is unreachable, same deliberate-unreachable-URL
+     * trick this file's own class Javadoc explains) would show up later as its own
+     * MAGNET_ADD_FAILED event, not by this file's on-disk location - not asserted against here,
+     * same spirit as the .torrent tests above not asserting on the resulting ERROR state. */
+    @Test
+    void aDroppedValidMagnetFileIsAcceptedAndMovedToAdded(@TempDir Path root) throws IOException {
+        Path watchDir = Files.createDirectories(root.resolve("watch"));
+        InMemoryEventStore eventStore = new InMemoryEventStore();
+        engine = newEngine(root.resolve("downloads"), watchDir,
+                settingsWithWatchFolder(true, 7), eventStore);
+        String magnetUri = "magnet:?xt=urn:btih:" + "a".repeat(40) + "&dn=watch-magnet&tr=http://127.0.0.1:1/announce";
+        Files.writeString(watchDir.resolve("drop-me.magnet"), magnetUri);
+
+        engine.scanWatchFolder();
+        engine.scanWatchFolder();
+
+        assertFalse(Files.exists(watchDir.resolve("drop-me.magnet")));
+        assertTrue(Files.exists(watchDir.resolve("added").resolve("drop-me.magnet")));
+        assertTrue(eventStore.all().stream().noneMatch(e -> e.type() == EventType.ERROR));
+    }
+
+    @Test
+    void aMagnetFileWithNoUsableTrackerAndDhtDisabledIsMovedToFailed(@TempDir Path root) throws IOException {
+        Path watchDir = Files.createDirectories(root.resolve("watch"));
+        InMemoryEventStore eventStore = new InMemoryEventStore();
+        engine = newEngine(root.resolve("downloads"), watchDir,
+                settingsWithWatchFolder(true, 7), eventStore);
+        String magnetUri = "magnet:?xt=urn:btih:" + "b".repeat(40) + "&dn=no-tracker-magnet";
+        Files.writeString(watchDir.resolve("no-tracker.magnet"), magnetUri);
+
+        engine.scanWatchFolder();
+        engine.scanWatchFolder();
+
+        assertFalse(Files.exists(watchDir.resolve("no-tracker.magnet")));
+        assertTrue(Files.exists(watchDir.resolve("failed").resolve("no-tracker.magnet")));
+        List<LibraryEvent> errors = eventStore.all().stream().filter(e -> e.type() == EventType.ERROR).toList();
+        assertEquals(1, errors.size());
+        assertTrue(errors.get(0).message().contains("no-tracker.magnet"));
+    }
+
+    @Test
+    void aMalformedMagnetFileIsMovedToFailedAndRecordsAnErrorEvent(@TempDir Path root) throws IOException {
+        Path watchDir = Files.createDirectories(root.resolve("watch"));
+        InMemoryEventStore eventStore = new InMemoryEventStore();
+        engine = newEngine(root.resolve("downloads"), watchDir,
+                settingsWithWatchFolder(true, 7), eventStore);
+        Files.writeString(watchDir.resolve("garbage.magnet"), "not a magnet uri at all");
+
+        engine.scanWatchFolder();
+        engine.scanWatchFolder();
+
+        assertFalse(Files.exists(watchDir.resolve("garbage.magnet")));
+        assertTrue(Files.exists(watchDir.resolve("failed").resolve("garbage.magnet")));
+        List<LibraryEvent> errors = eventStore.all().stream().filter(e -> e.type() == EventType.ERROR).toList();
+        assertEquals(1, errors.size());
+        assertTrue(errors.get(0).message().contains("garbage.magnet"));
     }
 
     @Test

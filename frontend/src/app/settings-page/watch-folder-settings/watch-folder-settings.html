@@ -33,4 +33,26 @@
       </p-inputgroup>
     </div>
   </div>
+
+  <div class="settings-row">
+    <div class="settings-row-label">
+      <label for="watchFolderPollIntervalSeconds">Poll interval</label>
+      <p class="settings-row-description">
+        How often to check the folder for new files. Takes effect the next time the app
+        restarts.
+      </p>
+    </div>
+    <div class="settings-row-control">
+      <p-inputgroup class="settings-number-group">
+        <p-inputnumber
+          inputId="watchFolderPollIntervalSeconds"
+          formControlName="pollIntervalSeconds"
+          [min]="1"
+          [showButtons]="false"
+          inputStyleClass="settings-number-input"
+        />
+        <p-inputgroup-addon class="settings-number-unit">seconds</p-inputgroup-addon>
+      </p-inputgroup>
+    </div>
+  </div>
 </div>

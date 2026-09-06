@@ -136,6 +136,15 @@ import com.grimtorrenter.engine.mse.EncryptionMode;
  * a shorter-than-libtorrent-typical (~15 minute) default is reasonable DHT etiquette while
  * still visibly filling in the table faster after a fresh start. Same **no** "0/negative means
  * unlimited" treatment as the fields above, for the same reason.
+ *
+ * <p>watchFolderPollIntervalSeconds (design_docs/0056's own 2026-09-06 addendum, closing that
+ * doc's own deferred "configurable poll interval" item) is how often scanWatchFolder() checks
+ * the watch directory for new/stabilized files - same "engine-wide scheduled task, takes effect
+ * on the engine's next construction/restart, not retroactively" shape as
+ * dhtRefreshIntervalSeconds just above, for the same underlying reason. Default 30s, matching
+ * the fixed cadence this replaces. Same **no** "0/negative means unlimited" treatment as the
+ * fields above - a poll interval of "never" would just mean the feature silently stops working,
+ * not a meaningful "unlimited" the way a rate limit or seeding ratio has one.
  */
 public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
                         long uploadRateLimitBytesPerSec, long downloadRateLimitBytesPerSec,
@@ -150,7 +159,8 @@ public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
                         int magnetFetchTimeBudgetSeconds, int magnetFetchCandidatesPerRound,
                         int magnetFetchConcurrencyLimit,
                         int trackerlessDhtReannounceIntervalSeconds,
-                        int dhtRefreshIntervalSeconds) {
+                        int dhtRefreshIntervalSeconds,
+                        int watchFolderPollIntervalSeconds) {
 
     private static final int DEFAULT_EVENT_LOG_RETENTION_DAYS = 30;
     private static final int DEFAULT_WATCH_FOLDER_RETENTION_DAYS = 7;
@@ -180,6 +190,9 @@ public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
      * for why 300s is reasonable here despite being much shorter than libtorrent's own ~15
      * minute bucket-refresh cadence. */
     private static final int DEFAULT_DHT_REFRESH_INTERVAL_SECONDS = 300;
+    /** design_docs/0056's own 2026-09-06 addendum - matches the fixed 30s cadence this field
+     * replaces. */
+    private static final int DEFAULT_WATCH_FOLDER_POLL_INTERVAL_SECONDS = 30;
 
     /** Backfills encryptionMode to PREFERRED when null - the common case being a settings.json
      * persisted before this field existed, which Jackson otherwise deserializes with this
@@ -220,6 +233,39 @@ public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
         if (dhtRefreshIntervalSeconds <= 0) {
             dhtRefreshIntervalSeconds = DEFAULT_DHT_REFRESH_INTERVAL_SECONDS;
         }
+        if (watchFolderPollIntervalSeconds <= 0) {
+            watchFolderPollIntervalSeconds = DEFAULT_WATCH_FOLDER_POLL_INTERVAL_SECONDS;
+        }
+    }
+
+    /** Same as the canonical constructor above but without watchFolderPollIntervalSeconds -
+     * for every caller that predates this addition (every secondary constructor below, plus any
+     * direct twenty-four-arg caller, e.g. WatchFolderTest's settingsWithWatchFolder()),
+     * defaulting it (the compact constructor above normalizes 0 to the real default, so passing
+     * 0 here is equivalent to passing the default explicitly). Same "add a sibling overload,
+     * touch zero existing call sites" pattern used for every prior field addition to this
+     * record. See design_docs/0056's own 2026-09-06 addendum. */
+    public Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
+                     long uploadRateLimitBytesPerSec, long downloadRateLimitBytesPerSec,
+                     boolean rateLimitScheduleEnabled, String rateLimitScheduleStart, String rateLimitScheduleEnd,
+                     long scheduledUploadRateLimitBytesPerSec, long scheduledDownloadRateLimitBytesPerSec,
+                     EncryptionMode encryptionMode, long rateLimitBurstSeconds,
+                     boolean seedRatioLimitEnabled, double seedRatioLimit,
+                     boolean seedTimeLimitEnabled, long seedTimeLimitMinutes,
+                     int eventLogRetentionDays,
+                     boolean watchFolderEnabled, int watchFolderRetentionDays,
+                     ThemePreference theme,
+                     int magnetFetchTimeBudgetSeconds, int magnetFetchCandidatesPerRound,
+                     int magnetFetchConcurrencyLimit,
+                     int trackerlessDhtReannounceIntervalSeconds,
+                     int dhtRefreshIntervalSeconds) {
+        this(dhtEnabled, acceptIncomingConnections, uploadRateLimitBytesPerSec, downloadRateLimitBytesPerSec,
+                rateLimitScheduleEnabled, rateLimitScheduleStart, rateLimitScheduleEnd,
+                scheduledUploadRateLimitBytesPerSec, scheduledDownloadRateLimitBytesPerSec, encryptionMode,
+                rateLimitBurstSeconds, seedRatioLimitEnabled, seedRatioLimit, seedTimeLimitEnabled,
+                seedTimeLimitMinutes, eventLogRetentionDays, watchFolderEnabled, watchFolderRetentionDays, theme,
+                magnetFetchTimeBudgetSeconds, magnetFetchCandidatesPerRound, magnetFetchConcurrencyLimit,
+                trackerlessDhtReannounceIntervalSeconds, dhtRefreshIntervalSeconds, 0);
     }
 
     /** Same as the canonical constructor above but without dhtRefreshIntervalSeconds - for

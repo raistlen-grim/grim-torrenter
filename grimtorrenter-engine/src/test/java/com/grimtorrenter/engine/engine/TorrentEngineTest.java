@@ -836,16 +836,40 @@ class TorrentEngineTest {
         MagnetLink magnet = new MagnetLink(InfoHash.of(fill(20, 18)), "magnet-resolved.bin", List.of());
 
         // Empty tracker list, same as the real DHT-resolved-magnet call site
-        // (addFetchedTorrent(magnet, infoDictBytes.get(), List.of())) - avoids a real network
-        // call to a fake tracker host, which createTrackerClient(List.of(...)) would otherwise
-        // attempt via TorrentSession.start().
-        engine.addFetchedTorrent(magnet, infoDict, List.of());
+        // (addFetchedTorrent(magnet, infoDictBytes.get(), List.of(), source)) - avoids a real
+        // network call to a fake tracker host, which createTrackerClient(List.of(...)) would
+        // otherwise attempt via TorrentSession.start(). source: null, same as an ordinary
+        // REST/UI-triggered magnet add (not watch-folder-sourced).
+        engine.addFetchedTorrent(magnet, infoDict, List.of(), null);
 
         InfoHash resultingInfoHash = InfoHash.of(sha1(infoDict));
         List<LibraryEvent> events = eventStore.forTorrent(resultingInfoHash.hex());
         LibraryEvent added = events.stream().filter(e -> e.type() == EventType.ADDED).findFirst().orElseThrow();
         assertEquals("magnet-resolved.bin", added.torrentName());
         assertEquals("Added via magnet", added.message());
+    }
+
+    /** design_docs/0056's own 2026-09-06 addendum: a watch-folder-dropped magnet file's
+     * resulting ADDED event reads "Added via watch folder" - the same label a watch-folder-
+     * dropped .torrent file already gets - not "Added via magnet", by passing a non-null
+     * source through addFetchedTorrent() (the literal string here matches
+     * TorrentEngine's own private WATCH_FOLDER_SOURCE constant; not referenced directly since
+     * it's private, same as every other test in this class asserting against a literal
+     * expected message). */
+    @Test
+    void addFetchedTorrentRecordsAnAddedViaWatchFolderMessageWhenSourceIsWatchFolder(@TempDir Path tempDir) {
+        InMemoryEventStore eventStore = new InMemoryEventStore();
+        TorrentEngine engine = new TorrentEngine(tempDir, 6881, new NoOpListener(), false, false,
+                new InMemorySettingsStore(), FileHandlePool.unbounded(), Integer.MAX_VALUE, eventStore);
+        byte[] infoDict = infoDictBytes("magnet-watch-folder.bin", fill(20, 19));
+        MagnetLink magnet = new MagnetLink(InfoHash.of(fill(20, 20)), "magnet-watch-folder.bin", List.of());
+
+        engine.addFetchedTorrent(magnet, infoDict, List.of(), "watch folder");
+
+        InfoHash resultingInfoHash = InfoHash.of(sha1(infoDict));
+        List<LibraryEvent> events = eventStore.forTorrent(resultingInfoHash.hex());
+        LibraryEvent added = events.stream().filter(e -> e.type() == EventType.ADDED).findFirst().orElseThrow();
+        assertEquals("Added via watch folder", added.message());
     }
 
     /** The "override can enable a limit the global default leaves disabled" direction isn't
