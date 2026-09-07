@@ -348,6 +348,18 @@ h1.display-font {
   line-height: 1.4;
 }
 
+/* A row-level validation reason, distinct from .settings-row-description's plain ink-weight
+ * hint - uses the one reserved alarm color (design_docs/0034), not opacity alone, since this
+ * is the reason a control's current value can't actually be saved, not just background
+ * context. First use: the Security group's "Require a password" row (design_docs/0061),
+ * toggled on with no password set yet. */
+.settings-row-error {
+  margin: 3px 0 0;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--alarm);
+}
+
 .settings-row-control {
   flex: none;
   display: flex;
@@ -511,4 +523,20 @@ p-inputgroup.settings-number-group .p-inputtext {
  * `padding-left: 16px in addition to the row shell`). */
 .settings-schedule-row {
   padding-left: 16px;
+}
+
+/* Visually hidden but still reachable by assistive tech - for a real <label> paired with a
+ * PrimeNG input (e.g. p-password) whose own placeholder isn't a substitute for one (WCAG).
+ * Global rather than component-scoped so both the login page and the Security settings group
+ * (design_docs/0061) can share it without duplicating the same rule. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }

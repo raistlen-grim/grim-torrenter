@@ -70,7 +70,17 @@ export type ThemePreference = 'SYSTEM' | 'LIGHT' | 'DARK';
  * effect on the backend's next construction/restart, not retroactively" shape as
  * dhtRefreshIntervalSeconds just above. Default 30s (the fixed cadence this field replaces).
  * Same no-unlimited-value, silently-normalized-below-1 treatment as the other tunable fields
- * above. */
+ * above. authEnabled (design_docs/0061) gates every /api/* request and the /ws/torrents
+ * WebSocket behind a bearer token once true - live, checked on every request. Default false.
+ * There is deliberately no password field here - GET /api/settings echoes this whole record
+ * back verbatim, and a password hash must never be reachable through it; the password itself
+ * is managed entirely through AuthService (POST /api/auth/login, PUT /api/auth/password).
+ * authTokenTtlDays is how many days of no use before a session (bearer token) expires -
+ * sliding (refreshed on every authenticated request, so this is "how long since you were
+ * last seen," not "how often you must log in again"), live, and read fresh on every request.
+ * Same no-unlimited-value, silently-normalized-below-1 treatment as eventLogRetentionDays/
+ * watchFolderRetentionDays - a session store that can be told to never expire a token is
+ * exactly what this field exists to prevent. Default 30. */
 export interface Settings {
   dhtEnabled: boolean;
   acceptIncomingConnections: boolean;
@@ -97,4 +107,6 @@ export interface Settings {
   dhtReannounceIntervalSeconds: number;
   dhtRefreshIntervalSeconds: number;
   watchFolderPollIntervalSeconds: number;
+  authEnabled: boolean;
+  authTokenTtlDays: number;
 }

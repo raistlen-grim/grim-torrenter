@@ -38,6 +38,12 @@ import {
   rateLimitSettingsPatch,
 } from './rate-limit-settings/rate-limit-settings';
 import {
+  SecuritySettings,
+  SecuritySettingsForm,
+  buildSecuritySettingsForm,
+  securitySettingsPatch,
+} from './security-settings/security-settings';
+import {
   SeedingSettings,
   SeedingSettingsForm,
   buildSeedingSettingsForm,
@@ -58,6 +64,7 @@ type SettingsFormGroup = FormGroup<{
   eventLog: EventLogSettingsForm;
   watchFolder: WatchFolderSettingsForm;
   magnetFetch: MagnetFetchSettingsForm;
+  security: SecuritySettingsForm;
 }>;
 
 type SettingsGroupKey =
@@ -67,7 +74,8 @@ type SettingsGroupKey =
   | 'seeding'
   | 'eventLog'
   | 'watchFolder'
-  | 'magnetFetch';
+  | 'magnetFetch'
+  | 'security';
 
 /** Labels/icons/hints for the settings-page nav (a plain vertical list, not PrimeNG Tabs - see
  * design_docs/0045's own addendum: at this page's width, seven labels including multi-word
@@ -126,6 +134,12 @@ const SETTINGS_GROUPS: { key: SettingsGroupKey; label: string; icon: string; hin
     icon: 'pi-link',
     hint: "How hard to try before giving up on a magnet link's metadata.",
   },
+  {
+    key: 'security',
+    label: 'Security',
+    icon: 'pi-lock',
+    hint: 'Password-protect the REST API and web UI.',
+  },
 ];
 
 /**
@@ -145,6 +159,7 @@ const SETTINGS_GROUPS: { key: SettingsGroupKey; label: string; icon: string; hin
     MagnetFetchSettings,
     NetworkSettings,
     RateLimitSettings,
+    SecuritySettings,
     SeedingSettings,
     ToastModule,
     WatchFolderSettings,
@@ -188,6 +203,7 @@ export class SettingsPage {
             eventLog: buildEventLogSettingsForm(settings),
             watchFolder: buildWatchFolderSettingsForm(settings),
             magnetFetch: buildMagnetFetchSettingsForm(settings),
+            security: buildSecuritySettingsForm(settings),
           }),
         );
       }
@@ -209,6 +225,7 @@ export class SettingsPage {
       ...eventLogSettingsPatch(value.eventLog),
       ...watchFolderSettingsPatch(value.watchFolder),
       ...magnetFetchSettingsPatch(value.magnetFetch),
+      ...securitySettingsPatch(value.security),
     };
 
     this.saving.set(true);

@@ -1,6 +1,9 @@
 {
   "acceptIncomingConnections" : true,
+  "authEnabled" : false,
+  "authTokenTtlDays" : 30,
   "dhtEnabled" : true,
+  "dhtReannounceIntervalSeconds" : 300,
   "dhtRefreshIntervalSeconds" : 30,
   "downloadRateLimitBytesPerSec" : 0,
   "encryptionMode" : "PREFERRED",
@@ -19,8 +22,8 @@
   "seedTimeLimitEnabled" : false,
   "seedTimeLimitMinutes" : 0,
   "theme" : "SYSTEM",
-  "trackerlessDhtReannounceIntervalSeconds" : 30,
   "uploadRateLimitBytesPerSec" : 0,
   "watchFolderEnabled" : true,
+  "watchFolderPollIntervalSeconds" : 30,
   "watchFolderRetentionDays" : 7
 }

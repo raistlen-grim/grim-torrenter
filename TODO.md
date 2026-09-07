@@ -6,6 +6,11 @@ nothing here gets acted on until it's explicitly picked up.
 
 - Notification service (emails, or something else yet to be defined)
 - Run a user-configured script automatically when a torrent completes
+- ~~Authentication for the REST API/UI - currently completely unauthed.~~ **Done
+  (2026-09-07)** - see `design_docs/0061`. Raised by the user: the REST endpoint is one of
+  this implementation's real strengths, but that's undermined if it can't be exposed to the
+  internet safely. Manual browser verification of the WebSocket handshake-header check
+  (`Sec-WebSocket-Protocol`) is the one remaining open item, per that doc's own notes.
 - ~~Migrate off `@primeng/themes` (deprecated upstream, per its own `npm ci` warning) to
   `@primeuix/themes`, the maintained replacement.~~ **Done (2026-09-03)** - see
   `design_docs/0032`'s own addendum. Only `npm install` (to catch up the lockfile) remains,

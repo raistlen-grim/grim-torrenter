@@ -494,6 +494,46 @@ complete**, per the phased scope in [[0009-phased-scope]]:
   peers and 1 working tracker to 20 connected peers, 9 working trackers, multiple peers actually
   unchoking and sending real data, and genuine sustained throughput (96.0 KB/s at 2% and
   climbing) - deployed for a 24-hour stability test.
+- **Authentication for the REST API/UI, built and test-verified (2026-09-07)** -
+  picked from `TODO.md`, raised by the user: the REST API is one of this implementation's real
+  strengths, but that's moot if it can't be safely exposed beyond localhost/LAN. A single
+  shared password (no username - one torrent list per deployment, not one per account),
+  persisted in its own `auth.json` (deliberately separate from `settings.json`, which
+  `GET /api/settings` echoes back verbatim) and genuinely live-changeable via a new
+  `PUT /api/auth/password` while the app keeps running - revised away from an original
+  deploy-time-only credential once the user pointed out that can't support changing the
+  password live. Bearer-token sessions (`POST /api/auth/login`/`logout`), a
+  `AuthenticationFilter` gating every `/api/*` request once a new live `Settings.authEnabled`
+  is true (default false; rejected by `SettingsResource` unless a password already exists, so
+  it can never end up true with nothing to log in with), and a token passed as a WebSocket
+  subprotocol (`Sec-WebSocket-Protocol: bearer, <token>`) rather than a URL query param -
+  revised after an automated security review flagged that a reverse-proxy access log would
+  otherwise capture the token in plain sight. Session length (`Settings.authTokenTtlDays`,
+  sliding, default 30) is itself a live setting too, at the user's request. A global
+  failed-login lockout with exponential
+  backoff; deliberately no IP-allowlist/LAN-bypass feature (the exact mechanism behind a real
+  qBittorrent CVE). Frontend: `AuthService`/`authInterceptor`/`authGuard`, a standalone
+  `/login` route rendered outside the app shell entirely, and a new Security settings group.
+  Explicitly **not** a substitute for TLS - a bearer token sent over plain HTTP is just as
+  interceptable as any other credential; confirmed with the user that GrimTorrenter won't
+  terminate TLS itself and operators are expected to front it with a reverse proxy before
+  exposing it to the internet. The full `mvn test` reactor (364 tests) passes; getting there
+  found and fixed four real bugs (a test StackOverflow from an overzealous find/replace, a
+  Quarkus/SmallRye gotcha where a `String`-typed `@ConfigProperty` with an empty-string
+  `defaultValue` isn't actually treated as having one - fixed via `Optional<String>` instead -
+  a login-lockout policy that penalized a single honest typo, and a stale test assertion missing
+  a bearer token). One real bug also came from an automated security review, not a test run: the
+  WebSocket token originally rode as a `?token=` URL query param, which a fronting reverse proxy
+  (recommended above, for TLS) would commonly capture in its own access log - moved to the
+  `Sec-WebSocket-Protocol` header instead. A real UX issue surfaced by the user manually
+  exercising the Settings page, also fixed same-day: the "Require a password" toggle was
+  originally disabled until a password existed, sitting *above* the password field - a
+  confusing, easy-to-miss precondition. Reordered (password field first) and, at the user's own
+  suggestion, changed from a disabled control to a validity-based one - the toggle is always
+  clickable, but toggling it on with no password set marks it invalid, disabling the page's own
+  Save button (the same mechanism every other group's validation already uses) with a specific
+  visible reason shown right at the toggle, rather than a disabled control or a generic
+  post-Save error. ([[0061-authentication]])
 
 **Not yet built** (the rest of Phase 3):
 
@@ -596,10 +636,11 @@ original Phase 3 list is now built; the engine stability/scale audit is fully cl
 seeding limits, library events, the watch folder, service status, the row-selected highlight,
 magnet-add reliability/feedback, periodic DHT re-query for trackerless torrents, DHT
 routing-table health, DHT routing-table persistence across restarts, the DHT healthy-vs-sparse
-`DEGRADED` service state, the `@primeng/themes` → `@primeuix/themes` migration, and the
+`DEGRADED` service state, the `@primeng/themes` → `@primeuix/themes` migration, the
 peer/seed-count investigation (DHT as a concurrent source, BEP 27 private-torrent gating,
-continuous connection refill, concurrent multi-tracker announce - all picked from `TODO.md`)
-are done:
+continuous connection refill, concurrent multi-tracker announce - all picked from `TODO.md`),
+and REST/WebSocket authentication (picked from `TODO.md`, built and test-verified) are
+done:
 
 1. The remaining `TODO.md` items: a notification service (still fully unscoped), running a
    user-configured script automatically on torrent completion, LSD (BEP 14, minor), a

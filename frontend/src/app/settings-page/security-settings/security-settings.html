@@ -1,0 +1,87 @@
+<div [formGroup]="passwordForm" class="settings-row">
+  <div class="settings-row-label">
+    <label for="newPassword">{{ hasExistingPassword() ? 'Change password' : 'Set password' }}</label>
+    <p class="settings-row-description">
+      @if (hasExistingPassword()) {
+        Changing this doesn't sign out sessions already logged in elsewhere - they stay valid
+        until they expire on their own.
+      } @else {
+        Set a password here first - "Require a password" below can be switched on regardless,
+        but won't be saveable until one exists.
+      }
+    </p>
+  </div>
+  <div class="settings-row-control password-controls">
+    @if (hasExistingPassword()) {
+      <label for="currentPassword" class="sr-only">Current password</label>
+      <p-password
+        formControlName="currentPassword"
+        [feedback]="false"
+        [toggleMask]="true"
+        placeholder="Current password"
+        inputId="currentPassword"
+        autocomplete="current-password"
+      />
+    }
+    <label for="newPassword" class="sr-only">New password</label>
+    <p-password
+      formControlName="newPassword"
+      [feedback]="true"
+      [toggleMask]="true"
+      placeholder="New password"
+      inputId="newPassword"
+      autocomplete="new-password"
+    />
+    <p-button
+      label="Save password"
+      size="small"
+      [loading]="savingPassword()"
+      [disabled]="passwordForm.invalid || savingPassword()"
+      (onClick)="savePassword()"
+    />
+  </div>
+</div>
+
+<div [formGroup]="form()">
+  <div class="settings-row">
+    <div class="settings-row-label">
+      <label for="authEnabled">Require a password</label>
+      <p class="settings-row-description">
+        Protects every REST/WebSocket endpoint behind the password above. Off by default.
+        This alone does not protect against someone reading unencrypted network traffic -
+        put a TLS-terminating reverse proxy in front of GrimTorrenter too before exposing it
+        beyond your own LAN. Live - takes effect on your very next request, no restart
+        needed.
+      </p>
+      @if (passwordRequiredError()) {
+        <p class="settings-row-error" role="alert">Set a password above before this can be saved.</p>
+      }
+    </div>
+    <div class="settings-row-control">
+      <p-toggleswitch inputId="authEnabled" formControlName="enabled" />
+    </div>
+  </div>
+
+  <div class="settings-row">
+    <div class="settings-row-label">
+      <label for="authTokenTtlDays">Session length</label>
+      <p class="settings-row-description">
+        How many days of no use before a login is forgotten. Refreshed on every request, so
+        this is how long a session can sit idle, not how often you must log in. Live - takes
+        effect immediately, including for sessions already logged in.
+      </p>
+    </div>
+    <div class="settings-row-control">
+      <p-inputgroup class="settings-number-group">
+        <p-inputnumber
+          inputId="authTokenTtlDays"
+          formControlName="tokenTtlDays"
+          [min]="1"
+          [showButtons]="false"
+          inputStyleClass="settings-number-input"
+        />
+        <p-inputgroup-addon class="settings-number-unit">days</p-inputgroup-addon>
+      </p-inputgroup>
+    </div>
+  </div>
+</div>

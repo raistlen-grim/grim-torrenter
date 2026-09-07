@@ -3,6 +3,7 @@ import { Injectable, computed, inject, signal } from '@angular/core';
 import { LibraryEvent } from '../models/events.model';
 import { Torrent, TorrentWithRate } from '../models/torrent.model';
 import { RateTracker, RateWindows } from '../shared/rate-tracker';
+import { AuthService } from './auth.service';
 import { TorrentService } from './torrent.service';
 
 /** type is "state-changed" (payload: a single Torrent), "snapshot" (payload: Torrent[]), or
@@ -56,6 +57,7 @@ export const PRIMARY_RATE_WINDOW = '15s';
 @Injectable({ providedIn: 'root' })
 export class TorrentEventsService {
   private readonly torrentService = inject(TorrentService);
+  private readonly authService = inject(AuthService);
 
   private readonly torrentsByHash = signal(new Map<string, Torrent>());
   private readonly ratesByHash = signal(new Map<string, Rates>());
@@ -104,9 +106,21 @@ export class TorrentEventsService {
     });
   }
 
+  /** Sends the current bearer token as a WebSocket subprotocol (the constructor's second
+   * argument), not a URL query param - browsers can't set custom headers on a WebSocket
+   * handshake at all, but the subprotocol list IS carried as a real Sec-WebSocket-Protocol
+   * request header, which TorrentWebSocket's own @OnOpen reads (design_docs/0061). Deliberately
+   * not a query param: a reverse proxy in front of this app (recommended for TLS - see that
+   * doc) commonly logs the full request URL by default, but not arbitrary headers, so a query
+   * param would leak a long-lived credential into proxy access logs. Read fresh on every call
+   * (including a reconnect after a dropped connection), so a token obtained after this
+   * service's first connect attempt - e.g. LoginPage calling connect() once login succeeds -
+   * is still picked up. */
   private openSocket(): void {
     const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
-    this.socket = new WebSocket(`${protocol}://${location.host}/ws/torrents`);
+    const token = this.authService.token();
+    const subprotocols = token ? ['bearer', token] : undefined;
+    this.socket = new WebSocket(`${protocol}://${location.host}/ws/torrents`, subprotocols);
     this.socket.onmessage = (event) => this.handleMessage(JSON.parse(event.data));
     this.socket.onclose = () => {
       this.socket = undefined;

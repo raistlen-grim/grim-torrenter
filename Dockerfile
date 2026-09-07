@@ -38,12 +38,26 @@ EXPOSE 8080
 EXPOSE 6881/tcp
 EXPOSE 6881/udp
 
+# Authentication (design_docs/0061) is off by default (Settings.authEnabled=false) - the
+# REST API/WebSocket/web UI are all wide open until it's turned on. If you're exposing this
+# container beyond your own LAN, turn it on: set an initial password via
+# `-e grimtorrenter.bootstrap-password=<password>` on the container's first run (ignored on
+# every later run once config-directory/auth.json already exists - change the password
+# through the app itself after that, via the Settings page), then enable "Require a
+# password" on the Settings page's Security group. Authentication alone does not protect
+# against a network eavesdropper - a bearer token sent over plain HTTP can be captured and
+# reused just like any other credential - so also put a TLS-terminating reverse proxy
+# (Caddy, Traefik, nginx, ...) in front of this container before exposing it to the
+# internet; this image does not terminate TLS itself.
+
 # Three independently mountable directories, all created automatically if missing:
 #   grimtorrenter.download-directory (default ./downloads, relative to /app) - torrent data.
 #   grimtorrenter.config-directory   (default ./config, relative to /app)    - settings.json,
-#                                     the library event log (config-directory/events/, rolling
-#                                     daily files - see design_docs/0055), and other small
-#                                     persisted state (see design_docs/0041).
+#                                     auth.json (the password hash, if one's been set - see
+#                                     design_docs/0061), the library event log
+#                                     (config-directory/events/, rolling daily files - see
+#                                     design_docs/0055), and other small persisted state (see
+#                                     design_docs/0041).
 #   grimtorrenter.watch-directory    (default ./watch, relative to /app)     - the watch-folder
 #                                     auto-add feature (design_docs/0056, off by default -
 #                                     Settings.watchFolderEnabled). Drop a .torrent file here to

@@ -148,6 +148,28 @@ import com.grimtorrenter.engine.mse.EncryptionMode;
  * the fixed cadence this replaces. Same **no** "0/negative means unlimited" treatment as the
  * fields above - a poll interval of "never" would just mean the feature silently stops working,
  * not a meaningful "unlimited" the way a rate limit or seeding ratio has one.
+ *
+ * <p>authEnabled (design_docs/0061) gates every /api/* request (and the /ws/torrents
+ * WebSocket) behind a bearer token once true - genuinely live, checked fresh on every request
+ * by AuthenticationFilter (grimtorrenter-app), no restart needed. Default false, like the rate
+ * limits/seeding limits/watch folder - a feature that can lock a user out of their own API if
+ * misconfigured is a bigger surprise to default on than DHT/incoming-connections ever were.
+ * The actual password lives in grimtorrenter-app's own AuthStore/auth.json, deliberately not a
+ * field on this record - GET /api/settings echoes this whole record back verbatim, and a
+ * password hash must never be reachable through it. SettingsResource itself refuses to
+ * persist authEnabled=true unless a password already exists, so this flag can never end up
+ * true with nothing to log in with.
+ *
+ * <p>authTokenTtlDays (design_docs/0061's own addendum) is how many days of no use before a
+ * bearer token issued by AuthResource.login() is treated as expired - sliding, not fixed from
+ * issue: SessionTokenStore refreshes it on every validated request, so this is really "how
+ * long since you were last seen," not "how often you must re-enter the password." Genuinely
+ * live - SessionTokenStore reads it fresh on every issue()/validate() call, so a change here
+ * takes effect immediately, including for tokens already issued. Default 30. Same **no**
+ * "0/negative means unlimited" treatment as eventLogRetentionDays/watchFolderRetentionDays -
+ * silently normalized to the default by the compact constructor below, not rejected at the
+ * REST boundary; a session store that can be told to never expire a token is exactly the kind
+ * of unbounded-lifetime credential this field exists to prevent.
  */
 public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
                         long uploadRateLimitBytesPerSec, long downloadRateLimitBytesPerSec,
@@ -163,7 +185,11 @@ public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
                         int magnetFetchConcurrencyLimit,
                         int dhtReannounceIntervalSeconds,
                         int dhtRefreshIntervalSeconds,
-                        int watchFolderPollIntervalSeconds) {
+                        int watchFolderPollIntervalSeconds,
+                        boolean authEnabled,
+                        int authTokenTtlDays) {
+
+    private static final int DEFAULT_AUTH_TOKEN_TTL_DAYS = 30;
 
     private static final int DEFAULT_EVENT_LOG_RETENTION_DAYS = 30;
     private static final int DEFAULT_WATCH_FOLDER_RETENTION_DAYS = 7;
@@ -239,6 +265,70 @@ public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
         if (watchFolderPollIntervalSeconds <= 0) {
             watchFolderPollIntervalSeconds = DEFAULT_WATCH_FOLDER_POLL_INTERVAL_SECONDS;
         }
+        if (authTokenTtlDays <= 0) {
+            authTokenTtlDays = DEFAULT_AUTH_TOKEN_TTL_DAYS;
+        }
+    }
+
+    /** Same as the canonical constructor above but without authTokenTtlDays - for every caller
+     * that predates this addition (every secondary constructor below, plus any direct
+     * twenty-six-arg caller), defaulting to 0 (the compact constructor above normalizes that
+     * to DEFAULT_AUTH_TOKEN_TTL_DAYS, so passing 0 here is equivalent to passing the default
+     * explicitly). Same "add a sibling overload, touch zero existing call sites" pattern used
+     * for every prior field addition to this record. See design_docs/0061's own addendum. */
+    public Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
+                     long uploadRateLimitBytesPerSec, long downloadRateLimitBytesPerSec,
+                     boolean rateLimitScheduleEnabled, String rateLimitScheduleStart, String rateLimitScheduleEnd,
+                     long scheduledUploadRateLimitBytesPerSec, long scheduledDownloadRateLimitBytesPerSec,
+                     EncryptionMode encryptionMode, long rateLimitBurstSeconds,
+                     boolean seedRatioLimitEnabled, double seedRatioLimit,
+                     boolean seedTimeLimitEnabled, long seedTimeLimitMinutes,
+                     int eventLogRetentionDays,
+                     boolean watchFolderEnabled, int watchFolderRetentionDays,
+                     ThemePreference theme,
+                     int magnetFetchTimeBudgetSeconds, int magnetFetchCandidatesPerRound,
+                     int magnetFetchConcurrencyLimit,
+                     int dhtReannounceIntervalSeconds,
+                     int dhtRefreshIntervalSeconds,
+                     int watchFolderPollIntervalSeconds,
+                     boolean authEnabled) {
+        this(dhtEnabled, acceptIncomingConnections, uploadRateLimitBytesPerSec, downloadRateLimitBytesPerSec,
+                rateLimitScheduleEnabled, rateLimitScheduleStart, rateLimitScheduleEnd,
+                scheduledUploadRateLimitBytesPerSec, scheduledDownloadRateLimitBytesPerSec, encryptionMode,
+                rateLimitBurstSeconds, seedRatioLimitEnabled, seedRatioLimit, seedTimeLimitEnabled,
+                seedTimeLimitMinutes, eventLogRetentionDays, watchFolderEnabled, watchFolderRetentionDays, theme,
+                magnetFetchTimeBudgetSeconds, magnetFetchCandidatesPerRound, magnetFetchConcurrencyLimit,
+                dhtReannounceIntervalSeconds, dhtRefreshIntervalSeconds, watchFolderPollIntervalSeconds, authEnabled,
+                0);
+    }
+
+    /** Same as the canonical constructor above but without authEnabled - for every caller that
+     * predates this addition (every secondary constructor below, plus any direct
+     * twenty-five-arg caller), defaulting to false. Same "add a sibling overload, touch zero
+     * existing call sites" pattern used for every prior field addition to this record. See
+     * design_docs/0061. */
+    public Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
+                     long uploadRateLimitBytesPerSec, long downloadRateLimitBytesPerSec,
+                     boolean rateLimitScheduleEnabled, String rateLimitScheduleStart, String rateLimitScheduleEnd,
+                     long scheduledUploadRateLimitBytesPerSec, long scheduledDownloadRateLimitBytesPerSec,
+                     EncryptionMode encryptionMode, long rateLimitBurstSeconds,
+                     boolean seedRatioLimitEnabled, double seedRatioLimit,
+                     boolean seedTimeLimitEnabled, long seedTimeLimitMinutes,
+                     int eventLogRetentionDays,
+                     boolean watchFolderEnabled, int watchFolderRetentionDays,
+                     ThemePreference theme,
+                     int magnetFetchTimeBudgetSeconds, int magnetFetchCandidatesPerRound,
+                     int magnetFetchConcurrencyLimit,
+                     int dhtReannounceIntervalSeconds,
+                     int dhtRefreshIntervalSeconds,
+                     int watchFolderPollIntervalSeconds) {
+        this(dhtEnabled, acceptIncomingConnections, uploadRateLimitBytesPerSec, downloadRateLimitBytesPerSec,
+                rateLimitScheduleEnabled, rateLimitScheduleStart, rateLimitScheduleEnd,
+                scheduledUploadRateLimitBytesPerSec, scheduledDownloadRateLimitBytesPerSec, encryptionMode,
+                rateLimitBurstSeconds, seedRatioLimitEnabled, seedRatioLimit, seedTimeLimitEnabled,
+                seedTimeLimitMinutes, eventLogRetentionDays, watchFolderEnabled, watchFolderRetentionDays, theme,
+                magnetFetchTimeBudgetSeconds, magnetFetchCandidatesPerRound, magnetFetchConcurrencyLimit,
+                dhtReannounceIntervalSeconds, dhtRefreshIntervalSeconds, watchFolderPollIntervalSeconds, false);
     }
 
     /** Same as the canonical constructor above but without watchFolderPollIntervalSeconds -

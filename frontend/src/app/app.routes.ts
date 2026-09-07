@@ -1,8 +1,15 @@
 import { Routes } from '@angular/router';
 
+import { authGuard } from './services/auth.guard';
+
 export const routes: Routes = [
   {
+    path: 'login',
+    loadComponent: () => import('./login-page/login-page').then((m) => m.LoginPage),
+  },
+  {
     path: '',
+    canActivate: [authGuard],
     loadComponent: () => import('./torrent-list/torrent-list').then((m) => m.TorrentList),
     // TorrentDetail is a *child* of TorrentList's own route, not a sibling - see
     // design_docs/0044. TorrentList renders a <router-outlet> of its own (inside a slide-
@@ -18,14 +25,17 @@ export const routes: Routes = [
   },
   {
     path: 'services',
+    canActivate: [authGuard],
     loadComponent: () => import('./services-page/services-page').then((m) => m.ServicesPage),
   },
   {
     path: 'events',
+    canActivate: [authGuard],
     loadComponent: () => import('./events-page/events-page').then((m) => m.EventsPage),
   },
   {
     path: 'settings',
+    canActivate: [authGuard],
     loadComponent: () => import('./settings-page/settings-page').then((m) => m.SettingsPage),
   },
 ];

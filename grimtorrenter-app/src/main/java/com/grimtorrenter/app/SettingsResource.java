@@ -25,6 +25,9 @@ public class SettingsResource {
     @Inject
     SettingsStore settingsStore;
 
+    @Inject
+    AuthStore authStore;
+
     @GET
     @Produces(MediaType.APPLICATION_JSON)
     public Settings current() {
@@ -42,6 +45,13 @@ public class SettingsResource {
         if (settings.rateLimitScheduleEnabled()) {
             requireParsableTime(settings.rateLimitScheduleStart(), "rateLimitScheduleStart");
             requireParsableTime(settings.rateLimitScheduleEnd(), "rateLimitScheduleEnd");
+        }
+        // Refuses to ever let authEnabled become true with no password to log in with -
+        // otherwise a user could flip this toggle and immediately lock themselves out of
+        // their own API with no way back in short of editing settings.json by hand. See
+        // design_docs/0061.
+        if (settings.authEnabled() && !authStore.hasPassword()) {
+            throw new BadRequestException("Set a password (PUT /api/auth/password) before enabling authEnabled");
         }
         // No eventLogRetentionDays check here, unlike the schedule times above - Settings'
         // own compact constructor already normalizes 0/negative to a safe default (see its

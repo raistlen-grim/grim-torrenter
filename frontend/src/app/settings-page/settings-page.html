@@ -47,6 +47,9 @@
       <div [hidden]="activeGroup() !== 'magnetFetch'">
         <app-magnet-fetch-settings [form]="settingsForm.controls.magnetFetch" />
       </div>
+      <div [hidden]="activeGroup() !== 'security'">
+        <app-security-settings [form]="settingsForm.controls.security" />
+      </div>
     </div>
   </div>
 

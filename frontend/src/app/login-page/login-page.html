@@ -1,0 +1,26 @@
+<div class="login-page">
+  <div class="login-card blueprint page-frame">
+    <i class="corner tl" aria-hidden="true"></i><i class="corner tr" aria-hidden="true"></i><i class="corner bl" aria-hidden="true"></i><i class="corner br" aria-hidden="true"></i>
+
+    <h1 class="display-font">GrimTorrenter</h1>
+    <p class="login-hint">Enter the password to continue.</p>
+
+    <form [formGroup]="form" (ngSubmit)="submit()" class="login-form">
+      <label for="loginPassword" class="sr-only">Password</label>
+      <p-password
+        formControlName="password"
+        [feedback]="false"
+        [toggleMask]="true"
+        inputId="loginPassword"
+        placeholder="Password"
+        autocomplete="current-password"
+      />
+
+      @if (errorMessage(); as message) {
+        <p class="login-error" role="alert">{{ message }}</p>
+      }
+
+      <p-button type="submit" label="Log in" [loading]="submitting()" [disabled]="form.invalid" />
+    </form>
+  </div>
+</div>
