@@ -112,6 +112,17 @@ public final class TorrentSession implements AutoCloseable {
     /** Nullable - DHT is an optional enhancement (see design_docs/0028); a peer's Port
      * message is simply never acted on when it's null (DHT unavailable this process). */
     private final DhtNode dhtNode;
+    /** Whether BEP 14 Local Service Discovery is genuinely running at the engine level right
+     * now - a plain snapshot boolean, not a live-checked reference like dhtNode above, because
+     * unlike DHT this session has no LSD-specific work of its own to do (no per-session
+     * scheduled announce/lookup - LSD is entirely orchestrated by TorrentEngine's
+     * maintenanceScheduler, see that class's own lsdService field Javadoc). Exists purely so
+     * usesLsd() below can mirror usesDht()'s self-contained shape for TorrentView
+     * (grimtorrenter-app) - TorrentEventListener deliberately has no TorrentEngine reference
+     * (would create a circular CDI dependency with TorrentEngineProducer), so usesLsd can't be
+     * computed from TorrentEngine at TorrentView-assembly time the way a naive "just ask the
+     * engine" approach would. See design_docs/0062. */
+    private final boolean lsdActive;
     /** Shared across every connection this session makes - see design_docs/0042. Never
      * null; callers that don't care about rate limiting get RateLimiters.unlimited() via
      * create()/restoreAsync()'s own lower-arity overloads. */
@@ -216,12 +227,18 @@ public final class TorrentSession implements AutoCloseable {
      * spreading across the real candidate pool. `.add()`'s own atomic "was this newly added"
      * return value is the claim: fillConnections() only spawns an attempt if it actually wins
      * the add for that address, so two concurrent calls can never both claim the same one.
-     * Removed once the attempt resolves either way - on success (attemptConnect(), now covered
-     * by the connections-based filter instead) or failure (attemptConnect()'s catch block,
-     * where failedAddresses's own permanent exclusion takes over). Deliberately not the same
-     * set as failedAddresses: a peer we connect to and later disconnect from must remain
-     * eligible for reconnection (see failedAddresses's own Javadoc), which a shared "claimed
-     * forever" set would have broken. See design_docs/0017's own 2026-09-06 revision. */
+     * Removed on success (attemptConnect(), now covered by the connections-based filter
+     * instead) - but deliberately kept forever on failure (attemptConnect()'s catch block), not
+     * removed once failedAddresses takes over as originally designed here: a real duplicate-
+     * attempt race surfaced once this ran under genuinely concurrent load (a burst of
+     * near-simultaneous fast failures - see design_docs/0017's own dated addendum) - releasing
+     * the claim the instant after marking an address failed let a concurrent fillConnections()
+     * call, whose own read of failedAddresses happened to be stale, re-claim and re-attempt an
+     * address already known dead. Deliberately not the same set as failedAddresses despite now
+     * overlapping with it for every failed address: a peer we connect to and later disconnect
+     * from must remain eligible for reconnection (see failedAddresses's own Javadoc), which a
+     * single shared "claimed forever" set would have broken for that case. See design_docs/0017's
+     * own 2026-09-06 revision and its later dated addendum. */
     private final Set<PeerAddress> inFlightAddresses = ConcurrentHashMap.newKeySet();
     /** The connected-peer-address snapshot as of the last PEX broadcast, for computing the
      * next cycle's added/dropped delta - only ever read/written from the scheduler's single
@@ -249,7 +266,7 @@ public final class TorrentSession implements AutoCloseable {
                             TorrentSessionListener listener, DhtNode dhtNode, RateLimiters rateLimiters,
                             Semaphore pieceVerificationLimiter, Supplier<EncryptionMode> encryptionMode,
                             SeedingLimitOverride seedingLimitOverride, TorrentState initialState,
-                            Instant addedAt, Supplier<Long> dhtReannounceIntervalSeconds) {
+                            Instant addedAt, Supplier<Long> dhtReannounceIntervalSeconds, boolean lsdActive) {
         this.metadata = metadata;
         this.trackerClient = trackerClient;
         this.storage = storage;
@@ -258,6 +275,7 @@ public final class TorrentSession implements AutoCloseable {
         this.ourListenPort = ourListenPort;
         this.listener = listener;
         this.dhtNode = dhtNode;
+        this.lsdActive = lsdActive;
         this.rateLimiters = rateLimiters;
         this.pieceVerificationLimiter = pieceVerificationLimiter;
         this.encryptionMode = encryptionMode;
@@ -354,6 +372,8 @@ public final class TorrentSession implements AutoCloseable {
                 addedAt, () -> 300L);
     }
 
+    /** Same as the sixteen-arg overload below but with lsdActive defaulted to false - for
+     * every caller that predates LSD's addition (tests, mainly). See design_docs/0062. */
     public static TorrentSession create(TorrentMetadata metadata, TrackerClient trackerClient,
                                          Path downloadDirectory, PeerId ourPeerId, int ourListenPort,
                                          TorrentSessionListener listener, DhtNode dhtNode,
@@ -363,11 +383,26 @@ public final class TorrentSession implements AutoCloseable {
                                          SeedingLimitOverride seedingLimitOverride,
                                          Instant addedAt,
                                          Supplier<Long> dhtReannounceIntervalSeconds) throws IOException {
+        return create(metadata, trackerClient, downloadDirectory, ourPeerId, ourListenPort, listener, dhtNode,
+                rateLimiters, fileHandlePool, pieceVerificationLimiter, encryptionMode, seedingLimitOverride,
+                addedAt, dhtReannounceIntervalSeconds, false);
+    }
+
+    public static TorrentSession create(TorrentMetadata metadata, TrackerClient trackerClient,
+                                         Path downloadDirectory, PeerId ourPeerId, int ourListenPort,
+                                         TorrentSessionListener listener, DhtNode dhtNode,
+                                         RateLimiters rateLimiters, FileHandlePool fileHandlePool,
+                                         Semaphore pieceVerificationLimiter,
+                                         Supplier<EncryptionMode> encryptionMode,
+                                         SeedingLimitOverride seedingLimitOverride,
+                                         Instant addedAt,
+                                         Supplier<Long> dhtReannounceIntervalSeconds,
+                                         boolean lsdActive) throws IOException {
         TorrentStorage storage = TorrentStorage.create(metadata, downloadDirectory, fileHandlePool);
         PieceManager pieceManager = new PieceManager(metadata);
         return new TorrentSession(metadata, trackerClient, storage, pieceManager, ourPeerId, ourListenPort,
                 listener, dhtNode, rateLimiters, pieceVerificationLimiter, encryptionMode, seedingLimitOverride,
-                TorrentState.STOPPED, addedAt, dhtReannounceIntervalSeconds);
+                TorrentState.STOPPED, addedAt, dhtReannounceIntervalSeconds, lsdActive);
     }
 
     /** Same as the nine-arg overload below but with no rate limiting - see create()'s own
@@ -481,6 +516,8 @@ public final class TorrentSession implements AutoCloseable {
                 seedingLimitOverride, addedAt, () -> 300L, autoStart);
     }
 
+    /** Same as the seventeen-arg overload below but with lsdActive defaulted to false - for
+     * every caller that predates LSD's addition (tests, mainly). See design_docs/0062. */
     public static TorrentSession restoreAsync(TorrentMetadata metadata, TrackerClient trackerClient,
                                                Path downloadDirectory, PeerId ourPeerId, int ourListenPort,
                                                TorrentSessionListener listener, DhtNode dhtNode,
@@ -491,12 +528,28 @@ public final class TorrentSession implements AutoCloseable {
                                                Instant addedAt,
                                                Supplier<Long> dhtReannounceIntervalSeconds,
                                                boolean autoStart) throws IOException {
+        return restoreAsync(metadata, trackerClient, downloadDirectory, ourPeerId, ourListenPort, listener,
+                dhtNode, rateLimiters, fileHandlePool, pieceVerificationLimiter, encryptionMode,
+                seedingLimitOverride, addedAt, dhtReannounceIntervalSeconds, false, autoStart);
+    }
+
+    public static TorrentSession restoreAsync(TorrentMetadata metadata, TrackerClient trackerClient,
+                                               Path downloadDirectory, PeerId ourPeerId, int ourListenPort,
+                                               TorrentSessionListener listener, DhtNode dhtNode,
+                                               RateLimiters rateLimiters, FileHandlePool fileHandlePool,
+                                               Semaphore pieceVerificationLimiter,
+                                               Supplier<EncryptionMode> encryptionMode,
+                                               SeedingLimitOverride seedingLimitOverride,
+                                               Instant addedAt,
+                                               Supplier<Long> dhtReannounceIntervalSeconds,
+                                               boolean lsdActive,
+                                               boolean autoStart) throws IOException {
         TorrentStorage storage = TorrentStorage.create(metadata, downloadDirectory, fileHandlePool);
         PieceManager pieceManager = new PieceManager(metadata);
         TorrentSession session = new TorrentSession(metadata, trackerClient, storage, pieceManager,
                 ourPeerId, ourListenPort, listener, dhtNode, rateLimiters, pieceVerificationLimiter,
                 encryptionMode, seedingLimitOverride, TorrentState.VERIFYING, addedAt,
-                dhtReannounceIntervalSeconds);
+                dhtReannounceIntervalSeconds, lsdActive);
         Thread.ofVirtual().start(() -> session.verifyThenSettle(autoStart));
         return session;
     }
@@ -972,7 +1025,18 @@ public final class TorrentSession implements AutoCloseable {
             LOG.log(System.Logger.Level.DEBUG, "Connection attempt to " + address + " for "
                     + metadata.infoHash() + " failed: " + e, e);
             failedAddresses.add(address);
-            inFlightAddresses.remove(address);
+            // Deliberately NOT inFlightAddresses.remove(address) here (unlike the success path
+            // above) - see design_docs/0017's own dated addendum for the real duplicate-attempt
+            // race this used to open: releasing the in-flight claim the instant after marking an
+            // address failed let a concurrent fillConnections() call, whose own read of
+            // failedAddresses happened to be stale (ran before this add() became visible to it),
+            // see the address as "not failed, not in flight" and re-claim + re-attempt it. Since
+            // failedAddresses already excludes this address from every future candidate snapshot
+            // permanently, there's no correctness need to free its inFlightAddresses slot too -
+            // leaving it claimed forever closes the race instead of just narrowing it, at the
+            // cost of a redundant entry in a set that already grows unboundedly per session for
+            // the same accepted reason failedAddresses itself does (see that field's own
+            // Javadoc).
             connectionSlots.release();
             fillConnections();
         }
@@ -1423,6 +1487,15 @@ public final class TorrentSession implements AutoCloseable {
      * actually needs answered. */
     public boolean usesDht() {
         return dhtEligible();
+    }
+
+    /** BEP 27 gating, same reasoning as dhtEligible()/extensionsToAdvertise() above: a private
+     * torrent's info hash must never be broadcast to the LAN via LSD either. lsdActive itself
+     * is a construction-time snapshot of "was LSD running at the engine level when this session
+     * was created" - see that field's own Javadoc for why this can't be a live dhtNode-style
+     * reference. See design_docs/0062. */
+    public boolean usesLsd() {
+        return lsdActive && !metadata.isPrivate();
     }
 
     /** True only while the most recent tracker announce (start() or reannounce()) actually

@@ -80,7 +80,12 @@ export type ThemePreference = 'SYSTEM' | 'LIGHT' | 'DARK';
  * last seen," not "how often you must log in again"), live, and read fresh on every request.
  * Same no-unlimited-value, silently-normalized-below-1 treatment as eventLogRetentionDays/
  * watchFolderRetentionDays - a session store that can be told to never expire a token is
- * exactly what this field exists to prevent. Default 30. */
+ * exactly what this field exists to prevent. Default 30. lsdEnabled/lsdAnnounceIntervalSeconds
+ * (design_docs/0062) govern BEP 14 Local Service Discovery - finding peers already on the same
+ * LAN via IPv4 multicast. Same restart-required shape as dhtEnabled/dhtRefreshIntervalSeconds:
+ * LsdService is a real socket resource created once at engine construction. Default true for
+ * lsdEnabled; default 300s for lsdAnnounceIntervalSeconds, same no-unlimited-value,
+ * silently-normalized-below-1 treatment as the other tunable interval fields above. */
 export interface Settings {
   dhtEnabled: boolean;
   acceptIncomingConnections: boolean;
@@ -109,4 +114,6 @@ export interface Settings {
   watchFolderPollIntervalSeconds: number;
   authEnabled: boolean;
   authTokenTtlDays: number;
+  lsdEnabled: boolean;
+  lsdAnnounceIntervalSeconds: number;
 }

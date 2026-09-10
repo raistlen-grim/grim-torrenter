@@ -50,11 +50,10 @@ export class TrackersTab {
    * into the healthy summary" treatment. */
   readonly notWorkingTrackers = computed(() => this.trackers().filter((t) => t.status !== 'WORKING'));
 
-  /** [DHT]·[PeX] only, not the guide's own [DHT]·[PeX]·[LSD] - Local Service Discovery isn't
-   * implemented anywhere in this engine at all (unlike the fact-grid's dropped fields, this
-   * one has no data to surface even in principle yet). PeX has no per-torrent toggle in this
-   * engine - it's unconditionally advertised on every connection (except for a private
-   * torrent, BEP 27 - not distinguished in this label either) - so it always reads Enabled.
+  /** Now the guide's full [DHT]·[PeX]·[LSD] (design_docs/0062 added LSD). PeX has no
+   * per-torrent toggle in this engine - it's unconditionally advertised on every connection
+   * (except for a private torrent, BEP 27 - not distinguished in this label either) - so it
+   * always reads Enabled.
    *
    * <p>torrent.usesDht now directly means "DHT is eligible as a peer source for this
    * torrent" (design_docs/0036's own 2026-09-06 revision) - true for any non-private torrent
@@ -64,6 +63,14 @@ export class TrackersTab {
   readonly usesDht = computed(() => {
     const torrent = this.events.torrents().find((t) => t.infoHash === this.infoHash());
     return torrent ? torrent.usesDht : false;
+  });
+
+  /** Same per-torrent-eligibility shape as usesDht above, sourced from
+   * TorrentSession.usesLsd() (design_docs/0062) - true whenever LSD was running at the engine
+   * level and the torrent isn't private (BEP 27). */
+  readonly usesLsd = computed(() => {
+    const torrent = this.events.torrents().find((t) => t.infoHash === this.infoHash());
+    return torrent ? torrent.usesLsd : false;
   });
 
   reasonFor(tracker: Tracker): string {

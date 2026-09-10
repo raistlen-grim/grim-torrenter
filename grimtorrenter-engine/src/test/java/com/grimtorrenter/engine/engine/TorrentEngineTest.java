@@ -11,6 +11,7 @@ import com.grimtorrenter.engine.dht.RoutingTable;
 import com.grimtorrenter.engine.events.EventType;
 import com.grimtorrenter.engine.events.InMemoryEventStore;
 import com.grimtorrenter.engine.events.LibraryEvent;
+import com.grimtorrenter.engine.lsd.LsdService;
 import com.grimtorrenter.engine.magnet.MagnetLink;
 import com.grimtorrenter.engine.metainfo.InfoHash;
 import com.grimtorrenter.engine.metainfo.MetainfoParser;
@@ -36,6 +37,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.NetworkInterface;
 import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -43,6 +45,9 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -295,7 +300,8 @@ class TorrentEngineTest {
         assertEquals(
                 List.of(
                         new TorrentEngine.ServiceStatus("dht", TorrentEngine.ServiceState.DISABLED),
-                        new TorrentEngine.ServiceStatus("peerServer", TorrentEngine.ServiceState.DISABLED)),
+                        new TorrentEngine.ServiceStatus("peerServer", TorrentEngine.ServiceState.DISABLED),
+                        new TorrentEngine.ServiceStatus("lsd", TorrentEngine.ServiceState.DISABLED)),
                 statuses);
     }
 
@@ -342,6 +348,54 @@ class TorrentEngineTest {
                     statuses.get(0));
         } finally {
             engine.shutdown();
+        }
+    }
+
+    /** Confirms the real fix for a gap this project already hit once, for DHT
+     * (design_docs/0036's own 2026-09-06 revision: "a freshly-started torrent shouldn't wait a
+     * full dhtReannounceIntervalSeconds for its first DHT lookup"). announceViaLsd()'s periodic
+     * sweep runs on a fixed engine-wide schedule (default 300s) with no relation to any
+     * individual torrent's activation - without announceOnLsdActivation()'s immediate
+     * per-torrent trigger, a freshly-added torrent would have to wait up to
+     * lsdAnnounceIntervalSeconds for its first LSD announce, unlike DHT (zero-initial-delay
+     * per-session schedule) or the tracker (start()'s own synchronous first announce). A
+     * second, independent real LsdService stands in for a second LAN client and proves the
+     * announce actually arrives within this test's own short timeout, not after a multi-minute
+     * wait. Real, non-hermetic multicast socket activity - same accepted precedent as
+     * LsdServiceTest's own loopback tests and this class's own DHT bootstrap tests. See
+     * design_docs/0062's own addendum. */
+    @Test
+    void addingATorrentAnnouncesItViaLsdImmediatelyRatherThanWaitingForThePeriodicSweep(@TempDir Path tempDir)
+            throws Exception {
+        String announceUrl = startFakeTrackerServer();
+        byte[] torrentBytes = torrentBytes("lsd-activation-test.bin", fill(20, 7), announceUrl);
+
+        // Loopback, not auto-detected real interfaces, for both ends - a real physical
+        // interface is exactly the kind of thing a local firewall/switch can silently swallow
+        // multicast traffic on, even between two sockets on the same host. Found the hard way:
+        // this test originally used the auto-detecting LsdService constructor on both ends and
+        // failed in a real build environment for exactly that reason. See design_docs/0062's
+        // own addendum.
+        List<NetworkInterface> loopback = List.of(NetworkInterface.getByInetAddress(InetAddress.getLoopbackAddress()));
+        CountDownLatch found = new CountDownLatch(1);
+        AtomicReference<InfoHash> foundInfoHash = new AtomicReference<>();
+        LsdService secondClient = new LsdService(6882, (infoHash, address) -> {
+            foundInfoHash.set(infoHash);
+            found.countDown();
+        }, loopback);
+        TorrentEngine engine = new TorrentEngine(tempDir, 0, new NoOpListener(), false, false,
+                new InMemorySettingsStore(), FileHandlePool.unbounded(), Integer.MAX_VALUE,
+                new InMemoryEventStore(), tempDir.resolve("watch"), tempDir, true, loopback);
+        try {
+            TorrentSession session = engine.addTorrent(torrentBytes).session();
+            InfoHash infoHash = session.metadata().infoHash();
+
+            assertTrue(found.await(2, TimeUnit.SECONDS),
+                    "expected an immediate LSD announce, not a wait for the periodic sweep");
+            assertEquals(infoHash, foundInfoHash.get());
+        } finally {
+            engine.shutdown();
+            secondClient.close();
         }
     }
 

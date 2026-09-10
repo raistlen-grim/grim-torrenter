@@ -60,20 +60,22 @@ const EVENT_TYPE_DISPLAY: Record<EventType, StatusDisplay> = {
   MAGNET_ADD_FAILED: { icon: 'pi-link', label: 'Magnet add failed', tone: 'alarm' },
   TRACKER_UNREACHABLE: { icon: 'pi-wifi', label: 'Tracker unreachable', tone: 'alarm' },
   TRACKER_RECOVERED: { icon: 'pi-wifi', label: 'Tracker recovered', tone: 'active' },
+  LSD_UNAVAILABLE: { icon: 'pi-wifi', label: 'LSD unavailable', tone: 'alarm' },
 };
 
 export function eventTypeDisplay(type: EventType): StatusDisplay {
   return EVENT_TYPE_DISPLAY[type];
 }
 
-/** Engine-wide singleton subsystems only (DHT, the inbound peer server) - see
- * design_docs/0059. name is matched against TorrentEngine's own stable identifiers
- * ("dht"/"peerServer"); an unrecognized name falls back to itself as the label rather than
- * throwing, so a future backend-only addition degrades gracefully instead of breaking the
- * page. */
+/** Engine-wide singleton subsystems only (DHT, the inbound peer server, LSD - design_docs/0062
+ * added the third) - see design_docs/0059. name is matched against TorrentEngine's own stable
+ * identifiers ("dht"/"peerServer"/"lsd"); an unrecognized name falls back to itself as the
+ * label rather than throwing, so a future backend-only addition degrades gracefully instead of
+ * breaking the page. */
 const SERVICE_DISPLAY: Record<string, { label: string; icon: string }> = {
   dht: { label: 'DHT', icon: 'pi-sitemap' },
   peerServer: { label: 'Peer Server', icon: 'pi-sign-in' },
+  lsd: { label: 'LSD', icon: 'pi-wifi' },
 };
 
 /** RUNNING/DISABLED/FAILED map onto the same 'active'/'dim'/'alarm' ink-weight vocabulary

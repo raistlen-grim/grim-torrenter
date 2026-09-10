@@ -12,6 +12,7 @@ import com.grimtorrenter.engine.events.EventStore;
 import com.grimtorrenter.engine.events.EventType;
 import com.grimtorrenter.engine.events.InMemoryEventStore;
 import com.grimtorrenter.engine.events.LibraryEvent;
+import com.grimtorrenter.engine.lsd.LsdService;
 import com.grimtorrenter.engine.magnet.MagnetLink;
 import com.grimtorrenter.engine.metadata.MetadataFetcher;
 import com.grimtorrenter.engine.metainfo.InfoHash;
@@ -46,6 +47,7 @@ import com.grimtorrenter.engine.tracker.UdpTrackerClient;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.NetworkInterface;
 import java.net.UnknownHostException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -184,6 +186,18 @@ public final class TorrentEngine {
     /** Same "requested but failed" distinction as dhtBindFailed above, for the peer server.
      * See design_docs/0059. */
     private final boolean peerServerBindFailed;
+    /** Nullable - BEP 14 Local Service Discovery is a LAN-only peer-discovery enhancement, not
+     * a hard dependency, same category as dhtNode/peerServer above; construction failure leaves
+     * this null rather than failing the whole engine. See design_docs/0062. */
+    private final LsdService lsdService;
+    /** Same "requested but failed" distinction as dhtBindFailed/peerServerBindFailed above, for
+     * LSD. See design_docs/0059/0062. */
+    private final boolean lsdBindFailed;
+    /** Read once, at construction time, to schedule announceViaLsd()'s tick on
+     * maintenanceScheduler below - same "engine-wide scheduled task, a live change takes effect
+     * on the engine's next construction/restart, not retroactively" shape as
+     * dhtRefreshIntervalSeconds/watchFolderScanIntervalSeconds above. See design_docs/0062. */
+    private final long lsdAnnounceIntervalSeconds;
     /** Shared across every TorrentSession/PeerConnection this engine creates - see
      * design_docs/0042. Never null; the lower-arity constructors default to an unlimited,
      * engine-private SettingsStore so every pre-existing caller/test is unaffected. */
@@ -394,10 +408,56 @@ public final class TorrentEngine {
                           boolean enableDht, boolean acceptIncomingConnections, SettingsStore settingsStore,
                           FileHandlePool fileHandlePool, int maxConcurrentPieceVerifications, EventStore eventStore,
                           Path watchDirectory, Path configDirectory) {
+        this(baseDownloadDirectory, ourListenPort, listener, enableDht, acceptIncomingConnections, settingsStore,
+                fileHandlePool, maxConcurrentPieceVerifications, eventStore, watchDirectory, configDirectory, false);
+    }
+
+    /**
+     * Same as the twelve-arg overload above, plus enableLsd (BEP 14 Local Service Discovery -
+     * design_docs/0062). Deliberately defaults to false in every overload above rather than
+     * threaded through like enableDht/acceptIncomingConnections were from the start: those are
+     * original constructor params every one of this class's 50+ existing test call sites
+     * already passes explicitly, but enableLsd is new - defaulting it to true in the
+     * backward-compat overloads would silently start binding a real UDP multicast socket in
+     * every one of those pre-existing tests. Production wiring (grimtorrenter-app's
+     * TorrentEngineProducer) passes settings.lsdEnabled() through this overload explicitly. Same
+     * "real, non-hermetic socket activity, opt-in only" reasoning enableDht/
+     * acceptIncomingConnections's own Javadoc above already gives.
+     */
+    public TorrentEngine(Path baseDownloadDirectory, int ourListenPort, TorrentSessionListener listener,
+                          boolean enableDht, boolean acceptIncomingConnections, SettingsStore settingsStore,
+                          FileHandlePool fileHandlePool, int maxConcurrentPieceVerifications, EventStore eventStore,
+                          Path watchDirectory, Path configDirectory, boolean enableLsd) {
+        this(baseDownloadDirectory, ourListenPort, listener, enableDht, acceptIncomingConnections, settingsStore,
+                fileHandlePool, maxConcurrentPieceVerifications, eventStore, watchDirectory, configDirectory,
+                enableLsd, null);
+    }
+
+    /** Package-private, test-only: lets a test pin LSD's multicast interface selection (e.g. to
+     * loopback) instead of auto-detecting the host's real network interfaces. A real physical
+     * interface is exactly the kind of thing a local firewall or switch can silently swallow
+     * multicast traffic on, even between two sockets on the same host - unlike loopback, which
+     * the kernel always delivers on locally regardless of anything in between. Found the hard
+     * way: TorrentEngineTest's first LSD-activation test used the auto-detecting path on both
+     * ends and failed in a real build environment for exactly this reason. null means
+     * "auto-detect," matching the public constructor above - production code never passes
+     * non-null. See design_docs/0062's own addendum. */
+    TorrentEngine(Path baseDownloadDirectory, int ourListenPort, TorrentSessionListener listener,
+                  boolean enableDht, boolean acceptIncomingConnections, SettingsStore settingsStore,
+                  FileHandlePool fileHandlePool, int maxConcurrentPieceVerifications, EventStore eventStore,
+                  Path watchDirectory, Path configDirectory, boolean enableLsd,
+                  List<NetworkInterface> lsdInterfacesForTesting) {
         this.baseDownloadDirectory = baseDownloadDirectory;
         this.configDirectory = configDirectory;
         this.ourListenPort = ourListenPort;
-        this.listener = listener;
+        // Wrapped so a session's first activation can trigger an immediate LSD announce - see
+        // announceOnLsdActivation()'s own Javadoc for why this needs to be the listener every
+        // TorrentSession is actually constructed with, not a separate observer bolted on
+        // afterward. Safe to build here even though lsdService/lsdBindFailed aren't assigned
+        // yet below - the returned listener only ever reads them later, when a real
+        // TorrentSession (which can't exist until this constructor has already returned)
+        // invokes onStateChanged().
+        this.listener = announceOnLsdActivation(listener);
         this.ourPeerId = PeerId.generate();
         this.dhtNode = enableDht ? createDhtNode(configDirectory, ourListenPort, eventStore) : null;
         this.dhtBindFailed = enableDht && this.dhtNode == null;
@@ -408,6 +468,9 @@ public final class TorrentEngine {
         this.watchFolderScanIntervalSeconds = settingsStore.current().watchFolderPollIntervalSeconds();
         this.peerServer = acceptIncomingConnections ? createPeerServer(ourListenPort, eventStore) : null;
         this.peerServerBindFailed = acceptIncomingConnections && this.peerServer == null;
+        this.lsdAnnounceIntervalSeconds = settingsStore.current().lsdAnnounceIntervalSeconds();
+        this.lsdService = enableLsd ? createLsdService(ourListenPort, eventStore, lsdInterfacesForTesting) : null;
+        this.lsdBindFailed = enableLsd && this.lsdService == null;
         this.rateLimiters = RateLimiters.from(settingsStore);
         this.fileHandlePool = fileHandlePool;
         this.pieceVerificationLimiter = new Semaphore(maxConcurrentPieceVerifications);
@@ -422,6 +485,10 @@ public final class TorrentEngine {
         if (this.dhtNode != null) {
             this.maintenanceScheduler.scheduleWithFixedDelay(this::refreshDhtRoutingTable,
                     this.dhtRefreshIntervalSeconds, this.dhtRefreshIntervalSeconds, TimeUnit.SECONDS);
+        }
+        if (this.lsdService != null) {
+            this.maintenanceScheduler.scheduleWithFixedDelay(this::announceViaLsd,
+                    this.lsdAnnounceIntervalSeconds, this.lsdAnnounceIntervalSeconds, TimeUnit.SECONDS);
         }
         // Exactly one TorrentEngine per running process in production (TorrentEngineProducer's
         // @ApplicationScoped bean, constructed once), so recording this here is equivalent to
@@ -710,6 +777,102 @@ public final class TorrentEngine {
         return Optional.ofNullable(sessions.get(infoHash)).map(session -> session::acceptIncomingConnection);
     }
 
+    private LsdService createLsdService(int torrentListenPort, EventStore eventStore,
+                                         List<NetworkInterface> interfacesForTesting) {
+        try {
+            return interfacesForTesting != null
+                    ? new LsdService(torrentListenPort, this::onLsdPeerFound, interfacesForTesting)
+                    : new LsdService(torrentListenPort, this::onLsdPeerFound);
+        } catch (IOException e) {
+            LOG.log(System.Logger.Level.WARNING, "Could not start LSD - continuing without local peer discovery", e);
+            eventStore.record(new LibraryEvent(Instant.now(), EventType.LSD_UNAVAILABLE, null, null, null));
+            return null;
+        }
+    }
+
+    /** DOWNLOADING/SEEDING only - the two states a torrent is actually reachable/worth
+     * announcing in. Shared by activeInfoHashesForLsd() below and announceOnLsdActivation()'s
+     * own oldState/newState check, so both agree on exactly the same definition of "active." */
+    private static boolean isDownloadingOrSeeding(TorrentState state) {
+        return state == TorrentState.DOWNLOADING || state == TorrentState.SEEDING;
+    }
+
+    /** Non-private, currently DOWNLOADING/SEEDING torrents only - BEP 27 privacy (a private
+     * torrent's info hash must never be broadcast to the LAN, same reasoning as
+     * TorrentSession.dhtEligible()'s DHT/PEX gating) and no point announcing a paused/errored/
+     * still-verifying torrent nobody can connect to yet. Shared by both announceViaLsd() (the
+     * outbound announce list) and, indirectly, onLsdPeerFound() below (which re-checks privacy
+     * per-session rather than trusting this list, since an incoming announcement for a private
+     * info hash could come from a misbehaving/malicious LAN peer, not just from us). */
+    private Collection<InfoHash> activeInfoHashesForLsd() {
+        return sessions.values().stream()
+                .filter(session -> !session.metadata().isPrivate())
+                .filter(session -> isDownloadingOrSeeding(session.state()))
+                .map(session -> session.metadata().infoHash())
+                .toList();
+    }
+
+    /** Dispatched onto its own virtual thread, same "don't block the shared maintenanceScheduler
+     * thread" reasoning as refreshDhtRoutingTable() - LsdService.announce() does real (if
+     * normally fast) network I/O per info hash.
+     *
+     * <p>Package-private, not private, purely so a test can call this directly rather than
+     * waiting on the real lsdAnnounceIntervalSeconds-second scheduler tick - same spirit as
+     * checkSeedingLimits()/scanWatchFolder() above. This is the periodic safety-net sweep only -
+     * see announceOnLsdActivation() below for why a freshly-activated torrent doesn't have to
+     * wait for it. */
+    void announceViaLsd() {
+        Thread.ofVirtual().start(() -> lsdService.announce(activeInfoHashesForLsd()));
+    }
+
+    /** The one place that bridges LsdService's generic, TorrentSession-unaware peer-found
+     * callback to this engine's actual session map - mirrors findIncomingConnectionHandler
+     * above. Re-checks isPrivate() here rather than trusting that an unrecognized/private info
+     * hash was already filtered out by the sender's own activeInfoHashesForLsd() - a
+     * misbehaving or malicious LAN peer could announce any info hash it likes. */
+    private void onLsdPeerFound(InfoHash infoHash, PeerAddress address) {
+        Optional.ofNullable(sessions.get(infoHash))
+                .filter(session -> !session.metadata().isPrivate())
+                .ifPresent(session -> session.addKnownPeers(List.of(address)));
+    }
+
+    /** Wraps the caller-supplied session listener so a torrent's *first* LSD announce doesn't
+     * wait for announceViaLsd()'s next periodic tick - up to lsdAnnounceIntervalSeconds
+     * (default 300s) away, since that task runs on a fixed engine-wide schedule anchored to
+     * TorrentEngine's own construction time, not to any individual torrent's activation. This
+     * is the exact same class of gap DHT already hit and fixed
+     * ([[0036-dht-backstop-for-tracker-bearing-torrents]]'s own 2026-09-06 revision -
+     * discoverPeersViaDht() got a zero-initial-delay schedule specifically so "a freshly-started
+     * torrent shouldn't wait a full dhtReannounceIntervalSeconds for its first DHT lookup") and
+     * the tracker side avoids structurally (TorrentSession.start()'s own synchronous first
+     * announce, before any periodic reannounce() is even scheduled). LSD has no per-session
+     * scheduled task of its own to give a zero-initial-delay to (see the lsdService field's own
+     * Javadoc), so the fix here is the closest equivalent: hook the one signal that fires from
+     * every path a session can become active - TorrentSessionListener.onStateChanged() - rather
+     * than TorrentEngine's own addTorrent()/resumeTorrent() call sites alone. Those two miss a
+     * real, common case: TorrentSession.verifyThenSettle()'s background-thread autoStart, used
+     * by both addTorrent()'s reused-directory branch and restoreOne() - i.e. every torrent
+     * restored at engine startup, the ordinary case on every container restart. See
+     * design_docs/0062's own addendum. */
+    private TorrentSessionListener announceOnLsdActivation(TorrentSessionListener delegate) {
+        return new TorrentSessionListener() {
+            @Override
+            public void onStateChanged(TorrentSession session, TorrentState oldState, TorrentState newState) {
+                delegate.onStateChanged(session, oldState, newState);
+                if (lsdService != null && !isDownloadingOrSeeding(oldState) && isDownloadingOrSeeding(newState)
+                        && !session.metadata().isPrivate()) {
+                    InfoHash infoHash = session.metadata().infoHash();
+                    Thread.ofVirtual().start(() -> lsdService.announce(List.of(infoHash)));
+                }
+            }
+
+            @Override
+            public void onPieceCompleted(TorrentSession session, int pieceIndex) {
+                delegate.onPieceCompleted(session, pieceIndex);
+            }
+        };
+    }
+
     /** DHT reuses ourListenPort for its UDP socket, same as the TCP peer-wire listen port
      * (confirmed with the user - matches what real clients do and what the peerwire Port
      * message already implies). Bootstrapping the routing table is real network I/O
@@ -860,7 +1023,8 @@ public final class TorrentEngine {
     public List<ServiceStatus> serviceStatuses() {
         return List.of(
                 new ServiceStatus("dht", dhtServiceState()),
-                new ServiceStatus("peerServer", serviceState(peerServer != null, peerServerBindFailed)));
+                new ServiceStatus("peerServer", serviceState(peerServer != null, peerServerBindFailed)),
+                new ServiceStatus("lsd", serviceState(lsdService != null, lsdBindFailed)));
     }
 
     private ServiceState dhtServiceState() {
@@ -923,11 +1087,11 @@ public final class TorrentEngine {
                         ? TorrentSession.restoreAsync(metadata, trackerClient, torrentDirectory,
                                 ourPeerId, ourListenPort, listener, dhtNode, rateLimiters, fileHandlePool,
                                 pieceVerificationLimiter, encryptionMode, seedingLimitOverride, addedAt,
-                                dhtReannounceIntervalSeconds, true)
+                                dhtReannounceIntervalSeconds, lsdService != null, true)
                         : TorrentSession.create(metadata, trackerClient, torrentDirectory, ourPeerId,
                                 ourListenPort, listener, dhtNode, rateLimiters, fileHandlePool,
                                 pieceVerificationLimiter, encryptionMode, seedingLimitOverride, addedAt,
-                                dhtReannounceIntervalSeconds);
+                                dhtReannounceIntervalSeconds, lsdService != null);
                 if (!resolution.preExisting()) {
                     created.start();
                 }
@@ -1233,7 +1397,7 @@ public final class TorrentEngine {
             TorrentSession session = TorrentSession.restoreAsync(
                     metadata, trackerClient, directory, ourPeerId, ourListenPort, listener, dhtNode,
                     rateLimiters, fileHandlePool, pieceVerificationLimiter, encryptionMode, seedingLimitOverride,
-                    addedAt, dhtReannounceIntervalSeconds, running);
+                    addedAt, dhtReannounceIntervalSeconds, lsdService != null, running);
             sessions.put(metadata.infoHash(), session);
             directories.put(metadata.infoHash(), directory);
         } catch (IOException | RuntimeException e) {
@@ -1346,6 +1510,9 @@ public final class TorrentEngine {
         if (dhtNode != null) {
             saveDhtRoutingTable();
             dhtNode.close();
+        }
+        if (lsdService != null) {
+            lsdService.close();
         }
     }
 

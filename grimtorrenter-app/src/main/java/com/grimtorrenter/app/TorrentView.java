@@ -20,6 +20,7 @@ public record TorrentView(
         boolean usesDht,
         int trackerCount,
         boolean dhtBackstopActive,
+        boolean usesLsd,
         /** Null when unknown - see TorrentSession.addedAt()'s own Javadoc. */
         Instant addedAt
 ) {
@@ -41,7 +42,13 @@ public record TorrentView(
      * configured and the torrent isn't private, BEP 27), regardless of tracker presence or
      * health. dhtBackstopActive is a separate, tracker-health-only signal: true whenever the
      * tracker's own most recent attempt failed, independent of whether DHT happens to be
-     * eligible at all. See design_docs/0036/0039. */
+     * eligible at all. See design_docs/0036/0039.
+     *
+     * <p>usesLsd reads TorrentSession.usesLsd() (design_docs/0062) - true whenever BEP 14 Local
+     * Service Discovery was running at the engine level when this session was created and the
+     * torrent isn't private (BEP 27), same shape as usesDht but sourced from a construction-time
+     * snapshot rather than a live session-owned reference - see TorrentSession's own lsdActive
+     * field Javadoc for why. */
     public static TorrentView from(TorrentSession session) {
         Throwable error = session.lastError();
         return new TorrentView(
@@ -60,6 +67,7 @@ public record TorrentView(
                 session.usesDht(),
                 session.trackers().size(),
                 session.isDhtBackstopActive(),
+                session.usesLsd(),
                 session.addedAt());
     }
 }

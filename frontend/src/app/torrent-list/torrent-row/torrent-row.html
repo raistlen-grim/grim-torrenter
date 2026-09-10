@@ -29,14 +29,10 @@
   }
 </td>
 <td class="done-cell tabular-nums">{{ progressPercent() }}%</td>
-<td class="down-cell tabular-nums" [class.col-hidden]="compact()" [pTooltip]="downloadRateWindows() | formatRateWindows" tooltipPosition="top">
-  @if (downloadRateBytesPerSec() > 0) {
-    <span class="rate-active">{{ downloadRateBytesPerSec() | formatRate }}</span>
-  } @else {
-    <span class="rate-idle">&mdash;</span>
-  }
+<td class="down-cell tabular-nums" [class.col-hidden]="compact()">
+  <app-rate-trend [rateBytesPerSec]="downloadRateBytesPerSec()" [trend]="downloadRateTrend()" />
 </td>
-<td class="up-cell tabular-nums" [class.col-hidden]="compact()" [pTooltip]="uploadRateWindows() | formatRateWindows" tooltipPosition="top">
+<td class="up-cell tabular-nums" [class.col-hidden]="compact()">
   @if (uploadRateBytesPerSec() > 0) {
     <span class="rate-active">{{ uploadRateBytesPerSec() | formatRate }}</span>
   } @else {

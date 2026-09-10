@@ -15,7 +15,7 @@ const SYSTEM_POLL_INTERVAL_MS = 30_000;
  * Page footer, present on every route: torrent count, aggregate rates, lifetime ratio, disk
  * free space, and JVM heap/CPU usage - see design_docs/0043. Ratio, free-space, and
  * resource-usage are pre-formatted into display strings in the class (using a
- * manually-instantiated FormatBytesPipe, same pattern FormatRateWindowsPipe already uses)
+ * manually-instantiated FormatBytesPipe, same pattern TorrentList/PieceMap already use)
  * rather than piping a nullable signal directly in the template, to sidestep a null
  * torrentCount()/diskUsage()/resourceUsage() value ever reaching a pipe that expects a plain
  * number.

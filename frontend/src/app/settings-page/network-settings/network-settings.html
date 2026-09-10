@@ -82,4 +82,38 @@
       </p-inputgroup>
     </div>
   </div>
+
+  <div class="settings-row">
+    <div class="settings-row-label">
+      <label for="lsdEnabled">Local Service Discovery</label>
+      <p class="settings-row-description">
+        Discover peers already on the same local network. Takes effect after the app restarts.
+      </p>
+    </div>
+    <div class="settings-row-control">
+      <p-toggleswitch inputId="lsdEnabled" formControlName="lsdEnabled" />
+    </div>
+  </div>
+
+  <div class="settings-row">
+    <div class="settings-row-label">
+      <label for="lsdAnnounceIntervalSeconds">LSD announce interval</label>
+      <p class="settings-row-description">
+        How often each torrent announces itself to the local network. Takes effect after the
+        app restarts.
+      </p>
+    </div>
+    <div class="settings-row-control">
+      <p-inputgroup class="settings-number-group">
+        <p-inputnumber
+          inputId="lsdAnnounceIntervalSeconds"
+          formControlName="lsdAnnounceIntervalSeconds"
+          [min]="1"
+          [showButtons]="false"
+          inputStyleClass="settings-number-input"
+        />
+        <p-inputgroup-addon class="settings-number-unit">seconds</p-inputgroup-addon>
+      </p-inputgroup>
+    </div>
+  </div>
 </div>

@@ -3,7 +3,6 @@ import { Router } from '@angular/router';
 import { ConfirmationService, MenuItem, MessageService } from 'primeng/api';
 import { ButtonModule } from 'primeng/button';
 import { ContextMenu, ContextMenuModule } from 'primeng/contextmenu';
-import { TooltipModule } from 'primeng/tooltip';
 import { finalize } from 'rxjs';
 
 import { TorrentWithRate } from '../../models/torrent.model';
@@ -12,9 +11,9 @@ import { TorrentService } from '../../services/torrent.service';
 import { copyToClipboard } from '../../shared/clipboard';
 import { FormatBytesPipe } from '../../shared/format-bytes.pipe';
 import { FormatEtaPipe } from '../../shared/format-eta.pipe';
-import { FormatRateWindowsPipe } from '../../shared/format-rate-windows.pipe';
 import { FormatRatePipe } from '../../shared/format-rate.pipe';
 import { ActiveContextMenuRegistry } from '../../shared/active-context-menu-registry';
+import { RateTrend } from '../../shared/rate-trend/rate-trend';
 import { torrentStateDisplay } from '../../shared/status-display';
 import { SeedingLimitsDialog } from './seeding-limits-dialog/seeding-limits-dialog';
 
@@ -44,10 +43,9 @@ import { SeedingLimitsDialog } from './seeding-limits-dialog/seeding-limits-dial
     ContextMenuModule,
     FormatBytesPipe,
     FormatEtaPipe,
-    FormatRateWindowsPipe,
     FormatRatePipe,
+    RateTrend,
     SeedingLimitsDialog,
-    TooltipModule,
   ],
   templateUrl: './torrent-row.html',
   styleUrl: './torrent-row.scss',
@@ -118,9 +116,8 @@ export class TorrentRow {
    * in favor of just a rate/percentage per column, moving totals to the details panel. */
   readonly bytesRemaining = computed(() => this.torrent().totalLength - this.torrent().bytesDownloaded);
   readonly downloadRateBytesPerSec = computed(() => this.torrent().downloadRateBytesPerSec);
-  readonly downloadRateWindows = computed(() => this.torrent().downloadRateWindows);
+  readonly downloadRateTrend = computed(() => this.torrent().downloadRateTrend);
   readonly uploadRateBytesPerSec = computed(() => this.torrent().uploadRateBytesPerSec);
-  readonly uploadRateWindows = computed(() => this.torrent().uploadRateWindows);
 
   /** VERIFYING means the backend hasn't yet re-established which pieces are actually
    * complete after a restart (see design_docs/0026) - pause/resume/remove are disabled

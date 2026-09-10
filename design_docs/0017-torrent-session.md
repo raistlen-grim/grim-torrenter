@@ -161,6 +161,34 @@ concurrent attempts never exceeds 30 *and* that every one of the 60 addresses is
 *exactly* once - never zero (every candidate eventually reached) and never more than once (no
 duplicate/wasted attempts).
 
+**Third correction, found much later (2026-09-10) by that same regression test failing
+intermittently in real `mvn test` runs**: "removed once the attempt resolves either way"
+above (the `inFlightAddresses` failure-path release) turned out to still permit a duplicate
+attempt - narrower than the second correction's bug, but the same underlying shape. In
+`attemptConnect()`'s catch block, `failedAddresses.add(address)` and
+`inFlightAddresses.remove(address)` are two separate writes to two separate concurrent sets,
+executed one after the other but with no atomicity *tying them together as observed by a
+third thread*. A concurrent `fillConnections()` call evaluates its own candidate stream by
+reading `failedAddresses` first, then `inFlightAddresses` (see that method's own filter order)
+- if that read of `failedAddresses` happens to run before this thread's `add()` becomes
+visible to it, but its later read of `inFlightAddresses` happens to run *after* this thread's
+`remove()` has, the address looks "not failed, not in flight" to that concurrent call, which
+then wins a fresh `inFlightAddresses.add()` claim and spawns a second, genuinely wasted
+connection attempt to an address already known dead. Narrow window, but real: a burst of 60
+candidates against fast-failing fake servers (all closing immediately, no handshake at all)
+maximizes exactly the kind of tight-interleaving needed to hit it.
+
+**Fixed by no longer releasing the `inFlightAddresses` claim on failure at all** - only on
+success now (where the `connections`-based filter takes over instead, per the second
+correction above). Since `failedAddresses` already excludes the address from every future
+candidate snapshot permanently, there was never a correctness need to free its
+`inFlightAddresses` slot too; doing so only ever existed to keep that set from growing, which
+it now does anyway (a redundant entry alongside `failedAddresses` for every failed address,
+not a new *category* of unbounded growth - see `failedAddresses`'s own already-accepted
+growth note above). This closes the race structurally rather than narrowing its window
+further: an address can never again be simultaneously "not yet visible as failed" and
+"available for reclaim."
+
 **Requesting blocks without double-requesting from the same connection.**
 `PieceManager` only tracks "received," not "requested" (by design, per
 [[0016-piece-and-storage]]), which means `selectNextBlock` alone will keep

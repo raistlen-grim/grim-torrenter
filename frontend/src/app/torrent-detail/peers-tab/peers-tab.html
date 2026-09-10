@@ -26,24 +26,10 @@
             aria-hidden="true"
           ></i>
         </span>
-        <span
-          class="peer-rate tabular-nums"
-          [class.idle]="peer.downloadRateBytesPerSec === 0"
-          [pTooltip]="peer.downloadRateWindows | formatRateWindows"
-          tooltipPosition="top"
-        >
-          @if (peer.downloadRateBytesPerSec > 0) {
-            {{ peer.downloadRateBytesPerSec | formatRate }}
-          } @else {
-            &mdash;
-          }
+        <span class="peer-rate tabular-nums">
+          <app-rate-trend [rateBytesPerSec]="peer.downloadRateBytesPerSec" [trend]="peer.downloadRateTrend" />
         </span>
-        <span
-          class="peer-rate tabular-nums"
-          [class.idle]="peer.uploadRateBytesPerSec === 0"
-          [pTooltip]="peer.uploadRateWindows | formatRateWindows"
-          tooltipPosition="top"
-        >
+        <span class="peer-rate tabular-nums" [class.idle]="peer.uploadRateBytesPerSec === 0">
           @if (peer.uploadRateBytesPerSec > 0) {
             {{ peer.uploadRateBytesPerSec | formatRate }}
           } @else {

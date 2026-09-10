@@ -26,6 +26,11 @@ package com.grimtorrenter.engine.events;
  * tracker's own URL folded into the message. Only wired up for a torrent's own persistent
  * tracker client (addTorrent()/restoreOne()), not the throwaway client used to probe trackers
  * during magnet metadata resolution.
+ *
+ * <p>LSD_UNAVAILABLE (design_docs/0062) is engine-wide like DHT_UNAVAILABLE/
+ * PEER_SERVER_UNAVAILABLE above (null infoHash/torrentName) and follows the exact same
+ * fires-at-most-once-per-process-lifetime shape - LsdService never retries binding after
+ * construction either.
  */
 public enum EventType {
     ADDED,
@@ -38,5 +43,6 @@ public enum EventType {
     PEER_SERVER_UNAVAILABLE,
     MAGNET_ADD_FAILED,
     TRACKER_UNREACHABLE,
-    TRACKER_RECOVERED
+    TRACKER_RECOVERED,
+    LSD_UNAVAILABLE
 }

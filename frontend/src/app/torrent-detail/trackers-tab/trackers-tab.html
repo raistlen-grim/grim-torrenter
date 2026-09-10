@@ -19,7 +19,8 @@
   <div class="tracker-line peer-sources">
     <i class="pi pi-share-alt" aria-hidden="true"></i>
     <span>DHT <span class="source-status" [class.disabled]="!usesDht()">{{ usesDht() ? 'Enabled' : 'Disabled' }}</span>
-      &middot; PeX <span class="source-status">Enabled</span></span>
+      &middot; PeX <span class="source-status">Enabled</span>
+      &middot; LSD <span class="source-status" [class.disabled]="!usesLsd()">{{ usesLsd() ? 'Enabled' : 'Disabled' }}</span></span>
   </div>
 
   <p class="tracker-caption">

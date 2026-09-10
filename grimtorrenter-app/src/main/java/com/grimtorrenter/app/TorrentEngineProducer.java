@@ -90,6 +90,6 @@ public class TorrentEngineProducer {
         return new TorrentEngine(Path.of(downloadDirectory), listenPort, eventListener,
                 settings.dhtEnabled(), settings.acceptIncomingConnections(), settingsStore,
                 new FileHandlePool(maxOpenFiles), verificationPermits, eventStore, Path.of(watchDirectory),
-                Path.of(configDirectory));
+                Path.of(configDirectory), settings.lsdEnabled());
     }
 }

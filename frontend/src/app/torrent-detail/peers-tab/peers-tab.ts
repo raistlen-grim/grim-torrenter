@@ -1,25 +1,25 @@
 import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
-import { TooltipModule } from 'primeng/tooltip';
 import { map } from 'rxjs';
 
 import { Peer } from '../../models/torrent.model';
-import { PRIMARY_RATE_WINDOW, RATE_WINDOWS } from '../../services/torrent-events.service';
+import { PRIMARY_RATE_WINDOW_MS } from '../../services/torrent-events.service';
 import { TorrentService } from '../../services/torrent.service';
-import { FormatRateWindowsPipe } from '../../shared/format-rate-windows.pipe';
 import { FormatRatePipe } from '../../shared/format-rate.pipe';
 import { pollWhileInput } from '../../shared/poll-while-input';
+import { RateTrend } from '../../shared/rate-trend/rate-trend';
 import { RateTracker } from '../../shared/rate-tracker';
 
 const POLL_INTERVAL_MS = 3000;
 
 /** Peer plus a client-side rate, computed the same windowed-average way as the
- * session-level rate - see shared/rate-tracker.ts and design_docs/0031/0020/0025. */
+ * session-level rate - see shared/rate-tracker.ts and design_docs/0031/0020/0025.
+ * downloadRateTrend feeds the Down cell's trend sparkline tooltip - see design_docs/0063. */
 export interface PeerWithRate extends Peer {
   downloadRateBytesPerSec: number;
   uploadRateBytesPerSec: number;
-  downloadRateWindows: Record<string, number>;
-  uploadRateWindows: Record<string, number>;
+  downloadRateTrend: number[];
+  uploadRateTrend: number[];
 }
 
 function peerKey(peer: Peer): string {
@@ -33,7 +33,7 @@ function peerKey(peer: Peer): string {
  * neither is new to this task. See design_docs/0032's task 7 notes. */
 @Component({
   selector: 'app-peers-tab',
-  imports: [FormatRateWindowsPipe, FormatRatePipe, TooltipModule],
+  imports: [FormatRatePipe, RateTrend],
   templateUrl: './peers-tab.html',
   styleUrl: './peers-tab.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -45,8 +45,8 @@ export class PeersTab {
    * session-level trackers - a peer's key (address:port) only makes sense within one
    * torrent's currently-open Peers tab, with no natural place in an app-wide singleton;
    * see design_docs/0031. */
-  private readonly downloadRateTracker = new RateTracker(RATE_WINDOWS, PRIMARY_RATE_WINDOW);
-  private readonly uploadRateTracker = new RateTracker(RATE_WINDOWS, PRIMARY_RATE_WINDOW);
+  private readonly downloadRateTracker = new RateTracker(PRIMARY_RATE_WINDOW_MS);
+  private readonly uploadRateTracker = new RateTracker(PRIMARY_RATE_WINDOW_MS);
   private trackedKeys = new Set<string>();
 
   readonly infoHash = input.required<string>();
@@ -75,8 +75,8 @@ export class PeersTab {
         ...peer,
         downloadRateBytesPerSec: download.current,
         uploadRateBytesPerSec: upload.current,
-        downloadRateWindows: download.byWindow,
-        uploadRateWindows: upload.byWindow,
+        downloadRateTrend: download.trend,
+        uploadRateTrend: upload.trend,
       };
     });
   }

@@ -170,6 +170,18 @@ import com.grimtorrenter.engine.mse.EncryptionMode;
  * silently normalized to the default by the compact constructor below, not rejected at the
  * REST boundary; a session store that can be told to never expire a token is exactly the kind
  * of unbounded-lifetime credential this field exists to prevent.
+ *
+ * <p>lsdEnabled/lsdAnnounceIntervalSeconds (design_docs/0062) govern BEP 14 Local Service
+ * Discovery - an IPv4 multicast announce that finds peers already on the same LAN, the last
+ * piece of TODO.md's original peer-discovery backlog. Same restart-required shape as
+ * dhtEnabled/dhtRefreshIntervalSeconds above: LsdService is a real socket resource created once
+ * at TorrentEngine construction, and lsdAnnounceIntervalSeconds drives a maintenanceScheduler
+ * period that can't change mid-flight - a live edit to either takes effect on the engine's next
+ * construction/restart, not retroactively. Default true for lsdEnabled (matches
+ * dhtEnabled/acceptIncomingConnections both defaulting on); default 300s for
+ * lsdAnnounceIntervalSeconds, the same LAN-announce cadence already used for
+ * dhtReannounceIntervalSeconds/dhtRefreshIntervalSeconds. Same **no** "0/negative means
+ * unlimited" treatment as every other interval field above, for the same reason.
  */
 public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
                         long uploadRateLimitBytesPerSec, long downloadRateLimitBytesPerSec,
@@ -187,9 +199,14 @@ public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
                         int dhtRefreshIntervalSeconds,
                         int watchFolderPollIntervalSeconds,
                         boolean authEnabled,
-                        int authTokenTtlDays) {
+                        int authTokenTtlDays,
+                        boolean lsdEnabled,
+                        int lsdAnnounceIntervalSeconds) {
 
     private static final int DEFAULT_AUTH_TOKEN_TTL_DAYS = 30;
+    /** design_docs/0062 - see this record's own class-level Javadoc for why 300s (matching
+     * dhtReannounceIntervalSeconds/dhtRefreshIntervalSeconds) is a reasonable LSD cadence. */
+    private static final int DEFAULT_LSD_ANNOUNCE_INTERVAL_SECONDS = 300;
 
     private static final int DEFAULT_EVENT_LOG_RETENTION_DAYS = 30;
     private static final int DEFAULT_WATCH_FOLDER_RETENTION_DAYS = 7;
@@ -268,6 +285,44 @@ public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
         if (authTokenTtlDays <= 0) {
             authTokenTtlDays = DEFAULT_AUTH_TOKEN_TTL_DAYS;
         }
+        if (lsdAnnounceIntervalSeconds <= 0) {
+            lsdAnnounceIntervalSeconds = DEFAULT_LSD_ANNOUNCE_INTERVAL_SECONDS;
+        }
+    }
+
+    /** Same as the canonical constructor above but without lsdEnabled/lsdAnnounceIntervalSeconds
+     * - for every caller that predates this addition (every secondary constructor below, plus
+     * any direct twenty-nine-arg caller), defaulting lsdEnabled to true (matches
+     * dhtEnabled/acceptIncomingConnections) and lsdAnnounceIntervalSeconds to 0 (the compact
+     * constructor above normalizes that to DEFAULT_LSD_ANNOUNCE_INTERVAL_SECONDS, so passing 0
+     * here is equivalent to passing the default explicitly). Same "add a sibling overload, touch
+     * zero existing call sites" pattern used for every prior field addition to this record. See
+     * design_docs/0062. */
+    public Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
+                     long uploadRateLimitBytesPerSec, long downloadRateLimitBytesPerSec,
+                     boolean rateLimitScheduleEnabled, String rateLimitScheduleStart, String rateLimitScheduleEnd,
+                     long scheduledUploadRateLimitBytesPerSec, long scheduledDownloadRateLimitBytesPerSec,
+                     EncryptionMode encryptionMode, long rateLimitBurstSeconds,
+                     boolean seedRatioLimitEnabled, double seedRatioLimit,
+                     boolean seedTimeLimitEnabled, long seedTimeLimitMinutes,
+                     int eventLogRetentionDays,
+                     boolean watchFolderEnabled, int watchFolderRetentionDays,
+                     ThemePreference theme,
+                     int magnetFetchTimeBudgetSeconds, int magnetFetchCandidatesPerRound,
+                     int magnetFetchConcurrencyLimit,
+                     int dhtReannounceIntervalSeconds,
+                     int dhtRefreshIntervalSeconds,
+                     int watchFolderPollIntervalSeconds,
+                     boolean authEnabled,
+                     int authTokenTtlDays) {
+        this(dhtEnabled, acceptIncomingConnections, uploadRateLimitBytesPerSec, downloadRateLimitBytesPerSec,
+                rateLimitScheduleEnabled, rateLimitScheduleStart, rateLimitScheduleEnd,
+                scheduledUploadRateLimitBytesPerSec, scheduledDownloadRateLimitBytesPerSec, encryptionMode,
+                rateLimitBurstSeconds, seedRatioLimitEnabled, seedRatioLimit, seedTimeLimitEnabled,
+                seedTimeLimitMinutes, eventLogRetentionDays, watchFolderEnabled, watchFolderRetentionDays, theme,
+                magnetFetchTimeBudgetSeconds, magnetFetchCandidatesPerRound, magnetFetchConcurrencyLimit,
+                dhtReannounceIntervalSeconds, dhtRefreshIntervalSeconds, watchFolderPollIntervalSeconds, authEnabled,
+                authTokenTtlDays, true, 0);
     }
 
     /** Same as the canonical constructor above but without authTokenTtlDays - for every caller

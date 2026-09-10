@@ -6,6 +6,11 @@ nothing here gets acted on until it's explicitly picked up.
 
 - Notification service (emails, or something else yet to be defined)
 - Run a user-configured script automatically when a torrent completes
+- UI bug: refreshing the page while the torrent-detail side panel is open
+  (`/torrents/:infoHash`) shows a "Resource not found" error instead of reloading the app with
+  the panel still open. Likely the backend has no SPA catch-all fallback to `index.html` for
+  non-API routes, so a direct/refreshed request for a client-side route 404s at the Quarkus
+  level rather than ever reaching Angular's router - unconfirmed, needs investigation.
 - ~~Authentication for the REST API/UI - currently completely unauthed.~~ **Done
   (2026-09-07)** - see `design_docs/0061`. Raised by the user: the REST endpoint is one of
   this implementation's real strengths, but that's undermined if it can't be exposed to the
@@ -166,8 +171,8 @@ then revisit this as a follow-up rather than bundling both into one change.
     own stated interval) turns out to matter in practice.
 - DHT routing-table sparseness — see the existing item below (21 vs. 379 node case).
   Revisit as part of this investigation: a sparse table would compound the item above.
-- No LSD implementation — see the existing item below. Minor, LAN-only contributor,
-  low priority relative to the two items above.
+- ~~No LSD implementation — see the existing item below.~~ **Done (2026-09-09)** — see
+  `design_docs/0062`.
 
 - **DHT service status doesn't distinguish "healthy" from "bootstrapped but sparse."** —
   **Done (2026-09-01)**, see `design_docs/0059`'s own DEGRADED-state addendum:
@@ -199,13 +204,18 @@ then revisit this as a follow-up rather than bundling both into one change.
     design_docs/0028's own 2026-08-30 addendum. The `DEGRADED`-state idea above is still open
     (a low count is no longer expected to persist indefinitely, but the status endpoint still
     doesn't distinguish "still filling in" from "genuinely stuck").
-- **No LSD (Local Service Discovery, BEP 14)** - noticed via the same 2026-08-30 comparison
+- ~~**No LSD (Local Service Discovery, BEP 14)** - noticed via the same 2026-08-30 comparison
   (qBittorrent reports DHT/PEX/LSD all active; GrimTorrenter has no LSD implementation at
   all). Only ever finds same-LAN peers, so it's a minor contributor to peer-count gaps at
-  best, not a priority on its own - noted for completeness alongside the DHT item above.
+  best, not a priority on its own - noted for completeness alongside the DHT item above.~~
+  **Done (2026-09-09)** - see `design_docs/0062`. Picked up as the last remaining
+  peer-discovery item, ahead of the queued style-guide/usability pass in `style/`.
 - Multi-select on the torrent list — checkboxes (or shift/ctrl-click) to select several rows
   at once, then bulk Pause/Resume/Remove across the selection, rather than one row (or the
   existing global Pause all/Resume all) at a time.
+- UI themes — user-selectable themes beyond the current light/dark split. Unscoped: how many,
+  whether custom/user-defined, how they interact with the existing manual System/Light/Dark
+  switcher (design_docs/0032's addendum).
 - ~~Roll the blueprint registration-mark corner treatment out to other panels/cards
   app-wide.~~ **Done for Events/Services (2026-09-05)** — see `design_docs/0045`'s own
   2026-09-05 addendum. Torrent list and torrent-detail deliberately excluded, not deferred:

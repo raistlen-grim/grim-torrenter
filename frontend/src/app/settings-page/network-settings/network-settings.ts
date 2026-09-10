@@ -13,6 +13,8 @@ export type NetworkSettingsForm = FormGroup<{
   encryptionMode: FormControl<EncryptionMode>;
   dhtReannounceIntervalSeconds: FormControl<number>;
   dhtRefreshIntervalSeconds: FormControl<number>;
+  lsdEnabled: FormControl<boolean>;
+  lsdAnnounceIntervalSeconds: FormControl<number>;
 }>;
 
 export function buildNetworkSettingsForm(settings: Settings): NetworkSettingsForm {
@@ -24,6 +26,8 @@ export function buildNetworkSettingsForm(settings: Settings): NetworkSettingsFor
       nonNullable: true,
     }),
     dhtRefreshIntervalSeconds: new FormControl(settings.dhtRefreshIntervalSeconds, { nonNullable: true }),
+    lsdEnabled: new FormControl(settings.lsdEnabled, { nonNullable: true }),
+    lsdAnnounceIntervalSeconds: new FormControl(settings.lsdAnnounceIntervalSeconds, { nonNullable: true }),
   });
 }
 
@@ -33,6 +37,8 @@ export function networkSettingsPatch(value: {
   encryptionMode: EncryptionMode;
   dhtReannounceIntervalSeconds: number;
   dhtRefreshIntervalSeconds: number;
+  lsdEnabled: boolean;
+  lsdAnnounceIntervalSeconds: number;
 }): Partial<Settings> {
   return {
     dhtEnabled: value.dhtEnabled,
@@ -40,6 +46,8 @@ export function networkSettingsPatch(value: {
     encryptionMode: value.encryptionMode,
     dhtReannounceIntervalSeconds: value.dhtReannounceIntervalSeconds,
     dhtRefreshIntervalSeconds: value.dhtRefreshIntervalSeconds,
+    lsdEnabled: value.lsdEnabled,
+    lsdAnnounceIntervalSeconds: value.lsdAnnounceIntervalSeconds,
   };
 }
 
@@ -54,7 +62,9 @@ export function networkSettingsPatch(value: {
  * next start() - see Settings.java's own Javadoc (design_docs/0036's own addendum).
  * dhtRefreshIntervalSeconds is live too, but takes effect on the engine's next
  * construction/restart rather than a torrent's next start() - see Settings.java's own Javadoc
- * (design_docs/0028's own 2026-08-30 addendum).
+ * (design_docs/0028's own 2026-08-30 addendum). lsdEnabled/lsdAnnounceIntervalSeconds
+ * (design_docs/0062) are both restart-required, same shape as dhtEnabled/
+ * dhtRefreshIntervalSeconds respectively.
  */
 @Component({
   selector: 'app-network-settings',

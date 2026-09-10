@@ -36,6 +36,10 @@ export interface Torrent {
    * tracker-health-only signal from usesDht, independent of whether DHT happens to be
    * eligible at all. See design_docs/0036/0039. */
   dhtBackstopActive: boolean;
+  /** True whenever BEP 14 Local Service Discovery was running at the engine level when this
+   * torrent's session was created and it isn't private (BEP 27) - same eligibility shape as
+   * usesDht. See TorrentSession.usesLsd()/design_docs/0062. */
+  usesLsd: boolean;
   /** ISO instant string, or null when unknown - a torrent directory added before this field
    * existed has no marker to read it back from and is never backfilled with a guess. See
    * design_docs/0032. */
@@ -44,14 +48,14 @@ export interface Torrent {
 
 /** downloadRateBytesPerSec/uploadRateBytesPerSec are computed client-side via RateTracker
  * (a smoothed rate over its primary window, not a raw two-sample delta) - not part of the
- * backend's TorrentView DTO. See design_docs/0020/0025. downloadRateWindows/
- * uploadRateWindows carry every tracked window (e.g. "5s"/"15s"/"60s") for a secondary
- * display - a short-window rate well below the long-window one suggests a recent stall. */
+ * backend's TorrentView DTO. See design_docs/0020/0025. downloadRateTrend/uploadRateTrend
+ * are per-interval rate samples over the last ~60s, oldest first - feeds the Down cell's
+ * trend sparkline tooltip. See design_docs/0063. */
 export interface TorrentWithRate extends Torrent {
   downloadRateBytesPerSec: number;
   uploadRateBytesPerSec: number;
-  downloadRateWindows: Record<string, number>;
-  uploadRateWindows: Record<string, number>;
+  downloadRateTrend: number[];
+  uploadRateTrend: number[];
 }
 
 /** alreadyExisted distinguishes "just added" from "you already had this" - both return

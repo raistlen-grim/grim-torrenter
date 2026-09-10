@@ -2,7 +2,7 @@ import { Injectable, computed, inject, signal } from '@angular/core';
 
 import { LibraryEvent } from '../models/events.model';
 import { Torrent, TorrentWithRate } from '../models/torrent.model';
-import { RateTracker, RateWindows } from '../shared/rate-tracker';
+import { RateTracker } from '../shared/rate-tracker';
 import { AuthService } from './auth.service';
 import { TorrentService } from './torrent.service';
 
@@ -24,22 +24,22 @@ const MAX_BUFFERED_LIBRARY_EVENTS = 500;
 interface Rates {
   downloadRateBytesPerSec: number;
   uploadRateBytesPerSec: number;
-  downloadRateWindows: Record<string, number>;
-  uploadRateWindows: Record<string, number>;
+  downloadRateTrend: number[];
+  uploadRateTrend: number[];
 }
 
 const RECONNECT_DELAY_MS = 3000;
 const ZERO_RATES: Rates = {
   downloadRateBytesPerSec: 0,
   uploadRateBytesPerSec: 0,
-  downloadRateWindows: {},
-  uploadRateWindows: {},
+  downloadRateTrend: [],
+  uploadRateTrend: [],
 };
 
-/** Shared across every RateTracker this app creates so a tooltip's window labels mean the
- * same thing regardless of which one (session or, later, per-peer) produced them. */
-export const RATE_WINDOWS: RateWindows = { '5s': 5_000, '15s': 15_000, '60s': 60_000 };
-export const PRIMARY_RATE_WINDOW = '15s';
+/** Shared by every RateTracker this app creates so the primary rate (the one number shown
+ * inline) means the same thing regardless of which one (session or, later, per-peer)
+ * produced it. */
+export const PRIMARY_RATE_WINDOW_MS = 15_000;
 
 /**
  * Single source of truth for torrent state on the client. Seeds itself via
@@ -61,8 +61,8 @@ export class TorrentEventsService {
 
   private readonly torrentsByHash = signal(new Map<string, Torrent>());
   private readonly ratesByHash = signal(new Map<string, Rates>());
-  private readonly downloadRateTracker = new RateTracker(RATE_WINDOWS, PRIMARY_RATE_WINDOW);
-  private readonly uploadRateTracker = new RateTracker(RATE_WINDOWS, PRIMARY_RATE_WINDOW);
+  private readonly downloadRateTracker = new RateTracker(PRIMARY_RATE_WINDOW_MS);
+  private readonly uploadRateTracker = new RateTracker(PRIMARY_RATE_WINDOW_MS);
 
   /** Library events pushed since this service connected (app start, not page mount) - newest
    * first. EventsPage merges this with its own REST-loaded page of older history rather than
@@ -170,8 +170,8 @@ export class TorrentEventsService {
     const rates: Rates = {
       downloadRateBytesPerSec: download.current,
       uploadRateBytesPerSec: upload.current,
-      downloadRateWindows: download.byWindow,
-      uploadRateWindows: upload.byWindow,
+      downloadRateTrend: download.trend,
+      uploadRateTrend: upload.trend,
     };
     this.ratesByHash.update((map) => {
       const next = new Map(map);

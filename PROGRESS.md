@@ -534,6 +534,37 @@ complete**, per the phased scope in [[0009-phased-scope]]:
   Save button (the same mechanism every other group's validation already uses) with a specific
   visible reason shown right at the toggle, rather than a disabled control or a generic
   post-Save error. ([[0061-authentication]])
+- **Local Service Discovery, BEP 14 (2026-09-09)** — picked from `TODO.md`, the last
+  remaining item of this engine's original peer-discovery backlog (DHT-as-a-concurrent-source,
+  PEX, and concurrent multi-tracker announce were all already done). A new engine-wide
+  `LsdService` announces every active, non-private torrent to the LAN over IPv4 multicast
+  (`239.192.152.143:6771`) and listens for the same from other clients, feeding discovered
+  peers into the existing `addKnownPeers()` path — architecturally the same shape as
+  `DhtNode`/`PeerServer` (one shared socket per engine, not per torrent). Self-suppression via
+  a random per-instance cookie rather than relying on platform-specific multicast-loopback
+  socket options; BEP 27 privacy gating mirrors DHT/PEX exactly (a private torrent's info hash
+  is never announced, and an incoming announcement for one is never trusted regardless of what
+  the sender claims). Surfaces a real per-torrent `usesLsd` field via a new
+  `TorrentSession.lsdActive` construction-time snapshot rather than a live engine lookup —
+  `TorrentEventListener` deliberately has no `TorrentEngine` reference (avoids a circular CDI
+  dependency with `TorrentEngineProducer`), so the natural "just ask the engine" approach
+  wasn't reachable from the one call site that matters most (every live WebSocket
+  state-change broadcast). New `lsdEnabled`/`lsdAnnounceIntervalSeconds` settings (restart-
+  required, same shape as `dhtEnabled`/`dhtRefreshIntervalSeconds`), a third Services-page row,
+  and the Trackers tab's peer-sources line now reads the guide's full `[DHT] · [PeX] · [LSD]`
+  ([[0032-style-guide-and-primeng-theme]] had originally dropped `[LSD]` specifically because
+  it didn't exist yet). `TorrentEngine`'s new `enableLsd` constructor flag deliberately defaults
+  to false in every backward-compat overload (unlike `enableDht`/`acceptIncomingConnections`,
+  threaded through every overload from the start) - defaulting a new real-socket feature to on
+  would have silently started binding a real multicast socket in 50+ pre-existing test call
+  sites. **Same-day fix, caught in review**: the periodic engine-wide announce sweep alone
+  repeated a real mistake DHT already hit and fixed (design_docs/0036's own zero-initial-delay
+  addendum) - a freshly-activated torrent could wait up to 5 minutes for its first LSD
+  announce. Fixed with a `TorrentSessionListener` decorator that fires an immediate,
+  single-torrent announce on activation, reaching all five real activation paths (including
+  the ones `TorrentEngine` doesn't directly drive, like every torrent restored at startup on a
+  container restart) rather than just the two `TorrentEngine`'s own call sites would have
+  covered. ([[0062-local-service-discovery]])
 
 **Not yet built** (the rest of Phase 3):
 
@@ -610,6 +641,17 @@ torrent's files were opened once and held open for its whole lifetime, even whil
   actual `acquire()`, inflating the observed peak above what the real `Semaphore` ever
   permitted. The bound itself was never actually violated - only miscounted. Fixed by
   incrementing once outside the lambda ([[0049-many-torrents-load-test]]'s own addendum).
+- **Fixed a real, if narrow, duplicate-connection-attempt race in `TorrentSession`'s connection
+  refill (2026-09-10)**, found by `TorrentSessionTest.neverDuplicatesOrExceedsMaxConnectionsEvenUnderABurstOfFailures`
+  failing intermittently in a real `mvn test` run - unrelated to the same day's LSD work, a
+  latent bug in the original 2026-09-06 `inFlightAddresses` fix. `attemptConnect()`'s failure
+  path wrote to `failedAddresses` then released the `inFlightAddresses` claim as two separate,
+  non-atomically-observed writes; a concurrent `fillConnections()` call could read the first as
+  stale ("not failed yet") and the second as current ("no longer in flight"), re-claiming and
+  re-attempting an address already known dead. Fixed by no longer releasing the
+  `inFlightAddresses` claim on failure at all - `failedAddresses` already excludes it from every
+  future candidate snapshot permanently, so there was never a correctness need to free that slot
+  too. See [[0017-torrent-session]]'s own third dated correction.
 
 ## Known gaps / TODO
 
@@ -639,16 +681,17 @@ routing-table health, DHT routing-table persistence across restarts, the DHT hea
 `DEGRADED` service state, the `@primeng/themes` → `@primeuix/themes` migration, the
 peer/seed-count investigation (DHT as a concurrent source, BEP 27 private-torrent gating,
 continuous connection refill, concurrent multi-tracker announce - all picked from `TODO.md`),
-and REST/WebSocket authentication (picked from `TODO.md`, built and test-verified) are
+REST/WebSocket authentication (picked from `TODO.md`, built and test-verified), and Local
+Service Discovery (BEP 14, picked from `TODO.md`, the last peer-discovery backlog item) are
 done:
 
 1. The remaining `TODO.md` items: a notification service (still fully unscoped), running a
-   user-configured script automatically on torrent completion, LSD (BEP 14, minor), a
-   per-tracker seeders/leechers/peers UI (summary + detail view, from a qBittorrent
-   comparison), per-tracker independent announce scheduling (deferred as the bigger
-   alternative to the shared-cycle tracker-concurrency fix above), and retrying a failed
-   peer address after a cooldown (deferred as the simpler option when the connection-refill
-   fix landed).
+   user-configured script automatically on torrent completion, a per-tracker
+   seeders/leechers/peers UI (summary + detail view, from a qBittorrent comparison),
+   per-tracker independent announce scheduling (deferred as the bigger alternative to the
+   shared-cycle tracker-concurrency fix above), retrying a failed peer address after a
+   cooldown (deferred as the simpler option when the connection-refill fix landed), and UI
+   themes (unscoped).
 2. The pending-action-vs-2s-snapshot-lag gap noted above, if it proves to
    matter in practice.
 3. The rate-limiting settings group's remaining natural additions (per-torrent overrides,
