@@ -48,14 +48,13 @@ export interface Torrent {
 
 /** downloadRateBytesPerSec/uploadRateBytesPerSec are computed client-side via RateTracker
  * (a smoothed rate over its primary window, not a raw two-sample delta) - not part of the
- * backend's TorrentView DTO. See design_docs/0020/0025. downloadRateTrend/uploadRateTrend
- * are per-interval rate samples over the last ~60s, oldest first - feeds the Down cell's
- * trend sparkline tooltip. See design_docs/0063. */
+ * backend's TorrentView DTO. See design_docs/0020/0025. downloadRateTrend is per-interval
+ * rate samples over the last ~60s, oldest first - feeds the Down cell's trend sparkline
+ * tooltip. No uploadRateTrend - only the Down cell renders a sparkline. See design_docs/0063. */
 export interface TorrentWithRate extends Torrent {
   downloadRateBytesPerSec: number;
   uploadRateBytesPerSec: number;
   downloadRateTrend: number[];
-  uploadRateTrend: number[];
 }
 
 /** alreadyExisted distinguishes "just added" from "you already had this" - both return

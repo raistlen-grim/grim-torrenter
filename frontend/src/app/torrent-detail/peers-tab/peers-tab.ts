@@ -14,12 +14,12 @@ const POLL_INTERVAL_MS = 3000;
 
 /** Peer plus a client-side rate, computed the same windowed-average way as the
  * session-level rate - see shared/rate-tracker.ts and design_docs/0031/0020/0025.
- * downloadRateTrend feeds the Down cell's trend sparkline tooltip - see design_docs/0063. */
+ * downloadRateTrend feeds the Down cell's trend sparkline tooltip - see design_docs/0063.
+ * No uploadRateTrend - only the Down cell renders a sparkline. */
 export interface PeerWithRate extends Peer {
   downloadRateBytesPerSec: number;
   uploadRateBytesPerSec: number;
   downloadRateTrend: number[];
-  uploadRateTrend: number[];
 }
 
 function peerKey(peer: Peer): string {
@@ -76,7 +76,6 @@ export class PeersTab {
         downloadRateBytesPerSec: download.current,
         uploadRateBytesPerSec: upload.current,
         downloadRateTrend: download.trend,
-        uploadRateTrend: upload.trend,
       };
     });
   }

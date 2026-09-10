@@ -25,7 +25,6 @@ interface Rates {
   downloadRateBytesPerSec: number;
   uploadRateBytesPerSec: number;
   downloadRateTrend: number[];
-  uploadRateTrend: number[];
 }
 
 const RECONNECT_DELAY_MS = 3000;
@@ -33,7 +32,6 @@ const ZERO_RATES: Rates = {
   downloadRateBytesPerSec: 0,
   uploadRateBytesPerSec: 0,
   downloadRateTrend: [],
-  uploadRateTrend: [],
 };
 
 /** Shared by every RateTracker this app creates so the primary rate (the one number shown
@@ -171,7 +169,6 @@ export class TorrentEventsService {
       downloadRateBytesPerSec: download.current,
       uploadRateBytesPerSec: upload.current,
       downloadRateTrend: download.trend,
-      uploadRateTrend: upload.trend,
     };
     this.ratesByHash.update((map) => {
       const next = new Map(map);

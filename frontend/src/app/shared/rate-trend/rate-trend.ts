@@ -17,6 +17,10 @@ const SPARK_PADDING = 2;
 @Component({
   selector: 'app-rate-trend',
   imports: [FormatRatePipe],
+  host: {
+    '[attr.tabindex]': 'active() ? 0 : null',
+    '[attr.aria-label]': 'active() ? ariaLabel() : null',
+  },
   template: `
     @if (active()) {
       <span class="rate-value tabular-nums">{{ rateBytesPerSec() | formatRate }}</span>
@@ -35,12 +39,20 @@ const SPARK_PADDING = 2;
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class RateTrend {
+  private readonly formatRate = new FormatRatePipe();
+
   readonly rateBytesPerSec = input.required<number>();
   /** Per-interval rate samples (bytes/sec) over the last ~60s, oldest first - see
    * RateTracker.record()'s own RateSnapshot.trend. */
   readonly trend = input<readonly number[]>([]);
 
   readonly active = computed(() => this.rateBytesPerSec() > 0);
+
+  /** The tooltip's own visual content is aria-hidden (a decorative sparkline duplicating
+   * this same number) - this is what a keyboard/screen-reader user gets instead, read on
+   * focus since the tooltip itself only reveals on hover/focus via CSS (see rate-trend.scss's
+   * :focus-visible rule, tabindex added on the host above). */
+  readonly ariaLabel = computed(() => `${this.formatRate.transform(this.rateBytesPerSec())}, last 60 seconds`);
 
   /** SVG polyline points normalizing this.trend() into the sparkline's 110x26 box, 2px
    * top/bottom padding so the line never touches the edges. A single sample (or a flat

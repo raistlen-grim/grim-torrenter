@@ -182,6 +182,13 @@ import com.grimtorrenter.engine.mse.EncryptionMode;
  * lsdAnnounceIntervalSeconds, the same LAN-announce cadence already used for
  * dhtReannounceIntervalSeconds/dhtRefreshIntervalSeconds. Same **no** "0/negative means
  * unlimited" treatment as every other interval field above, for the same reason.
+ *
+ * <p>lsdEnabled is boxed ({@code Boolean}), not primitive, specifically so the compact
+ * constructor below can tell "absent from a pre-0062 settings.json" (deserializes to
+ * {@code null}) apart from "explicitly set" - a primitive {@code boolean} would
+ * deserialize a missing field to {@code false} with no way to distinguish that from an
+ * explicit opt-out, silently disabling LSD for every upgrading user instead of applying
+ * the documented true default. Same null-check idiom as encryptionMode/theme above.
  */
 public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
                         long uploadRateLimitBytesPerSec, long downloadRateLimitBytesPerSec,
@@ -200,7 +207,7 @@ public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
                         int watchFolderPollIntervalSeconds,
                         boolean authEnabled,
                         int authTokenTtlDays,
-                        boolean lsdEnabled,
+                        Boolean lsdEnabled,
                         int lsdAnnounceIntervalSeconds) {
 
     private static final int DEFAULT_AUTH_TOKEN_TTL_DAYS = 30;
@@ -287,6 +294,9 @@ public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
         }
         if (lsdAnnounceIntervalSeconds <= 0) {
             lsdAnnounceIntervalSeconds = DEFAULT_LSD_ANNOUNCE_INTERVAL_SECONDS;
+        }
+        if (lsdEnabled == null) {
+            lsdEnabled = true;
         }
     }
 

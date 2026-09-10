@@ -90,9 +90,14 @@ public final class LsdService implements AutoCloseable {
         // the multicast port, which is normal/expected for multicast unlike TCP. See
         // design_docs/0058/0062.
         this.socket = new MulticastSocket(null);
-        socket.setReuseAddress(true);
-        socket.bind(new InetSocketAddress(LsdCodec.MULTICAST_PORT));
-        socket.setNetworkInterface(this.interfaces.get(0));
+        try {
+            socket.setReuseAddress(true);
+            socket.bind(new InetSocketAddress(LsdCodec.MULTICAST_PORT));
+            socket.setNetworkInterface(this.interfaces.get(0));
+        } catch (IOException e) {
+            socket.close();
+            throw e;
+        }
         for (NetworkInterface networkInterface : this.interfaces) {
             try {
                 socket.joinGroup(new InetSocketAddress(groupAddress, LsdCodec.MULTICAST_PORT), networkInterface);
@@ -148,10 +153,11 @@ public final class LsdService implements AutoCloseable {
             try {
                 socket.receive(packet);
             } catch (IOException e) {
-                if (!closed) {
-                    LOG.log(System.Logger.Level.WARNING, "LSD receive loop failed", e);
+                if (closed) {
+                    return;
                 }
-                return;
+                LOG.log(System.Logger.Level.WARNING, "LSD receive loop failed", e);
+                continue;
             }
             try {
                 byte[] data = Arrays.copyOfRange(packet.getData(), packet.getOffset(),

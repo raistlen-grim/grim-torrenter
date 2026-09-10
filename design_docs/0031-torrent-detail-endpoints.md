@@ -177,6 +177,13 @@ endpoints above depend on one or the other.
 
 ### Windowed rate tracking (`shared/rate-tracker.ts`)
 
+**Note (later superseded):** the multi-window tooltip described below (`RateSnapshot.byWindow`,
+`downloadRateWindows`/`uploadRateWindows`, `FormatRateWindowsPipe`) was replaced by
+[[0063-rate-trend-tooltip]]'s single sparkline (`RateSnapshot.trend`, `RateTrend` component) -
+`FormatRateWindowsPipe` and the `byWindow`/`*RateWindows` fields no longer exist. `RateTracker`
+itself (one bounded reading-history per key, described just below) is otherwise unchanged;
+only what it's asked to expose for the tooltip changed. See 0063 for the current shape.
+
 `TorrentEventsService`'s original rate calculation was a raw two-sample delta
 (`(current - previous) / elapsed`) - noisy, since a single unusually slow or bursty
 snapshot interval visibly swings the displayed number even when the real speed is steady.
