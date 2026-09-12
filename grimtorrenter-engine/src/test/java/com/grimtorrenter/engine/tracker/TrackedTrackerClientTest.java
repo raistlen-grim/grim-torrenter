@@ -3,6 +3,8 @@ package com.grimtorrenter.engine.tracker;
 import com.grimtorrenter.engine.metainfo.InfoHash;
 import org.junit.jupiter.api.Test;
 
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -24,6 +26,18 @@ class TrackedTrackerClientTest {
 
     private static TrackerRequest fakeRequest() {
         return new TrackerRequest(InfoHash.of(fill(20, 1)), PeerId.of(fill(20, 2)), 6881, 0, 0, 100, null, 50);
+    }
+
+    private static List<PeerAddress> fakePeers(int count) {
+        try {
+            List<PeerAddress> peers = new ArrayList<>();
+            for (int i = 0; i < count; i++) {
+                peers.add(new PeerAddress(InetAddress.getByAddress(new byte[] {10, 0, 0, (byte) i}), 6881 + i));
+            }
+            return peers;
+        } catch (UnknownHostException e) {
+            throw new AssertionError(e);
+        }
     }
 
     @Test
@@ -49,7 +63,7 @@ class TrackedTrackerClientTest {
 
     @Test
     void recordsWorkingStatusAndComputesNextAnnounceFromTheResponsesOwnInterval() {
-        TrackerResponse response = new TrackerResponse(1800, null, 12, 3, List.of(), null, null);
+        TrackerResponse response = new TrackerResponse(1800, null, 12, 3, fakePeers(7), null, null);
         TrackedTrackerClient client = new TrackedTrackerClient(
                 "http://tracker.example/announce", 1, request -> response);
 
@@ -62,6 +76,7 @@ class TrackedTrackerClientTest {
         assertEquals(status.lastAnnouncedAt().plusSeconds(1800), status.nextAnnounceAt());
         assertEquals(12, status.seeders());
         assertEquals(3, status.leechers());
+        assertEquals(7, status.peers());
         assertNull(status.lastError());
     }
 
@@ -84,10 +99,11 @@ class TrackedTrackerClientTest {
     }
 
     /** See the "keep last-known values" call in design_docs/0031 - a subsequent failure
-     * shouldn't blank out a still-informative seeders/leechers count from the last success. */
+     * shouldn't blank out a still-informative seeders/leechers/peers count from the last
+     * success. See design_docs/0067 for peers joining seeders/leechers here. */
     @Test
     void failureAfterASuccessKeepsTheLastKnownSeedersAndLeechers() {
-        TrackerResponse success = new TrackerResponse(1800, null, 12, 3, List.of(), null, null);
+        TrackerResponse success = new TrackerResponse(1800, null, 12, 3, fakePeers(4), null, null);
         boolean[] shouldFail = {false};
         TrackedTrackerClient client = new TrackedTrackerClient("http://tracker.example/announce", 0, request -> {
             if (shouldFail[0]) {
@@ -104,6 +120,7 @@ class TrackedTrackerClientTest {
         assertEquals(TrackerStatus.State.ERROR, status.state());
         assertEquals(12, status.seeders());
         assertEquals(3, status.leechers());
+        assertEquals(4, status.peers());
         assertEquals("now failing", status.lastError());
     }
 

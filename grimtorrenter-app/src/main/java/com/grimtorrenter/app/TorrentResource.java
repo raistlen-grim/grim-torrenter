@@ -24,6 +24,7 @@ import jakarta.ws.rs.core.MediaType;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.util.List;
+import java.util.stream.Stream;
 
 @Path("/api/torrents")
 public class TorrentResource {
@@ -31,17 +32,27 @@ public class TorrentResource {
     @Inject
     TorrentEngine torrentEngine;
 
+    /** Pending magnets (design_docs/0070) ride the same list as resolved torrents - a magnet
+     * mid-fetch and a real torrent are mutually exclusive per info hash (TorrentEngine's own
+     * concludePendingMagnet() guarantees it), so there's nothing to de-duplicate here. */
     @GET
     @Produces(MediaType.APPLICATION_JSON)
     public List<TorrentView> list() {
-        return torrentEngine.listTorrents().stream().map(TorrentView::from).toList();
+        return Stream.concat(
+                        torrentEngine.listTorrents().stream().map(TorrentView::from),
+                        torrentEngine.listPendingMagnets().stream().map(TorrentView::fromPendingMagnet))
+                .toList();
     }
 
     @GET
     @Path("/{infoHash}")
     @Produces(MediaType.APPLICATION_JSON)
     public TorrentView get(@PathParam("infoHash") String infoHashHex) {
-        return TorrentView.from(requireSession(infoHashHex));
+        InfoHash infoHash = parseInfoHash(infoHashHex);
+        return torrentEngine.getTorrent(infoHash)
+                .map(TorrentView::from)
+                .or(() -> torrentEngine.getPendingMagnet(infoHash).map(TorrentView::fromPendingMagnet))
+                .orElseThrow(() -> new NotFoundException("Torrent not found: " + infoHashHex));
     }
 
     /** Per-piece state (NEEDED/IN_PROGRESS/COMPLETE), in index order, plus pieceLength - see
@@ -94,14 +105,22 @@ public class TorrentResource {
         return new AddTorrentResponse(TorrentView.from(result.session()), result.alreadyExisted());
     }
 
-    /** Fetching metadata from peers happens asynchronously (TorrentEngine.addMagnet) -
-     * there's no TorrentView to return yet, so this just acknowledges the request was
-     * accepted. See design_docs/0028. */
+    /** Returns synchronously, unlike the metadata fetch itself (still genuinely async, on its
+     * own background thread) - registering the magnet as pending is fast local disk I/O, so
+     * there's always a real resource to hand back immediately: either the pending entry
+     * (state "FETCHING_METADATA") or, if this info hash already resolved before, the existing
+     * torrent. See design_docs/0070 (supersedes design_docs/0028's own "nothing to return yet"
+     * note). */
     @POST
     @Path("/magnet")
     @Consumes(MediaType.TEXT_PLAIN)
-    public void addMagnet(String magnetUri) {
-        torrentEngine.addMagnet(MagnetLink.parse(magnetUri));
+    @Produces(MediaType.APPLICATION_JSON)
+    public AddTorrentResponse addMagnet(String magnetUri) {
+        TorrentEngine.AddMagnetResult result = torrentEngine.addMagnet(MagnetLink.parse(magnetUri));
+        TorrentView torrent = result.existingSession() != null
+                ? TorrentView.from(result.existingSession())
+                : TorrentView.fromPendingMagnet(result.pending());
+        return new AddTorrentResponse(torrent, result.alreadyExisted());
     }
 
     @DELETE

@@ -6,6 +6,7 @@ import com.grimtorrenter.engine.metainfo.TorrentMetadata;
 import com.grimtorrenter.engine.mse.EncryptionMode;
 import com.grimtorrenter.engine.peer.PeerConnection;
 import com.grimtorrenter.engine.peer.PeerConnectionListener;
+import com.grimtorrenter.engine.peer.PeerSource;
 import com.grimtorrenter.engine.peerwire.Bitfield;
 import com.grimtorrenter.engine.peerwire.Cancel;
 import com.grimtorrenter.engine.peerwire.Choke;
@@ -45,6 +46,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -155,12 +157,17 @@ public final class TorrentSession implements AutoCloseable {
      * per-torrent user data that can change after the session already exists. See
      * design_docs/0054. */
     private volatile SeedingLimitOverride seedingLimitOverride;
-    /** Epoch millis this session first reached SEEDING, 0 until then - purely in-memory, not
-     * persisted (see design_docs/0054's own callout on why: the byte counters a seeding-limit
-     * check is computed from already reset on every restart, so this does too, rather than
-     * being a half-persisted exception to that). Guarded against being re-stamped by
-     * checkForCompletion() running again on every subsequent start() of an already-complete
-     * torrent - see that method's own comment. */
+    /** Epoch millis this torrent first reached SEEDING, 0 if never. Was purely in-memory
+     * (reset to 0 on every restart, per design_docs/0054's own callout - the seeding-limit
+     * check's own byte counters already reset the same way, so this matched rather than being
+     * a half-persisted exception to that) until design_docs/0064 started persisting it:
+     * initialized from PersistedLifetimeStats at construction instead of always starting at 0,
+     * which - as a direct consequence, not a separate fix - also closes a real restore-time
+     * bug this field's own re-stamping guard (see checkForCompletion()) couldn't close on its
+     * own: that guard only ever prevented re-stamping *within one process run*, so a restored
+     * already-complete torrent's first post-restart completion check used to re-stamp this to
+     * "now" every single restart. A restored session now starts with the real persisted value
+     * already in place, so the same guard now correctly holds across restarts too. */
     private volatile long completedAtEpochMillis;
     /** True if verifyThenSettle() (the restore-only re-verification pass) found every piece
      * already present and valid on disk, before this session's first start() was ever called -
@@ -176,6 +183,32 @@ public final class TorrentSession implements AutoCloseable {
      * data that was already done - see design_docs/0055's own COMPLETED-event Javadoc and the
      * real duplicate-event bug this field was added to fix. */
     private volatile boolean wasCompleteOnRestore;
+    /** This torrent's uploaded-byte total from every process run before this one, loaded once
+     * at construction and never itself mutated afterward - lifetimeUploadedBytes() adds it to
+     * bytesUploaded() (this run's own contribution), rather than bytesUploaded() itself being
+     * made lifetime-cumulative, which would corrupt its two existing meanings: BEP 3's
+     * "uploaded" announce field (session-scoped by protocol convention) and
+     * design_docs/0054's seeding-ratio-limit check. See design_docs/0064. */
+    private final long lifetimeUploadedBytesBaseline;
+    /** Cumulative active (DOWNLOADING/VERIFYING/SEEDING) time from every process run before
+     * this one, plus every completed active period so far *this* run - activeSince below
+     * covers whatever active period is still ongoing. Folded in by setState() on every
+     * transition out of an active state; timeActiveMillis() adds whatever's still ongoing.
+     * See design_docs/0064. */
+    private final AtomicLong activeMillisAccumulated;
+    /** Null when not currently in an active state. Set by setState() on every transition into
+     * DOWNLOADING/VERIFYING/SEEDING from a non-active state (left alone for a transition
+     * between two active states, e.g. DOWNLOADING -&gt; SEEDING on completion - the clock keeps
+     * running), cleared (after folding the elapsed time into activeMillisAccumulated) on every
+     * transition into STOPPED/ERROR. See design_docs/0064. */
+    private volatile Instant activeSince;
+    /** Bytes received and discarded because the piece they belonged to failed its hash check
+     * on live download (verifyPiece(), not verifyThenSettle()'s restore-time re-verification -
+     * see wastedBytes()'s own Javadoc for why that distinction matters). Seeded from persisted
+     * state at construction, like lifetimeUploadedBytesBaseline, but - unlike that field - this
+     * one keeps accumulating directly (no existing "this session's own contribution" method to
+     * add to), same idiom as accumulatedUploaded/accumulatedReceived. See design_docs/0066. */
+    private final AtomicLong wastedBytes;
     /** When this torrent was first added, for the details panel's "Added" fact (see
      * design_docs/0032). Nullable, not Optional - same convention as lastError() - because a
      * directory restored from a process that predates this field has no marker to read it
@@ -187,7 +220,11 @@ public final class TorrentSession implements AutoCloseable {
     private final Instant addedAt;
 
     private final Set<PeerConnection> connections = ConcurrentHashMap.newKeySet();
-    private final Set<PeerAddress> knownAddresses = ConcurrentHashMap.newKeySet();
+    /** How this session originally learned of each candidate address - first source wins
+     * (putIfAbsent via recordKnownPeers()), never overwritten by a later rediscovery through a
+     * different source. attemptConnect() looks this up to tag the resulting PeerConnection.
+     * See design_docs/0066. */
+    private final Map<PeerAddress, PeerSource> knownAddresses = new ConcurrentHashMap<>();
     /** Every address attemptConnect() has ever failed to reach, this session's whole
      * lifetime - excluded from fillConnections()'s own candidate selection alongside
      * currently-connected addresses, so a freed slot (a failed attempt, or a disconnect -
@@ -266,7 +303,8 @@ public final class TorrentSession implements AutoCloseable {
                             TorrentSessionListener listener, DhtNode dhtNode, RateLimiters rateLimiters,
                             Semaphore pieceVerificationLimiter, Supplier<EncryptionMode> encryptionMode,
                             SeedingLimitOverride seedingLimitOverride, TorrentState initialState,
-                            Instant addedAt, Supplier<Long> dhtReannounceIntervalSeconds, boolean lsdActive) {
+                            Instant addedAt, Supplier<Long> dhtReannounceIntervalSeconds, boolean lsdActive,
+                            PersistedLifetimeStats persistedLifetimeStats) {
         this.metadata = metadata;
         this.trackerClient = trackerClient;
         this.storage = storage;
@@ -283,6 +321,16 @@ public final class TorrentSession implements AutoCloseable {
         this.state = initialState;
         this.addedAt = addedAt;
         this.dhtReannounceIntervalSeconds = dhtReannounceIntervalSeconds;
+        this.lifetimeUploadedBytesBaseline = persistedLifetimeStats.uploadedBytesBaseline();
+        this.activeMillisAccumulated = new AtomicLong(persistedLifetimeStats.activeMillisBaseline());
+        this.completedAtEpochMillis = persistedLifetimeStats.completedAtEpochMillis();
+        this.wastedBytes = new AtomicLong(persistedLifetimeStats.wastedBytesBaseline());
+        // initialState can already be an active state (restoreAsync()'s VERIFYING) without
+        // ever going through setState(), which is what normally starts the clock - see
+        // design_docs/0064.
+        if (isActiveState(initialState)) {
+            this.activeSince = Instant.now();
+        }
     }
 
     /** Same as the eight-arg overload below but with no rate limiting - for every caller
@@ -388,6 +436,11 @@ public final class TorrentSession implements AutoCloseable {
                 addedAt, dhtReannounceIntervalSeconds, false);
     }
 
+    /** Same as the eighteen-arg overload below but with PersistedLifetimeStats.NONE - for
+     * every caller that predates 0064 (tests, mainly). A genuinely new torrent has no lifetime
+     * stats to load anyway, so this is also what TorrentEngine's own addTorrent() uses for a
+     * brand-new torrent - only the reused-path/restoreAsync() cases pass real persisted
+     * values. See design_docs/0064. */
     public static TorrentSession create(TorrentMetadata metadata, TrackerClient trackerClient,
                                          Path downloadDirectory, PeerId ourPeerId, int ourListenPort,
                                          TorrentSessionListener listener, DhtNode dhtNode,
@@ -398,11 +451,27 @@ public final class TorrentSession implements AutoCloseable {
                                          Instant addedAt,
                                          Supplier<Long> dhtReannounceIntervalSeconds,
                                          boolean lsdActive) throws IOException {
+        return create(metadata, trackerClient, downloadDirectory, ourPeerId, ourListenPort, listener, dhtNode,
+                rateLimiters, fileHandlePool, pieceVerificationLimiter, encryptionMode, seedingLimitOverride,
+                addedAt, dhtReannounceIntervalSeconds, lsdActive, PersistedLifetimeStats.NONE);
+    }
+
+    public static TorrentSession create(TorrentMetadata metadata, TrackerClient trackerClient,
+                                         Path downloadDirectory, PeerId ourPeerId, int ourListenPort,
+                                         TorrentSessionListener listener, DhtNode dhtNode,
+                                         RateLimiters rateLimiters, FileHandlePool fileHandlePool,
+                                         Semaphore pieceVerificationLimiter,
+                                         Supplier<EncryptionMode> encryptionMode,
+                                         SeedingLimitOverride seedingLimitOverride,
+                                         Instant addedAt,
+                                         Supplier<Long> dhtReannounceIntervalSeconds,
+                                         boolean lsdActive,
+                                         PersistedLifetimeStats persistedLifetimeStats) throws IOException {
         TorrentStorage storage = TorrentStorage.create(metadata, downloadDirectory, fileHandlePool);
         PieceManager pieceManager = new PieceManager(metadata);
         return new TorrentSession(metadata, trackerClient, storage, pieceManager, ourPeerId, ourListenPort,
                 listener, dhtNode, rateLimiters, pieceVerificationLimiter, encryptionMode, seedingLimitOverride,
-                TorrentState.STOPPED, addedAt, dhtReannounceIntervalSeconds, lsdActive);
+                TorrentState.STOPPED, addedAt, dhtReannounceIntervalSeconds, lsdActive, persistedLifetimeStats);
     }
 
     /** Same as the nine-arg overload below but with no rate limiting - see create()'s own
@@ -533,6 +602,8 @@ public final class TorrentSession implements AutoCloseable {
                 seedingLimitOverride, addedAt, dhtReannounceIntervalSeconds, false, autoStart);
     }
 
+    /** Same as the nineteen-arg overload below but with PersistedLifetimeStats.NONE - for
+     * every caller that predates 0064 (tests, mainly). See design_docs/0064. */
     public static TorrentSession restoreAsync(TorrentMetadata metadata, TrackerClient trackerClient,
                                                Path downloadDirectory, PeerId ourPeerId, int ourListenPort,
                                                TorrentSessionListener listener, DhtNode dhtNode,
@@ -544,12 +615,30 @@ public final class TorrentSession implements AutoCloseable {
                                                Supplier<Long> dhtReannounceIntervalSeconds,
                                                boolean lsdActive,
                                                boolean autoStart) throws IOException {
+        return restoreAsync(metadata, trackerClient, downloadDirectory, ourPeerId, ourListenPort, listener,
+                dhtNode, rateLimiters, fileHandlePool, pieceVerificationLimiter, encryptionMode,
+                seedingLimitOverride, addedAt, dhtReannounceIntervalSeconds, lsdActive, autoStart,
+                PersistedLifetimeStats.NONE);
+    }
+
+    public static TorrentSession restoreAsync(TorrentMetadata metadata, TrackerClient trackerClient,
+                                               Path downloadDirectory, PeerId ourPeerId, int ourListenPort,
+                                               TorrentSessionListener listener, DhtNode dhtNode,
+                                               RateLimiters rateLimiters, FileHandlePool fileHandlePool,
+                                               Semaphore pieceVerificationLimiter,
+                                               Supplier<EncryptionMode> encryptionMode,
+                                               SeedingLimitOverride seedingLimitOverride,
+                                               Instant addedAt,
+                                               Supplier<Long> dhtReannounceIntervalSeconds,
+                                               boolean lsdActive,
+                                               boolean autoStart,
+                                               PersistedLifetimeStats persistedLifetimeStats) throws IOException {
         TorrentStorage storage = TorrentStorage.create(metadata, downloadDirectory, fileHandlePool);
         PieceManager pieceManager = new PieceManager(metadata);
         TorrentSession session = new TorrentSession(metadata, trackerClient, storage, pieceManager,
                 ourPeerId, ourListenPort, listener, dhtNode, rateLimiters, pieceVerificationLimiter,
                 encryptionMode, seedingLimitOverride, TorrentState.VERIFYING, addedAt,
-                dhtReannounceIntervalSeconds, lsdActive);
+                dhtReannounceIntervalSeconds, lsdActive, persistedLifetimeStats);
         Thread.ofVirtual().start(() -> session.verifyThenSettle(autoStart));
         return session;
     }
@@ -629,7 +718,7 @@ public final class TorrentSession implements AutoCloseable {
         }
 
         dhtBackstopActive = false;
-        enterDownloading(response.peers(), Math.max(response.interval(), 30));
+        enterDownloading(response.peers(), Math.max(response.interval(), 30), PeerSource.TRACKER);
     }
 
     /** BEP 27: a private torrent's peer discovery must stay confined to whatever its
@@ -688,11 +777,11 @@ public final class TorrentSession implements AutoCloseable {
         dhtBackstopActive = true;
         LOG.log(System.Logger.Level.INFO, "Initial tracker announce failed for " + metadata.infoHash()
                 + " - falling back to DHT, found " + peers.size() + " peer(s)", trackerFailure);
-        enterDownloading(peers, DHT_BACKSTOP_REANNOUNCE_INTERVAL_SECONDS);
+        enterDownloading(peers, DHT_BACKSTOP_REANNOUNCE_INTERVAL_SECONDS, PeerSource.DHT);
     }
 
-    private void enterDownloading(List<PeerAddress> peers, long reannounceIntervalSeconds) {
-        knownAddresses.addAll(peers);
+    private void enterDownloading(List<PeerAddress> peers, long reannounceIntervalSeconds, PeerSource source) {
+        recordKnownPeers(peers, source);
         setState(TorrentState.DOWNLOADING);
 
         scheduler = Executors.newSingleThreadScheduledExecutor();
@@ -784,10 +873,28 @@ public final class TorrentSession implements AutoCloseable {
         storage.close();
     }
 
+    /** DOWNLOADING/VERIFYING/SEEDING count as "active" for timeActiveMillis() - anything the
+     * torrent is actively doing, not narrowly "transferring bytes right now". STOPPED/ERROR
+     * don't. See design_docs/0064. */
+    private static boolean isActiveState(TorrentState state) {
+        return state == TorrentState.DOWNLOADING || state == TorrentState.VERIFYING || state == TorrentState.SEEDING;
+    }
+
     private void setState(TorrentState newState) {
         TorrentState old = state;
         state = newState;
         if (old != newState) {
+            boolean wasActive = isActiveState(old);
+            boolean nowActive = isActiveState(newState);
+            if (nowActive && !wasActive) {
+                activeSince = Instant.now();
+            } else if (!nowActive && wasActive) {
+                Instant since = activeSince;
+                if (since != null) {
+                    activeMillisAccumulated.addAndGet(Duration.between(since, Instant.now()).toMillis());
+                }
+                activeSince = null;
+            }
             LOG.log(System.Logger.Level.INFO,
                     "Torrent " + metadata.infoHash() + ": " + old + " -> " + newState);
             listener.onStateChanged(this, old, newState);
@@ -813,7 +920,7 @@ public final class TorrentSession implements AutoCloseable {
             TrackerResponse response = trackerClient.announce(new TrackerRequest(metadata.infoHash(), ourPeerId,
                     ourListenPort, bytesUploaded(), bytesDownloaded(), bytesRemaining(), null, NUM_WANT));
             dhtBackstopActive = false;
-            knownAddresses.addAll(response.peers());
+            recordKnownPeers(response.peers(), PeerSource.TRACKER);
             fillConnections();
         } catch (RuntimeException e) {
             // Transient tracker failure - existing connections keep working; retry next interval.
@@ -854,7 +961,7 @@ public final class TorrentSession implements AutoCloseable {
                 // outside.
                 LOG.log(System.Logger.Level.DEBUG, "DHT peer discovery for " + metadata.infoHash()
                         + " found " + peers.size() + " peer(s)");
-                addKnownPeers(peers);
+                addKnownPeers(peers, PeerSource.DHT);
             } catch (RuntimeException e) {
                 LOG.log(System.Logger.Level.DEBUG, "DHT peer discovery failed for " + metadata.infoHash(), e);
             }
@@ -951,7 +1058,7 @@ public final class TorrentSession implements AutoCloseable {
         }
         try {
             PexMessage message = PexCodec.decode(extended.payload());
-            addKnownPeers(message.added());
+            addKnownPeers(message.added(), PeerSource.PEX);
         } catch (RuntimeException ignored) {
             // Malformed ut_pex message - drop it, same tolerance MetadataFetcher's own
             // ut_metadata decoding already applies to a peer sending us garbage.
@@ -973,7 +1080,7 @@ public final class TorrentSession implements AutoCloseable {
         if (state != TorrentState.DOWNLOADING && state != TorrentState.SEEDING) {
             return;
         }
-        List<PeerAddress> candidates = knownAddresses.stream()
+        List<PeerAddress> candidates = knownAddresses.keySet().stream()
                 .filter(address -> !failedAddresses.contains(address))
                 .filter(address -> !inFlightAddresses.contains(address))
                 .filter(address -> connections.stream().noneMatch(c -> c.remoteAddress().equals(address)))
@@ -1006,8 +1113,9 @@ public final class TorrentSession implements AutoCloseable {
      * connections.size() check was not. */
     private void attemptConnect(PeerAddress address) {
         try {
+            PeerSource source = knownAddresses.getOrDefault(address, PeerSource.UNKNOWN);
             PeerConnection connection = PeerConnection.connect(address, metadata.infoHash(), ourPeerId,
-                    new PeerListener(), extensionsToAdvertise(), rateLimiters, encryptionMode.get());
+                    new PeerListener(), extensionsToAdvertise(), rateLimiters, encryptionMode.get(), source);
             connections.add(connection);
             // Now covered by the connections-based filter in fillConnections() instead -
             // removing the inFlightAddresses claim just avoids that set growing forever with
@@ -1088,15 +1196,25 @@ public final class TorrentSession implements AutoCloseable {
     }
 
     /**
-     * Seeds additional known peer addresses directly, bypassing tracker announce entirely
-     * - for a trackerless torrent (a magnet resolved via DHT, see design_docs/0028), whose
-     * only source of peers at add-time is whatever DHT lookup already found while
-     * fetching its metadata. Safe to call regardless of current state; only actually
-     * attempts connections if the session is already running.
+     * Seeds additional known peer addresses directly, bypassing tracker announce entirely.
+     * Its only current external caller is TorrentEngine.onLsdPeerFound() (source LSD); source
+     * is an explicit parameter rather than assumed, since this is a general "seed addresses
+     * from outside" entry point, not an LSD-specific one - see design_docs/0066. Safe to call
+     * regardless of current state; only actually attempts connections if the session is
+     * already running.
      */
-    public void addKnownPeers(List<PeerAddress> addresses) {
-        knownAddresses.addAll(addresses);
+    public void addKnownPeers(List<PeerAddress> addresses, PeerSource source) {
+        recordKnownPeers(addresses, source);
         fillConnections();
+    }
+
+    /** First source wins - putIfAbsent, not put, so a peer independently rediscovered later
+     * through a different source keeps whichever one originally told us about it. See
+     * design_docs/0066. */
+    private void recordKnownPeers(Collection<PeerAddress> addresses, PeerSource source) {
+        for (PeerAddress address : addresses) {
+            knownAddresses.putIfAbsent(address, source);
+        }
     }
 
     private Bitfield buildBitfield() {
@@ -1298,6 +1416,11 @@ public final class TorrentSession implements AutoCloseable {
         try {
             byte[] bytes = storage.read(pieceManager.pieceOffset(pieceIndex), pieceManager.pieceLength(pieceIndex));
             verified = pieceManager.verify(pieceIndex, bytes);
+            if (!verified) {
+                // Live download only, not verifyThenSettle()'s restore-time re-check - see
+                // wastedBytes()'s own Javadoc. design_docs/0066.
+                wastedBytes.addAndGet(bytes.length);
+            }
         } catch (IOException e) {
             fail(e);
             return;
@@ -1318,18 +1441,28 @@ public final class TorrentSession implements AutoCloseable {
         synchronized (this) {
             justCompleted = state == TorrentState.DOWNLOADING && pieceManager.isAllComplete();
             if (justCompleted) {
+                // Stamped *before* setState() flips the (volatile) state field, both still
+                // inside this same synchronized block - not just "as soon as possible after."
+                // state becomes visible as SEEDING to any other thread the instant setState()
+                // runs, with no synchronization of its own required to observe that (a plain
+                // volatile read, e.g. checkSeedingLimits() reading session.state() from a
+                // completely different thread) - the Java Memory Model gives no guarantee that
+                // such a reader also sees completedAtEpochMillis's write if it happened *after*
+                // exiting this block, even by a few CPU instructions. Ordering it first, still
+                // under the same lock, means the happens-before edge on the state write also
+                // covers this one. Guarded, not unconditional - enterDownloading() calls
+                // checkForCompletion() on every start(), including every resume and every
+                // restart of an already-complete torrent (see its own comment), so without this
+                // guard a routine pause/resume cycle would keep resetting the seed-time clock to
+                // zero. See design_docs/0054/0064.
+                if (completedAtEpochMillis == 0) {
+                    completedAtEpochMillis = System.currentTimeMillis();
+                }
                 setState(TorrentState.SEEDING);
             }
         }
         if (!justCompleted) {
             return;
-        }
-        // Guarded, not unconditional - enterDownloading() calls checkForCompletion() on every
-        // start(), including every resume and every restart of an already-complete torrent
-        // (see its own comment), so without this guard a routine pause/resume cycle would
-        // keep resetting the seed-time clock to zero. See design_docs/0054.
-        if (completedAtEpochMillis == 0) {
-            completedAtEpochMillis = System.currentTimeMillis();
         }
         for (PeerConnection connection : connections) {
             updateInterest(connection);
@@ -1359,8 +1492,8 @@ public final class TorrentSession implements AutoCloseable {
         return addedAt;
     }
 
-    /** 0 until this session first reaches SEEDING - see this field's own Javadoc for why it's
-     * purely in-memory. See design_docs/0054. */
+    /** 0 if this torrent has never completed - see this field's own Javadoc. See
+     * design_docs/0054/0064. */
     public long completedAtEpochMillis() {
         return completedAtEpochMillis;
     }
@@ -1385,6 +1518,37 @@ public final class TorrentSession implements AutoCloseable {
         return connections.size();
     }
 
+    /** What TorrentEngine loads from (or defaults for a brand-new torrent to) this torrent's
+     * lifetime-stats marker, and hands to create()/restoreAsync() - see design_docs/0064/0065.
+     * NONE is the all-zero baseline every genuinely new torrent starts from. */
+    public record PersistedLifetimeStats(long uploadedBytesBaseline, long activeMillisBaseline,
+                                          long completedAtEpochMillis, long wastedBytesBaseline) {
+        public static final PersistedLifetimeStats NONE = new PersistedLifetimeStats(0, 0, 0, 0);
+    }
+
+    /** baseline + this run's own contribution (bytesUploaded()) - see
+     * lifetimeUploadedBytesBaseline's own Javadoc for why this isn't bytesUploaded() itself
+     * made lifetime-cumulative. See design_docs/0064. */
+    public long lifetimeUploadedBytes() {
+        return lifetimeUploadedBytesBaseline + bytesUploaded();
+    }
+
+    /** Cumulative time spent DOWNLOADING/VERIFYING/SEEDING, across every process run this
+     * torrent has ever existed for - see activeMillisAccumulated/activeSince's own Javadoc.
+     * See design_docs/0064. */
+    public long timeActiveMillis() {
+        Instant since = activeSince;
+        long ongoing = since == null ? 0 : Duration.between(since, Instant.now()).toMillis();
+        return activeMillisAccumulated.get() + ongoing;
+    }
+
+    /** Bytes received and discarded because the piece they belonged to failed a live-download
+     * hash check - see this field's own Javadoc for why restore-time re-verification
+     * (verifyThenSettle()) deliberately doesn't feed this. See design_docs/0066. */
+    public long wastedBytes() {
+        return wastedBytes.get();
+    }
+
     /** A read-only snapshot of one connected peer's state, for external consumers (the
      * REST layer) - not the live PeerConnection itself, which stays engine-internal (see
      * design_docs/0006/0031). */
@@ -1396,14 +1560,47 @@ public final class TorrentSession implements AutoCloseable {
             boolean peerChoking,
             boolean peerInterested,
             long downloadedBytes,
-            long uploadedBytes
+            long uploadedBytes,
+            boolean incoming,
+            PeerSource source,
+            /** Fraction (0-1) of the torrent's total pieces this peer has, per their
+             * advertised bitfield/Have messages. See design_docs/0067. */
+            double percentAvailable,
+            /** Fraction (0-1) of the pieces *we still need* that this peer has - explains why
+             * a peer isn't helping much (they may have plenty overall but little we lack). 0
+             * when we need nothing (already complete/seeding) - moot once there's nothing left
+             * to want. See design_docs/0067. */
+            double relevance
     ) {
     }
 
     public List<PeerSnapshot> peers() {
+        int totalPieces = pieceManager.pieceCount();
+        int needed = 0;
+        for (int i = 0; i < totalPieces; i++) {
+            if (!pieceManager.isComplete(i)) {
+                needed++;
+            }
+        }
+        int stillNeeded = needed;
         return connections.stream()
-                .map(c -> new PeerSnapshot(c.remoteAddress(), c.remotePeerId(), c.amChoking(), c.amInterested(),
-                        c.peerChoking(), c.peerInterested(), c.downloadedBytes(), c.uploadedBytes()))
+                .map(c -> {
+                    int has = 0;
+                    int relevant = 0;
+                    for (int i = 0; i < totalPieces; i++) {
+                        if (c.peerHasPiece(i)) {
+                            has++;
+                            if (!pieceManager.isComplete(i)) {
+                                relevant++;
+                            }
+                        }
+                    }
+                    double percentAvailable = totalPieces == 0 ? 0 : (double) has / totalPieces;
+                    double relevance = stillNeeded == 0 ? 0 : (double) relevant / stillNeeded;
+                    return new PeerSnapshot(c.remoteAddress(), c.remotePeerId(), c.amChoking(), c.amInterested(),
+                            c.peerChoking(), c.peerInterested(), c.downloadedBytes(), c.uploadedBytes(),
+                            c.incoming(), c.source(), percentAvailable, relevance);
+                })
                 .toList();
     }
 

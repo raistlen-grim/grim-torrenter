@@ -5,7 +5,6 @@ import {
   DestroyRef,
   ElementRef,
   computed,
-  effect,
   inject,
   signal,
   viewChild,
@@ -39,16 +38,14 @@ import { SkullMark } from '../shared/skull-mark/skull-mark';
 import { StatusIndicator } from '../shared/status-indicator/status-indicator';
 import { TorrentRow } from './torrent-row/torrent-row';
 
-/** infoHash is set only for a magnet-sourced pending entry where it's derivable client-side
- * (the 40-hex-char xt= form parseMagnetParams() already extracts - a base32-form magnet gets
- * no client-side infoHash, so it skips the pending-row treatment entirely rather than adding
- * an entry nothing could ever correlate against and clear). A file-upload-sourced entry never
- * sets it - that path resolves synchronously in uploadFile()'s own subscribe already, with no
- * need for the infoHash effect below. See design_docs/0060. */
+/** A brief "request in flight" placeholder, for either an upload or a magnet add - both now
+ * resolve synchronously (design_docs/0070 gave magnet-add the same immediate-response shape
+ * upload always had), so this only ever masks normal request latency, not metadata-fetch
+ * latency. No infoHash needed any more - there's nothing left to correlate against once the
+ * add's own subscribe() already applies the result directly. See design_docs/0029/0070. */
 interface PendingUpload {
   id: string;
   fileName: string;
-  infoHash?: string;
 }
 
 /** A discriminated union rather than injecting a synthetic "pending" torrent into
@@ -504,36 +501,6 @@ export class TorrentList {
     }
   });
 
-  /** Resolves a magnet-sourced pendingUploads() entry (infoHash set - see PendingUpload's own
-   * Javadoc) once its real outcome is known: removed on success (a torrent with that infoHash
-   * now exists in events.torrents()) or on failure (a MAGNET_ADD_FAILED library event for it
-   * has arrived - also shown as an error toast, using the event's own message). Self-limiting
-   * with no extra bookkeeping needed: once an entry is removed, the same torrent/event
-   * reappearing on a later run simply has nothing left in pendingUploads() to match against.
-   * See design_docs/0060. */
-  private readonly pendingInfoHashEffect = effect(() => {
-    const torrents = this.events.torrents();
-    const libraryEvents = this.events.libraryEvents();
-    for (const entry of this.pendingUploads()) {
-      if (!entry.infoHash) {
-        continue;
-      }
-      if (torrents.some((t) => t.infoHash === entry.infoHash)) {
-        this.removePendingUpload(entry.id);
-        continue;
-      }
-      const failure = libraryEvents.find((e) => e.type === 'MAGNET_ADD_FAILED' && e.infoHash === entry.infoHash);
-      if (failure) {
-        this.removePendingUpload(entry.id);
-        this.messageService.add({
-          severity: 'error',
-          summary: 'Could not add magnet',
-          detail: failure.message ?? entry.fileName,
-        });
-      }
-    }
-  });
-
   constructor() {
     const pasteHandler = (event: ClipboardEvent) => this.onGlobalPaste(event);
     const dragOverHandler = (event: DragEvent) => this.onWindowDragOver(event);
@@ -635,27 +602,23 @@ export class TorrentList {
     });
   }
 
-  /** No torrent to show yet on success - metadata fetch happens in the background
-   * (design_docs/0028). A 200 response only means the background fetch started, not that it
-   * succeeded, so the pending row pushed below is deliberately NOT removed in next() - only
-   * the pendingInfoHashEffect (constructor) resolves it, once either a real torrent with this
-   * infoHash appears (success) or a MAGNET_ADD_FAILED event for it arrives (failure). A
-   * synchronous error response (no usable tracker and DHT off) is the one case genuinely
-   * final at request time, so that path still removes it immediately, same as a failed
-   * upload does - see design_docs/0060. No success toast: per ADD_CONTROL.md, "the new row
-   * appearing *is* the confirmation." A synchronous failure keeps the echo strip open in its
-   * alarm state instead of a toast, naming the reason, per the same doc's behaviour table. */
+  /** Resolves synchronously now (design_docs/0070) - a magnet add returns a real, insertable
+   * Torrent (state 'FETCHING_METADATA' until it resolves, or the already-existing torrent if
+   * this info hash was already added) in the same response, same shape uploadFile() already
+   * has. No success toast: per ADD_CONTROL.md, "the new row appearing *is* the confirmation."
+   * A synchronous error response (no usable tracker and DHT off, or a malformed URI) keeps the
+   * echo strip open in its alarm state instead of a toast, naming the reason, per the same
+   * doc's behaviour table. */
   private submitMagnet(uri: string): void {
     const pendingId = generateLocalId();
-    this.pendingUploads.update((uploads) => [
-      ...uploads,
-      { id: pendingId, fileName: magnetDisplayName(uri), infoHash: parseMagnetParams(uri)?.infoHash ?? undefined },
-    ]);
+    this.pendingUploads.update((uploads) => [...uploads, { id: pendingId, fileName: magnetDisplayName(uri) }]);
     this.addPending.set(true);
     this.torrentService.addMagnet(uri).subscribe({
-      next: () => {
+      next: (response) => {
+        this.removePendingUpload(pendingId);
         this.addPending.set(false);
         this.addValue.set('');
+        this.events.upsert(response.torrent);
       },
       error: (err: { error?: { error?: string } }) => {
         this.removePendingUpload(pendingId);
@@ -665,20 +628,19 @@ export class TorrentList {
     });
   }
 
-  /** Same next()-doesn't-remove-the-pending-row reasoning as submitMagnet() above, per uri -
-   * see design_docs/0060. */
+  /** Same synchronous-response reasoning as submitMagnet() above, per uri - see
+   * design_docs/0070. */
   private submitMultipleMagnets(uris: string[]): void {
     this.addPending.set(true);
     let remaining = uris.length;
     let failed = 0;
     uris.forEach((uri) => {
       const pendingId = generateLocalId();
-      this.pendingUploads.update((uploads) => [
-        ...uploads,
-        { id: pendingId, fileName: magnetDisplayName(uri), infoHash: parseMagnetParams(uri)?.infoHash ?? undefined },
-      ]);
+      this.pendingUploads.update((uploads) => [...uploads, { id: pendingId, fileName: magnetDisplayName(uri) }]);
       this.torrentService.addMagnet(uri).subscribe({
-        next: () => {
+        next: (response) => {
+          this.removePendingUpload(pendingId);
+          this.events.upsert(response.torrent);
           remaining--;
           if (remaining === 0) {
             this.finishMultiAdd(failed);

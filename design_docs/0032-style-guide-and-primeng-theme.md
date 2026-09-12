@@ -325,6 +325,25 @@ same call already made for the row's Peers column and byte totals. Rendered as a
   anything already agreed - flagged here for visibility, same as the row's dropped Peers
   column was.
 
+**Own 2026-09-10 addendum ([[0064-persistent-lifetime-stats]]): fact grid grows to 9 cells,
+past the guide's original 8.** Two new cells, `Active` and `Completed`, added after `Added` -
+confirmed with the user as a deliberate style-guide revision rather than finding somewhere else
+to tuck this data away, once persistent lifetime stats made both genuinely meaningful for the
+first time (before 0064, "how long has this run" and "when did it finish" either didn't exist
+or reset every restart, so there was nothing worth a cell). Same tabular-nums/em-dash
+conventions as every other fact cell:
+- `Active` - `timeActiveMillis` humanized via the same day/hour/minute/second scheme
+  `FormatEtaPipe` already uses (extracted into a shared `FormatDurationPipe` - design_docs/0064)
+  - reads `< 1m` rather than `0s` for a torrent that's barely started, matching real clients'
+    own convention for this exact cell.
+- `Completed` - `completedAtEpochMillis`, rendered via `DatePipe` (`'d MMM, HH:mm'`, same format
+  `Added` already uses) when non-zero, an em dash otherwise (never completed).
+
+**Own 2026-09-10 addendum, same day ([[0066-peer-diagnostics]]): fact grid grows to 10 cells.**
+A `Wasted` cell (`wastedBytes`, `FormatBytesPipe` - same pipe/format `Size` already uses) added
+right after `Active`, ahead of `Completed` - extending the same-day revision above rather than
+opening a separate one for one more cell landing hours later.
+
 **Progress bar**: 5px, renders only below 100% (a completed torrent just shows `Done: 100%` in
 the fact grid, no dead bar underneath); striped fill + a `Checking N of M pieces` caption while
 verifying, reusing the exact same striped-gradient values as the row's own verifying underlay

@@ -45,10 +45,10 @@ export class TorrentService {
     return this.http.post<AddTorrentResponse>(this.baseUrl, formData);
   }
 
-  /** No Torrent in the response - metadata fetch happens asynchronously server-side
-   * (see design_docs/0028), so there's nothing to return yet. */
-  addMagnet(magnetUri: string): Observable<void> {
-    return this.http.post<void>(`${this.baseUrl}/magnet`, magnetUri, {
+  /** Returns synchronously with a pending (state 'FETCHING_METADATA') or already-resolved
+   * Torrent, same shape as upload() - see design_docs/0070. */
+  addMagnet(magnetUri: string): Observable<AddTorrentResponse> {
+    return this.http.post<AddTorrentResponse>(`${this.baseUrl}/magnet`, magnetUri, {
       headers: { 'Content-Type': 'text/plain' },
     });
   }

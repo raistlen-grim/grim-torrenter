@@ -490,7 +490,9 @@ class TorrentEngineTest {
         assertEquals(2, engine.listTorrents().size());
         assertNotEquals(sessionA.metadata().infoHash(), sessionB.metadata().infoHash());
 
-        Path fileA = tempDir.resolve("same-name.bin").resolve("same-name.bin");
+        // First torrent lands flat (no name collision yet, design_docs/0065); the second's
+        // bare name collides with it, so it falls back to its own disambiguated subdirectory.
+        Path fileA = tempDir.resolve("same-name.bin");
         Path fileB = tempDir.resolve("same-name.bin-2").resolve("same-name.bin");
         assertTrue(Files.exists(fileA));
         assertTrue(Files.exists(fileB));
@@ -506,7 +508,7 @@ class TorrentEngineTest {
 
         TorrentEngine firstEngine = new TorrentEngine(tempDir, 6881, new NoOpListener());
         TorrentSession first = firstEngine.addTorrent(torrent).session();
-        assertTrue(Files.exists(tempDir.resolve("reused-name.bin").resolve("reused-name.bin")));
+        assertTrue(Files.exists(tempDir.resolve("reused-name.bin")));
         first.stop();
 
         // A brand new TorrentEngine (simulating a process restart, no in-memory session state)
@@ -575,10 +577,13 @@ class TorrentEngineTest {
 
         engine.removeTorrent(infoHash);
 
-        Path directory = tempDir.resolve("file.bin");
-        assertTrue(Files.exists(directory.resolve("file.bin")));
-        assertFalse(Files.exists(directory.resolve(".grimtorrenter.torrent")));
-        assertFalse(Files.exists(directory.resolve(".grimtorrenter-state")));
+        // Content lands flat (design_docs/0065); config-side markers live under
+        // configDirectory/torrents/<infoHash> - defaults to tempDir itself here, same as
+        // every other pre-existing-constructor test.
+        assertTrue(Files.exists(tempDir.resolve("file.bin")));
+        Path configTorrentDirectory = tempDir.resolve("torrents").resolve(infoHash.hex());
+        assertFalse(Files.exists(configTorrentDirectory.resolve(".grimtorrenter.torrent")));
+        assertFalse(Files.exists(configTorrentDirectory.resolve(".grimtorrenter-state")));
 
         // A fresh engine (simulating a restart) should NOT pick this back up - the
         // resume record is gone even though the downloaded file is still sitting there.
@@ -608,7 +613,7 @@ class TorrentEngineTest {
         // Simulate the torrent having actually finished downloading before it was removed -
         // same direct-write technique TorrentSessionTest's own restoreAsync tests use,
         // rather than driving a full peer-wire download just to get correct bytes on disk.
-        Files.write(tempDir.resolve("reuse-data.bin").resolve("reuse-data.bin"), content);
+        Files.write(tempDir.resolve("reuse-data.bin"), content);
 
         TorrentSession second = engine.addTorrent(torrentBytes).session();
 
@@ -671,7 +676,9 @@ class TorrentEngineTest {
 
     @Test
     void restoreSkipsDirectoriesWithoutATorrentFileMarker(@TempDir Path tempDir) throws IOException {
-        Files.createDirectories(tempDir.resolve("unrelated"));
+        // restore() scans configDirectory's torrents subdirectory, not the download
+        // directory, since design_docs/0065 - configDirectory defaults to tempDir here.
+        Files.createDirectories(tempDir.resolve("torrents").resolve("unrelated"));
 
         TorrentEngine engine = new TorrentEngine(tempDir, 6881, new NoOpListener());
         engine.restore();
@@ -695,7 +702,7 @@ class TorrentEngineTest {
         TorrentSession first = engine.addTorrent(torrentBytes).session();
         InfoHash infoHash = first.metadata().infoHash();
         engine.removeTorrent(infoHash, false);
-        Files.write(tempDir.resolve(name).resolve(name), content);
+        Files.write(tempDir.resolve(name), content);
         TorrentSession second = engine.addTorrent(torrentBytes).session();
         awaitState(second, TorrentState.SEEDING);
         return second;
@@ -717,7 +724,8 @@ class TorrentEngineTest {
         engine.checkSeedingLimits();
 
         awaitState(session, TorrentState.STOPPED);
-        assertEquals("STOPPED", Files.readString(tempDir.resolve("ratio-limit.bin").resolve(".grimtorrenter-state")).strip());
+        Path configTorrentDirectory = tempDir.resolve("torrents").resolve(session.metadata().infoHash().hex());
+        assertEquals("STOPPED", Files.readString(configTorrentDirectory.resolve(".grimtorrenter-state")).strip());
     }
 
     /** Time limit 0 minutes is the same kind of deterministic degenerate boundary as ratio

@@ -1,3 +1,4 @@
+import { DecimalPipe } from '@angular/common';
 import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { map } from 'rxjs';
@@ -27,13 +28,12 @@ function peerKey(peer: Peer): string {
 }
 
 /** Existing-field subset plus a client-side rate. `peerId` (raw BEP 20 hex, not yet decoded
- * into a client name - design_docs/0031 left that as a deferred, isolated utility) and a
- * per-peer completion percentage (the guide's "Done" column - no per-peer piece-availability/
- * bitfield data is exposed anywhere today, session-level or otherwise) are both still absent;
- * neither is new to this task. See design_docs/0032's task 7 notes. */
+ * into a client name - design_docs/0031 left that as a deferred, isolated utility) is still
+ * absent; the guide's "Done" column (per-peer completion percentage) is now filled in via
+ * `percentAvailable` - see design_docs/0067. */
 @Component({
   selector: 'app-peers-tab',
-  imports: [FormatRatePipe, RateTrend],
+  imports: [DecimalPipe, FormatRatePipe, RateTrend],
   templateUrl: './peers-tab.html',
   styleUrl: './peers-tab.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -51,6 +51,41 @@ export class PeersTab {
 
   readonly infoHash = input.required<string>();
   readonly peerKey = peerKey;
+
+  /** Single-letter badges, same compact convention real clients use for this (qBittorrent's
+   * own X/H/L flags) - the drawer's 430px width has no room for a spelled-out "Source" column.
+   * UNKNOWN is never rendered at all (see the template) rather than getting a letter of its
+   * own. See design_docs/0066. */
+  sourceLabel(source: Peer['source']): string {
+    switch (source) {
+      case 'TRACKER':
+        return 'T';
+      case 'DHT':
+        return 'H';
+      case 'PEX':
+        return 'X';
+      case 'LSD':
+        return 'L';
+      default:
+        return '';
+    }
+  }
+
+  /** The badge's own tooltip text - spelled out, unlike sourceLabel()'s single letter. */
+  sourceName(source: Peer['source']): string {
+    switch (source) {
+      case 'TRACKER':
+        return 'Tracker';
+      case 'DHT':
+        return 'DHT';
+      case 'PEX':
+        return 'PEX';
+      case 'LSD':
+        return 'Local Service Discovery';
+      default:
+        return '';
+    }
+  }
 
   private readonly peers = toSignal(
     pollWhileInput(this.infoHash, POLL_INTERVAL_MS, (infoHash) => this.torrentService.peers(infoHash)).pipe(

@@ -24,7 +24,7 @@
     </div>
     <div class="fact-cell">
       <div class="fact-label">Down</div>
-      <div class="fact-value tabular-nums" [class.idle]="torrent.downloadRateBytesPerSec === 0">
+      <div class="fact-value tabular-nums" [class.idle]="torrent.downloadRateBytesPerSec === 0" [title]="avgDownloadTooltip()">
         @if (torrent.downloadRateBytesPerSec > 0) {
           {{ torrent.downloadRateBytesPerSec | formatRate }}
         } @else {
@@ -34,7 +34,7 @@
     </div>
     <div class="fact-cell">
       <div class="fact-label">Up</div>
-      <div class="fact-value tabular-nums" [class.idle]="torrent.uploadRateBytesPerSec === 0">
+      <div class="fact-value tabular-nums" [class.idle]="torrent.uploadRateBytesPerSec === 0" [title]="avgUploadTooltip()">
         @if (torrent.uploadRateBytesPerSec > 0) {
           {{ torrent.uploadRateBytesPerSec | formatRate }}
         } @else {
@@ -61,6 +61,27 @@
       <div class="fact-value tabular-nums" [title]="torrent.addedAt ? (torrent.addedAt | date: 'medium') : ''">
         @if (torrent.addedAt) {
           {{ torrent.addedAt | date: 'd MMM, HH:mm' }}
+        } @else {
+          &mdash;
+        }
+      </div>
+    </div>
+    <div class="fact-cell">
+      <div class="fact-label">Active</div>
+      <div class="fact-value tabular-nums">{{ torrent.timeActiveMillis | formatDuration }}</div>
+    </div>
+    <div class="fact-cell">
+      <div class="fact-label">Wasted</div>
+      <div class="fact-value tabular-nums">{{ torrent.wastedBytes | formatBytes }}</div>
+    </div>
+    <div class="fact-cell">
+      <div class="fact-label">Completed</div>
+      <div
+        class="fact-value tabular-nums"
+        [title]="torrent.completedAtEpochMillis ? (torrent.completedAtEpochMillis | date: 'medium') : ''"
+      >
+        @if (torrent.completedAtEpochMillis) {
+          {{ torrent.completedAtEpochMillis | date: 'd MMM, HH:mm' }}
         } @else {
           &mdash;
         }

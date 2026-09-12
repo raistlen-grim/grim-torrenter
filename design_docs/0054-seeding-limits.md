@@ -68,6 +68,22 @@ restart of an already-complete torrent (see its own comment, "a restore()d torre
 be fully complete before its first start()") - without the guard, a routine pause/resume cycle
 would keep resetting the seed-time clock to zero.
 
+**Own 2026-09-11 correction: the stamp itself moved to before `setState(SEEDING)`, not after,
+still inside the same `synchronized` block.** Found via a real (if rare) test failure -
+`checkSeedingLimitsStopsASeedingTorrentThatHasReachedItsTimeLimit` intermittently saw
+`completedAtEpochMillis() == 0` even after its own `state() == SEEDING` had already been
+observed by a different thread. Root cause: `state` is `volatile`, so its write inside
+`setState()` is visible to any other thread the instant it happens, with no synchronization of
+its own required on the reader's side (`checkSeedingLimits()`, called from a different thread
+entirely) - but the memory model gives no guarantee that same reader also sees
+`completedAtEpochMillis`'s write if it happens *after* the synchronized block that contained the
+state flip, even by a handful of CPU instructions with no yield point in between. Stamping it
+first, still under the same lock, puts it before the volatile write in program order, so the
+happens-before edge the state write already provides now covers it too. This test calls
+`checkSeedingLimits()` exactly once with no retry, so hitting this window even briefly was fatal
+to it, not just a delay - unlike most narrow races in this codebase that self-heal on the next
+tick.
+
 ### Per-torrent override persistence
 
 A new marker file, `.grimtorrenter-seeding-limit-override`, plain `key=value` lines

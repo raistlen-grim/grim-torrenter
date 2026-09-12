@@ -6,6 +6,7 @@ import { TooltipModule } from 'primeng/tooltip';
 import { Tracker } from '../../models/torrent.model';
 import { TorrentEventsService } from '../../services/torrent-events.service';
 import { TorrentService } from '../../services/torrent.service';
+import { humanizeDuration } from '../../shared/humanize-duration';
 import { pollWhileInput } from '../../shared/poll-while-input';
 
 const POLL_INTERVAL_MS = 3000;
@@ -88,8 +89,23 @@ export class TrackersTab {
     if (tracker.leechers !== null) {
       parts.push(`${tracker.leechers} leechers`);
     }
+    if (tracker.peers !== null) {
+      parts.push(`${tracker.peers} peers`);
+    }
     parts.push(`Last: ${tracker.lastAnnouncedAt ? this.datePipe.transform(tracker.lastAnnouncedAt, 'short') : '—'}`);
-    parts.push(`Next: ${tracker.nextAnnounceAt ? this.datePipe.transform(tracker.nextAnnounceAt, 'short') : '—'}`);
+    parts.push(this.reannounceCountdown(tracker));
     return parts.join(' · ');
+  }
+
+  /** A relative countdown ("Re-announces in 4m 12s") rather than an absolute timestamp - what
+   * a power user actually wants ("how long until this is checked again"), not a time they'd
+   * have to do the subtraction on themselves. Recomputed on each 3s poll tick, same cadence
+   * this tab already re-renders on - not a live per-second ticker. See design_docs/0067. */
+  private reannounceCountdown(tracker: Tracker): string {
+    if (!tracker.nextAnnounceAt) {
+      return 'Next: —';
+    }
+    const secondsRemaining = Math.round((new Date(tracker.nextAnnounceAt).getTime() - Date.now()) / 1000);
+    return secondsRemaining <= 0 ? 'Re-announces any moment' : `Re-announces in ${humanizeDuration(secondsRemaining)}`;
   }
 }

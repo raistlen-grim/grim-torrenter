@@ -12,10 +12,13 @@ public record TrackerView(
         Instant nextAnnounceAt,
         String lastError,
         Integer seeders,
-        Integer leechers
+        Integer leechers,
+        /** Size of the peer list that announce's response actually returned - see
+         * TrackerStatus.peers()'s own Javadoc. See design_docs/0067. */
+        Integer peers
 ) {
     public static TrackerView from(TrackerStatus status) {
         return new TrackerView(status.url(), status.tier(), status.state().name(), status.lastAnnouncedAt(),
-                status.nextAnnounceAt(), status.lastError(), status.seeders(), status.leechers());
+                status.nextAnnounceAt(), status.lastError(), status.seeders(), status.leechers(), status.peers());
     }
 }

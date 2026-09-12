@@ -8,6 +8,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 
 import java.util.List;
+import java.util.stream.Stream;
 
 /** The periodic half of the hybrid WS push model - see TorrentEventListener's Javadoc. */
 @ApplicationScoped
@@ -23,10 +24,17 @@ public class TorrentSnapshotScheduler {
      * connection that never responds - can't overlap with the next one and pile up
      * worker threads. Defense in depth: broadcast() itself is non-blocking now (see its
      * own Javadoc), so this shouldn't be reachable in practice, but costs nothing to
-     * guard against regardless. See design_docs/0019. */
+     * guard against regardless. See design_docs/0019.
+     *
+     * <p>Includes pending magnets (design_docs/0070) alongside resolved torrents - so a
+     * *different* already-open client sees one another client just added (or one restored
+     * after a process restart) via this same periodic push, not a separate channel. */
     @Scheduled(every = "2s", concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
     void broadcastSnapshot() {
-        List<TorrentView> views = torrentEngine.listTorrents().stream().map(TorrentView::from).toList();
+        List<TorrentView> views = Stream.concat(
+                        torrentEngine.listTorrents().stream().map(TorrentView::from),
+                        torrentEngine.listPendingMagnets().stream().map(TorrentView::fromPendingMagnet))
+                .toList();
         try {
             String json = objectMapper.writeValueAsString(new TorrentEventMessage("snapshot", views));
             TorrentWebSocket.broadcast(json);

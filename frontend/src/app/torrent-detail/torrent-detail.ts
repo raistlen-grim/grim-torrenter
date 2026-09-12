@@ -9,12 +9,14 @@ import { TabsModule } from 'primeng/tabs';
 import { TooltipModule } from 'primeng/tooltip';
 import { finalize, map } from 'rxjs';
 
+import { Torrent } from '../models/torrent.model';
 import { TorrentEventsService } from '../services/torrent-events.service';
 import { DetailTab, TorrentDetailTabService } from '../services/torrent-detail-tab.service';
 import { TorrentService } from '../services/torrent.service';
 import { ActiveContextMenuRegistry } from '../shared/active-context-menu-registry';
 import { copyToClipboard } from '../shared/clipboard';
 import { FormatBytesPipe } from '../shared/format-bytes.pipe';
+import { FormatDurationPipe } from '../shared/format-duration.pipe';
 import { FormatRatePipe } from '../shared/format-rate.pipe';
 import { pollWhileInput } from '../shared/poll-while-input';
 import { SeedingLimitsDialog } from '../torrent-list/torrent-row/seeding-limits-dialog/seeding-limits-dialog';
@@ -48,6 +50,7 @@ const FILE_COUNT_POLL_INTERVAL_MS = 3000;
     DecimalPipe,
     FilesTab,
     FormatBytesPipe,
+    FormatDurationPipe,
     FormatRatePipe,
     PeersTab,
     PieceMap,
@@ -68,6 +71,10 @@ export class TorrentDetail {
   private readonly messageService = inject(MessageService);
   private readonly activeContextMenus = inject(ActiveContextMenuRegistry);
   private readonly router = inject(Router);
+  /** Instantiated directly (not via the template pipe binding) so avgDownloadTooltip()/
+   * avgUploadTooltip() can format a rate for a plain title attribute string - same pattern
+   * TrackersTab uses for DatePipe. See design_docs/0067. */
+  private readonly formatRate = new FormatRatePipe();
 
   /** Bound directly from the :infoHash route param - see withComponentInputBinding() in
    * app.config.ts. */
@@ -123,17 +130,39 @@ export class TorrentDetail {
     { initialValue: 0 },
   );
 
-  /** Guide's fact-grid "Ratio" cell - uploaded/downloaded, derived client-side (no backend
-   * field). Em dash rather than a divide-by-zero Infinity/NaN for a torrent that hasn't
-   * downloaded anything yet (a fresh magnet, or 0% paused) - never render `∞`, per the
-   * guide's own voice rule. */
+  /** Guide's fact-grid "Ratio" cell - lifetime uploaded/downloaded. Uses
+   * lifetimeUploadedBytes (design_docs/0064), not the session-scoped bytesUploaded - a ratio
+   * that reset to 0 on every restart was never a meaningful "how much have I contributed"
+   * figure. bytesDownloaded itself needs no lifetime equivalent - verified-complete pieces
+   * already stay on disk (and therefore counted) across restarts on their own. Em dash rather
+   * than a divide-by-zero Infinity/NaN for a torrent that hasn't downloaded anything yet (a
+   * fresh magnet, or 0% paused) - never render `∞`, per the guide's own voice rule. */
   readonly ratio = computed(() => {
     const torrent = this.torrent();
     if (!torrent || torrent.bytesDownloaded <= 0) {
       return null;
     }
-    return torrent.bytesUploaded / torrent.bytesDownloaded;
+    return torrent.lifetimeUploadedBytes / torrent.bytesDownloaded;
   });
+
+  /** Down/Up fact cells' own tooltip - the lifetime average, a footnote on the current rate
+   * rather than a fact of its own (unlike Active/Completed/Wasted, this has somewhere natural
+   * to live already). bytesDownloaded (verified), not bytesReceived, matching the progress
+   * bar/ratio's own basis - lifetime downloaded needs no separate tracking since completed
+   * pieces already persist across restarts on their own. Empty string (no tooltip at all)
+   * rather than a divide-by-zero for a torrent that's never actually run. See
+   * design_docs/0067. */
+  readonly avgDownloadTooltip = computed(() => this.averageRateTooltip((t) => t.bytesDownloaded));
+  readonly avgUploadTooltip = computed(() => this.averageRateTooltip((t) => t.lifetimeUploadedBytes));
+
+  private averageRateTooltip(bytes: (torrent: Torrent) => number): string {
+    const torrent = this.torrent();
+    if (!torrent || torrent.timeActiveMillis <= 0) {
+      return '';
+    }
+    const average = bytes(torrent) / (torrent.timeActiveMillis / 1000);
+    return `Average: ${this.formatRate.transform(average)}`;
+  }
 
   /** Closing is just navigating away - see torrent-list.html's own comment on why the panel's
    * open/closed state is route-driven rather than a separate boolean. */

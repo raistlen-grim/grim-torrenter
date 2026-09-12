@@ -69,7 +69,8 @@ public final class TrackedTrackerClient implements TrackerClient {
     private void recordSuccess(TrackerResponse response) {
         Instant now = Instant.now();
         status = new TrackerStatus(url, tier, TrackerStatus.State.WORKING, now,
-                now.plusSeconds(response.interval()), null, response.complete(), response.incomplete());
+                now.plusSeconds(response.interval()), null, response.complete(), response.incomplete(),
+                response.peers().size());
         consecutiveFailures = 0;
         if (reportedUnreachable) {
             reportedUnreachable = false;
@@ -80,7 +81,7 @@ public final class TrackedTrackerClient implements TrackerClient {
     private void recordFailure(TrackerException e) {
         TrackerStatus previous = status;
         status = new TrackerStatus(url, tier, TrackerStatus.State.ERROR, Instant.now(), null,
-                e.getMessage(), previous.seeders(), previous.leechers());
+                e.getMessage(), previous.seeders(), previous.leechers(), previous.peers());
         consecutiveFailures++;
         if (!reportedUnreachable && consecutiveFailures >= REQUIRED_CONSECUTIVE_FAILURES) {
             reportedUnreachable = true;

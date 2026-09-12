@@ -73,6 +73,14 @@ public final class PeerConnection implements AutoCloseable {
     private final PeerId remotePeerId;
     private final PeerConnectionListener listener;
     private final RateLimiters rateLimiters;
+    /** True for a connection PeerServer accepted (the remote initiated it), false for one this
+     * side initiated via connect() - always known unconditionally at each factory family's own
+     * call sites, never caller-supplied. See design_docs/0066. */
+    private final boolean incoming;
+    /** How this side learned of remoteAddress before ever connecting to it - UNKNOWN for an
+     * incoming connection (see this field's own class-level Javadoc on PeerSource) and for
+     * every connect() overload that doesn't take one explicitly. See design_docs/0066. */
+    private final PeerSource source;
 
     private final BitSet peerPieces = new BitSet();
     private final Set<Request> pendingRequests = ConcurrentHashMap.newKeySet();
@@ -100,7 +108,8 @@ public final class PeerConnection implements AutoCloseable {
      * resulting - possibly RC4-wrapped - stream pair instead of this constructor silently
      * grabbing the socket's raw ones. */
     private PeerConnection(Socket socket, InputStream in, OutputStream out, PeerAddress remoteAddress,
-                            PeerId remotePeerId, PeerConnectionListener listener, RateLimiters rateLimiters) {
+                            PeerId remotePeerId, PeerConnectionListener listener, RateLimiters rateLimiters,
+                            boolean incoming, PeerSource source) {
         this.socket = socket;
         this.in = in;
         this.out = out;
@@ -108,6 +117,16 @@ public final class PeerConnection implements AutoCloseable {
         this.remotePeerId = remotePeerId;
         this.listener = listener;
         this.rateLimiters = rateLimiters;
+        this.incoming = incoming;
+        this.source = source;
+    }
+
+    public boolean incoming() {
+        return incoming;
+    }
+
+    public PeerSource source() {
+        return source;
     }
 
     /** Same as the five-arg overload below but with no rate limiting - for every caller
@@ -146,24 +165,39 @@ public final class PeerConnection implements AutoCloseable {
                                           Map<String, Integer> extensionsToAdvertise,
                                           RateLimiters rateLimiters,
                                           EncryptionMode encryptionMode) throws IOException {
+        return connect(address, infoHash, ourPeerId, listener, extensionsToAdvertise, rateLimiters, encryptionMode,
+                PeerSource.UNKNOWN);
+    }
+
+    /** source is how this side learned of address before calling this - UNKNOWN for every
+     * caller that doesn't have (or care about) one; TorrentSession.attemptConnect() is the one
+     * real caller with an actual source to supply. See design_docs/0066. */
+    public static PeerConnection connect(PeerAddress address, InfoHash infoHash, PeerId ourPeerId,
+                                          PeerConnectionListener listener,
+                                          Map<String, Integer> extensionsToAdvertise,
+                                          RateLimiters rateLimiters,
+                                          EncryptionMode encryptionMode,
+                                          PeerSource source) throws IOException {
         if (encryptionMode == EncryptionMode.DISABLED) {
-            return connectPlaintext(address, infoHash, ourPeerId, listener, extensionsToAdvertise, rateLimiters);
+            return connectPlaintext(address, infoHash, ourPeerId, listener, extensionsToAdvertise, rateLimiters,
+                    source);
         }
         try {
             return connectEncrypted(address, infoHash, ourPeerId, listener, extensionsToAdvertise, rateLimiters,
-                    encryptionMode == EncryptionMode.REQUIRED);
+                    encryptionMode == EncryptionMode.REQUIRED, source);
         } catch (IOException e) {
             if (encryptionMode == EncryptionMode.REQUIRED) {
                 throw e;
             }
-            return connectPlaintext(address, infoHash, ourPeerId, listener, extensionsToAdvertise, rateLimiters);
+            return connectPlaintext(address, infoHash, ourPeerId, listener, extensionsToAdvertise, rateLimiters,
+                    source);
         }
     }
 
     private static PeerConnection connectPlaintext(PeerAddress address, InfoHash infoHash, PeerId ourPeerId,
                                                      PeerConnectionListener listener,
                                                      Map<String, Integer> extensionsToAdvertise,
-                                                     RateLimiters rateLimiters) throws IOException {
+                                                     RateLimiters rateLimiters, PeerSource source) throws IOException {
         Socket socket = new Socket();
         try {
             socket.connect(new InetSocketAddress(address.address(), address.port()), CONNECT_TIMEOUT_MS);
@@ -180,8 +214,8 @@ public final class PeerConnection implements AutoCloseable {
             }
 
             socket.setSoTimeout(IDLE_READ_TIMEOUT_MS);
-            PeerConnection connection =
-                    new PeerConnection(socket, in, out, address, remoteHandshake.peerId(), listener, rateLimiters);
+            PeerConnection connection = new PeerConnection(socket, in, out, address, remoteHandshake.peerId(),
+                    listener, rateLimiters, false, source);
             connection.startReadLoop();
             connection.sendExtendedHandshakeIfSupported(remoteHandshake, extensionsToAdvertise);
             return connection;
@@ -199,7 +233,7 @@ public final class PeerConnection implements AutoCloseable {
                                                      PeerConnectionListener listener,
                                                      Map<String, Integer> extensionsToAdvertise,
                                                      RateLimiters rateLimiters,
-                                                     boolean requireEncryption) throws IOException {
+                                                     boolean requireEncryption, PeerSource source) throws IOException {
         Socket socket = new Socket();
         try {
             socket.connect(new InetSocketAddress(address.address(), address.port()), CONNECT_TIMEOUT_MS);
@@ -218,7 +252,7 @@ public final class PeerConnection implements AutoCloseable {
 
             socket.setSoTimeout(IDLE_READ_TIMEOUT_MS);
             PeerConnection connection = new PeerConnection(socket, negotiated.in(), negotiated.out(), address,
-                    remoteHandshake.peerId(), listener, rateLimiters);
+                    remoteHandshake.peerId(), listener, rateLimiters, false, source);
             connection.startReadLoop();
             connection.sendExtendedHandshakeIfSupported(remoteHandshake, extensionsToAdvertise);
             return connection;
@@ -268,8 +302,8 @@ public final class PeerConnection implements AutoCloseable {
 
             socket.setSoTimeout(IDLE_READ_TIMEOUT_MS);
             PeerAddress remoteAddress = new PeerAddress(socket.getInetAddress(), socket.getPort());
-            PeerConnection connection =
-                    new PeerConnection(socket, in, out, remoteAddress, remoteHandshake.peerId(), listener, rateLimiters);
+            PeerConnection connection = new PeerConnection(socket, in, out, remoteAddress, remoteHandshake.peerId(),
+                    listener, rateLimiters, true, PeerSource.UNKNOWN);
             connection.startReadLoop();
             connection.sendExtendedHandshakeIfSupported(remoteHandshake, extensionsToAdvertise);
             return connection;

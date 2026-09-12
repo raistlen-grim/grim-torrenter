@@ -3,6 +3,7 @@
 } @else {
   <div class="peer-header">
     <span>Address</span>
+    <span class="peer-col-right">Done</span>
     <span class="peer-col-right">Down</span>
     <span class="peer-col-right">Up</span>
   </div>
@@ -25,6 +26,18 @@
             [title]="'We ' + (peer.amChoking ? 'choke them' : 'unchoked them')"
             aria-hidden="true"
           ></i>
+          <i
+            class="pi peer-flag active"
+            [class]="peer.incoming ? 'pi-arrow-down' : 'pi-arrow-up'"
+            [title]="peer.incoming ? 'They connected to us' : 'We connected to them'"
+            aria-hidden="true"
+          ></i>
+          @if (peer.source !== 'UNKNOWN') {
+            <span class="peer-source" [title]="'Found via ' + sourceName(peer.source)">{{ sourceLabel(peer.source) }}</span>
+          }
+        </span>
+        <span class="peer-rate tabular-nums" [title]="'Relevance: ' + (peer.relevance * 100 | number: '1.0-0') + '%'">
+          {{ peer.percentAvailable * 100 | number: '1.0-0' }}%
         </span>
         <span class="peer-rate tabular-nums">
           <app-rate-trend [rateBytesPerSec]="peer.downloadRateBytesPerSec" [trend]="peer.downloadRateTrend" />

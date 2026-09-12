@@ -1,5 +1,6 @@
 package com.grimtorrenter.app;
 
+import com.grimtorrenter.engine.engine.TorrentEngine;
 import com.grimtorrenter.engine.torrent.TorrentSession;
 
 import java.time.Instant;
@@ -22,7 +23,15 @@ public record TorrentView(
         boolean dhtBackstopActive,
         boolean usesLsd,
         /** Null when unknown - see TorrentSession.addedAt()'s own Javadoc. */
-        Instant addedAt
+        Instant addedAt,
+        long lifetimeUploadedBytes,
+        long timeActiveMillis,
+        /** 0 if this torrent has never completed - see TorrentSession.completedAtEpochMillis()'s
+         * own Javadoc. See design_docs/0064. */
+        long completedAtEpochMillis,
+        /** Bytes received and discarded to a failed piece hash check, lifetime - see
+         * TorrentSession.wastedBytes()'s own Javadoc. See design_docs/0066. */
+        long wastedBytes
 ) {
     /** bytesReceived (raw, includes not-yet-verified data - see
      * TorrentSession.bytesReceived()) is separate from bytesDownloaded (verified-complete
@@ -48,7 +57,11 @@ public record TorrentView(
      * Service Discovery was running at the engine level when this session was created and the
      * torrent isn't private (BEP 27), same shape as usesDht but sourced from a construction-time
      * snapshot rather than a live session-owned reference - see TorrentSession's own lsdActive
-     * field Javadoc for why. */
+     * field Javadoc for why.
+     *
+     * <p>lifetimeUploadedBytes/timeActiveMillis/completedAtEpochMillis (design_docs/0064) are
+     * this torrent's totals across every process run, not just this one - same
+     * cheap-enough-not-to-need-a-dedicated-endpoint reasoning as usesDht/trackerCount above. */
     public static TorrentView from(TorrentSession session) {
         Throwable error = session.lastError();
         return new TorrentView(
@@ -68,6 +81,42 @@ public record TorrentView(
                 session.trackers().size(),
                 session.isDhtBackstopActive(),
                 session.usesLsd(),
-                session.addedAt());
+                session.addedAt(),
+                session.lifetimeUploadedBytes(),
+                session.timeActiveMillis(),
+                session.completedAtEpochMillis(),
+                session.wastedBytes());
+    }
+
+    /** A magnet still fetching metadata, rendered through the exact same DTO shape a resolved
+     * torrent uses - state "FETCHING_METADATA" (not one of TorrentSession's own TorrentState
+     * values - see TorrentEngine.PendingMagnet's own Javadoc for why), every byte/piece/rate
+     * field zeroed (there's no TorrentSession, and therefore nothing real to report), name
+     * falling back to the info hash hex when the magnet carried no display name. See
+     * design_docs/0070. */
+    public static TorrentView fromPendingMagnet(TorrentEngine.PendingMagnet pending) {
+        String name = pending.displayName() != null ? pending.displayName() : pending.infoHash().hex();
+        return new TorrentView(
+                pending.infoHash().hex(),
+                name,
+                "FETCHING_METADATA",
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                null,
+                false,
+                pending.trackers().size(),
+                false,
+                false,
+                null,
+                0,
+                0,
+                0,
+                0);
     }
 }

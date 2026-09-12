@@ -18,6 +18,8 @@ const TORRENT_STATE_DISPLAY: Record<TorrentState, StatusDisplay> = {
   VERIFYING: { icon: 'pi-refresh', label: 'Verifying', tone: 'active' },
   STOPPED: { icon: 'pi-pause', label: 'Paused', tone: 'dim' },
   ERROR: { icon: 'pi-exclamation-triangle', label: 'Error', tone: 'alarm' },
+  // Not a real backend TorrentState - a pending magnet, see design_docs/0070.
+  FETCHING_METADATA: { icon: 'pi-spin pi-spinner', label: 'Fetching metadata', tone: 'dim' },
 };
 
 export function torrentStateDisplay(state: TorrentState): StatusDisplay {

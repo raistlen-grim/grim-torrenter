@@ -36,6 +36,16 @@ hot-path rule, and whether cleanup runs on every exit path, not just the happy
 one. A brief "no stability implication" is fine when true — the point is
 making it visible either way, not padding every doc.
 
+**Keeping the frontend thin is likewise a standing consideration** (`design_docs/
+0071-thin-frontend-as-a-standing-consideration.md`): a different client built
+against the REST API alone should have to recreate as little UI-side logic as
+possible. When a decision touches both layers, prefer modeling new behavior as
+a state/field on an existing, already-generic resource shape (and a synchronous
+REST response carrying the real resource) over inventing a parallel concept the
+frontend has to track, poll, or reconcile on its own. Doesn't rule out
+client-side logic that's genuinely about input validation/preview or per-viewer
+ergonomics — see 0071 for that distinction.
+
 ## Working conventions
 
 - **Builds and tests are run manually by the user.** Never invoke build or

@@ -55,11 +55,16 @@ public class TorrentEventListener implements TorrentSessionListener {
      * restore included. Two guards, both needed, catching two different repeat scenarios:
      * completedAtEpochMillis() == 0 catches a same-process pause/resume of a torrent this
      * process has already seen complete once (it's stamped non-zero the first time and never
-     * reset); wasCompleteOnRestore() catches the cross-restart case that guard alone can't -
-     * a brand-new TorrentSession object always starts with completedAtEpochMillis back at 0,
-     * even for a torrent that finished long before this process even started. This is exactly
-     * the real bug that shipped with 0055's first cut: the same already-long-since-complete
-     * torrent recorded a fresh COMPLETED event on every server restart. */
+     * reset). wasCompleteOnRestore() catches the cross-restart case that guard alone can't
+     * fully cover on its own: design_docs/0064 now persists completedAtEpochMillis, so a
+     * restored session usually already starts non-zero for a torrent that finished before this
+     * process even started - but a crash between that completion and the next lifetime-stats
+     * flush (design_docs/0064's own accepted loss window) can still leave it reading 0 on
+     * restore despite the torrent genuinely having finished already, which is exactly what
+     * wasCompleteOnRestore() (derived independently, from re-verifying the actual data on
+     * disk) still guards against. This is exactly the real bug that shipped with 0055's first
+     * cut: the same already-long-since-complete torrent recorded a fresh COMPLETED event on
+     * every server restart. */
     private void recordLibraryEventIfNotable(TorrentSession session, TorrentState oldState, TorrentState newState) {
         EventType type;
         if (newState == TorrentState.ERROR) {

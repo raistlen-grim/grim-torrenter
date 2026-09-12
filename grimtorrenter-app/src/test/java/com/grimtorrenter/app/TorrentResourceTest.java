@@ -177,6 +177,8 @@ class TorrentResourceTest {
         // The actual peer-fetch chain is covered end-to-end at the engine level
         // (TorrentEngineMagnetTest) - this only exercises the REST plumbing, same
         // rationale as torrentBytes()'s deliberately-unreachable tracker above.
+        // Returns synchronously with a pending (FETCHING_METADATA) TorrentView now - see
+        // design_docs/0070 - not just a 204 acknowledgement.
         String magnetUri = "magnet:?xt=urn:btih:" + "a".repeat(40)
                 + "&tr=http%3A%2F%2F127.0.0.1%3A1%2Fannounce";
 
@@ -184,7 +186,9 @@ class TorrentResourceTest {
                 .contentType("text/plain")
                 .body(magnetUri)
                 .when().post("/api/torrents/magnet")
-                .then().statusCode(204);
+                .then().statusCode(200)
+                .body("torrent.state", equalTo("FETCHING_METADATA"))
+                .body("alreadyExisted", equalTo(false));
     }
 
     @Test

@@ -4,13 +4,107 @@ Running list of ideas/requests to come back to later. Not commitments, not scope
 scheduled - just a place to jot something down before it's forgotten. Add items freely;
 nothing here gets acted on until it's explicitly picked up.
 
+## Peers/Trackers/General detail — qBittorrent-parity backlog (2026-09-10)
+
+Scoped by walking qBittorrent's General/Trackers/Peers screens field-by-field against what
+this engine already tracks vs. what's new work - see `design_docs/0031` for the existing
+endpoints these all build on. Grouped by actual value for a long-running, power-user-facing
+server, not by build effort - a few of qBittorrent's own fields are closer to "because we can"
+than something that'd change a decision someone makes.
+
+### High value - real gaps for a long-running server
+
+- ~~**Persistent lifetime stats** - lifetime Downloaded/Uploaded/Share Ratio, Time Active, and
+  Completed On, all surviving an engine restart. Today `bytesDownloaded`/`bytesUploaded`/etc.
+  reset to zero on every restart (`design_docs/0031`'s own note); `completedAtEpochMillis`
+  already exists in `TorrentSession` (built for seeding limits) but isn't persisted or
+  exposed. The main open design question is where/how often to persist (new marker file(s)
+  per torrent, matching the existing one-marker-per-concern pattern - state/addedAt/
+  seeding-limit-override markers already work this way) and whether it survives a
+  "remove but keep files, re-add later" the same way the seeding-limit-override marker does.~~
+  **Done (2026-09-10)** - see `design_docs/0064` (the three metrics and their marker) and
+  `design_docs/0065` (relocated, alongside every other per-torrent marker, out of the download
+  directory into config-side storage).
+- ~~**Wasted bytes** - data received that failed a piece hash check and got discarded. Real
+  diagnostic signal (bad peers, a flaky link, disk corruption), not decoration. New counter,
+  not persistence - hooks into wherever `PieceManager` currently discards a failed piece.~~
+  **Done (2026-09-10)** - see `design_docs/0066`. Persisted after all, joining
+  `PersistedLifetimeStats` as a fourth field once that marker/flush machinery already existed.
+- ~~**Connection direction (incoming vs. outgoing)** - not tracked in `PeerConnection` at all
+  today. Genuinely diagnostic for a self-hosted box: seeing inbound connections is real
+  evidence port-forwarding/reachability is working.~~ **Done (2026-09-10)** - see
+  `design_docs/0066`.
+- ~~**Peer-source attribution (tracker/DHT/PEX/LSD)** - which source found each connected peer,
+  and per-source counts (unlocks qBittorrent's DHT/PeX/LSD pseudo-tracker rows with their own
+  seed/peer counts, and the X/H/L-style peer flags). Real new state - `PeerConnection`/
+  `PeerSnapshot` has no notion of discovery source today. Tells a power user whether their
+  peer-discovery config is actually pulling weight.~~ **Done (2026-09-10)** - see
+  `design_docs/0066`. First-source-wins, not per-source counts - a peer-discovery health
+  summary (aggregate counts per source) remains unbuilt, see the still-open UI idea below.
+
+### Medium value - useful, secondary
+
+- ~~Per-peer Progress % (iterate `peerHasPiece` across pieces - cheap) and Relevance (pieces
+  they have that we still need - moderate composition). Explains *why* a peer is slow.~~
+  **Done (2026-09-10)** - see `design_docs/0067`.
+- ~~Average lifetime speed - derived once the persistent lifetime stats above exist
+  (lifetime bytes / lifetime active time), not a separate thing to build.~~ **Done
+  (2026-09-10)** - see `design_docs/0067`.
+- ~~Tracker "Peers" column - size of the peer list returned in that announce response
+  (`TrackerResponse.peers().size()`, already available, just not recorded) - a rough
+  popularity/health signal, cheap to add.~~ **Done (2026-09-10)** - see `design_docs/0067`.
+- ~~Tracker "Re-announce In" countdown - `nextAnnounceAt - now`, derivable client-side from
+  data the Trackers tab already has.~~ **Done (2026-09-10)** - see `design_docs/0067`.
+- Per-torrent bandwidth/connection limits - a control, not a metric (only global + scheduled
+  limits exist today, `design_docs/0042`/`0046`). Real feature value for a multi-torrent
+  server (stop one torrent starving the others) but a different kind of work from the metrics
+  above - deserves its own decision if picked up, not a metrics-bundle add-on.
+
+### Low value - "because we can"
+
+- Client name (BEP 20 peer-id decode) - informational only, doesn't change a decision.
+- Comment / Created By / Created On (`.torrent` metadata, not parsed anywhere today) -
+  provenance trivia about the file, not about how the download/seed is performing.
+- Tracker "Updating..." transient status (a fourth `TrackerStatus.State` value) - cosmetic
+  polish on a state that exists for about a second.
+- Tracker "Times Downloaded" (BEP 3's optional `downloaded` response field) - many real
+  trackers don't populate it; a column that's blank half the time.
+
+### Skip entirely
+
+- GeoIP country flags on the Peers tab - real ongoing cost (a GeoIP database to bundle/
+  license/keep current) for zero operational insight.
+- Peers tab "Files" column (which files a peer is currently sending/receiving) - real
+  composition work (piece-to-file overlap × per-peer requested-piece state) for a niche
+  display.
+- Info Hash v2 on the General tab - always "N/A", this engine has no BitTorrent v2/hybrid
+  support. Not worth a permanently-empty field.
+- Peers tab "Connection type" (TCP/µTP) column - see the µTP item below; excluded today only
+  because there's exactly one type to show.
+
+- **µTP (BEP 29) transport support** - the peer connection layer has been TCP-only
+  (`java.net.Socket`) since the very first peer-connection design doc (`design_docs/0015`);
+  never a deliberate TCP-vs-µTP decision, just the natural default that was never revisited.
+  Two real costs, not just a missing UI column: (1) can't reach/be reached by peers that are
+  µTP-only for a given direction, shrinking the effective peer pool somewhat; (2) no LEDBAT
+  congestion backoff, so this client is more likely than a µTP-capable one to saturate a
+  shared home connection and cause latency spikes for other traffic on it - a real concern
+  for a long-running self-hosted box. Raised while scoping the Peers tab's qBittorrent-parity
+  columns (2026-09-10) - excluding a "Connection type" column made sense today only because
+  we have exactly one type; this is the underlying gap that decision surfaced. A full BEP 29
+  implementation (reliable transport over UDP with its own congestion control) is a
+  substantial, self-contained subsystem - not something to bundle into any of the metrics/UI
+  work also being scoped around the same time. Needs its own design doc if picked up.
+  **When this is picked up, add the Peers tab's "Connection type" (TCP/µTP) column in the
+  same pass** - deliberately excluded from the current peers-tab scoping precisely because
+  there's only one type to show today; once µTP exists the column earns its place.
 - Notification service (emails, or something else yet to be defined)
 - Run a user-configured script automatically when a torrent completes
-- UI bug: refreshing the page while the torrent-detail side panel is open
+- ~~UI bug: refreshing the page while the torrent-detail side panel is open
   (`/torrents/:infoHash`) shows a "Resource not found" error instead of reloading the app with
-  the panel still open. Likely the backend has no SPA catch-all fallback to `index.html` for
-  non-API routes, so a direct/refreshed request for a client-side route 404s at the Quarkus
-  level rather than ever reaching Angular's router - unconfirmed, needs investigation.
+  the panel still open.~~ **Done (2026-09-11)** - see `design_docs/0068`. Confirmed root cause:
+  no SPA fallback to `index.html` for non-API routes, so a refreshed client-side route 404'd at
+  the Quarkus level before ever reaching Angular's router.
 - ~~Authentication for the REST API/UI - currently completely unauthed.~~ **Done
   (2026-09-07)** - see `design_docs/0061`. Raised by the user: the REST endpoint is one of
   this implementation's real strengths, but that's undermined if it can't be exposed to the

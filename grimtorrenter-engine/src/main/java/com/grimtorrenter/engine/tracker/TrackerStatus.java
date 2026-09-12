@@ -24,13 +24,17 @@ public record TrackerStatus(
         Instant nextAnnounceAt,
         String lastError,
         Integer seeders,
-        Integer leechers
+        Integer leechers,
+        /** Size of the peer list *that announce's response actually returned* (bounded by this
+         * tracker's own num_want handling) - not the swarm's total size. Same
+         * survives-a-subsequent-ERROR treatment as seeders/leechers. See design_docs/0067. */
+        Integer peers
 ) {
     public enum State {
         UNKNOWN, WORKING, ERROR
     }
 
     static TrackerStatus initial(String url, int tier) {
-        return new TrackerStatus(url, tier, State.UNKNOWN, null, null, null, null, null);
+        return new TrackerStatus(url, tier, State.UNKNOWN, null, null, null, null, null, null);
     }
 }

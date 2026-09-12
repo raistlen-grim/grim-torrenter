@@ -1,4 +1,7 @@
-export type TorrentState = 'DOWNLOADING' | 'VERIFYING' | 'SEEDING' | 'STOPPED' | 'ERROR';
+/** FETCHING_METADATA isn't a real backend TorrentState (TorrentSession never has that value) -
+ * it's a pending magnet, rendered through the same Torrent shape via a sentinel string. See
+ * design_docs/0070. */
+export type TorrentState = 'DOWNLOADING' | 'VERIFYING' | 'SEEDING' | 'STOPPED' | 'ERROR' | 'FETCHING_METADATA';
 
 /** Matches the backend's PieceState enum - see design_docs/0031's Piece map endpoint. */
 export type PieceState = 'NEEDED' | 'IN_PROGRESS' | 'COMPLETE';
@@ -44,6 +47,18 @@ export interface Torrent {
    * existed has no marker to read it back from and is never backfilled with a guess. See
    * design_docs/0032. */
   addedAt: string | null;
+  /** This torrent's total uploaded bytes across every process run, not just this one - see
+   * the backend's TorrentSession.lifetimeUploadedBytes()/design_docs/0064. */
+  lifetimeUploadedBytes: number;
+  /** Cumulative milliseconds spent DOWNLOADING/VERIFYING/SEEDING, across every process run.
+   * See the backend's TorrentSession.timeActiveMillis()/design_docs/0064. */
+  timeActiveMillis: number;
+  /** Epoch millis this torrent first reached SEEDING, or 0 if it never has. See the backend's
+   * TorrentSession.completedAtEpochMillis()/design_docs/0064. */
+  completedAtEpochMillis: number;
+  /** Bytes received and discarded to a failed piece hash check, lifetime. See the backend's
+   * TorrentSession.wastedBytes()/design_docs/0066. */
+  wastedBytes: number;
 }
 
 /** downloadRateBytesPerSec/uploadRateBytesPerSec are computed client-side via RateTracker
@@ -84,6 +99,16 @@ export interface Peer {
   peerInterested: boolean;
   downloadedBytes: number;
   uploadedBytes: number;
+  /** True if this peer connected to us, false if we connected to them. See design_docs/0066. */
+  incoming: boolean;
+  /** How we learned of this peer's address before connecting - "UNKNOWN" for an incoming
+   * connection. See design_docs/0066. */
+  source: 'TRACKER' | 'DHT' | 'PEX' | 'LSD' | 'UNKNOWN';
+  /** Fraction (0-1) of the torrent this peer has. See design_docs/0067. */
+  percentAvailable: number;
+  /** Fraction (0-1) of what *we* still need that this peer has - 0 once we need nothing. See
+   * design_docs/0067. */
+  relevance: number;
 }
 
 /** Matches the backend's SeedingLimitOverride record - one torrent's override of the global
@@ -110,4 +135,8 @@ export interface Tracker {
   lastError: string | null;
   seeders: number | null;
   leechers: number | null;
+  /** Size of the peer list that announce's response actually returned (bounded by that
+   * tracker's own num_want handling), not the swarm's total size - survives a subsequent
+   * ERROR the same way seeders/leechers do. See design_docs/0067. */
+  peers: number | null;
 }

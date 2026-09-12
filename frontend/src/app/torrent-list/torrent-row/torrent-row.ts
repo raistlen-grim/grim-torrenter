@@ -124,6 +124,13 @@ export class TorrentRow {
    * until that settles, rather than acting on a torrent whose real state isn't known yet. */
   readonly isVerifying = computed(() => this.state() === 'VERIFYING');
 
+  /** A pending magnet (design_docs/0070) - no TorrentSession exists yet, so pause/resume/
+   * seeding-limits have nothing to act on. Remove still works (there's a real record to
+   * delete); Copy magnet link still works (the info hash is already known). Deliberately not
+   * folded into isVerifying() - the two states are mutually exclusive and disable a different
+   * set of actions. */
+  readonly isFetchingMetadata = computed(() => this.state() === 'FETCHING_METADATA');
+
   /** Rounds any genuinely nonzero progress up to at least 1 - Math.round alone would sit at
    * 0 for a long time on a large file (both in the Done% cell and the underlay's width),
    * looking indistinguishable from "hasn't started" even once real data has arrived. */
@@ -148,14 +155,20 @@ export class TorrentRow {
    * action. */
   readonly contextMenuItems = computed<MenuItem[]>(() => {
     const disabled = this.isVerifying() || this.pendingAction() !== null;
+    const toggleDisabled = disabled || this.isFetchingMetadata();
     const toggleItem: MenuItem =
       this.state() === 'STOPPED'
-        ? { label: 'Resume', icon: 'pi pi-play', disabled, command: () => this.onResume() }
-        : { label: 'Pause', icon: 'pi pi-pause', disabled, command: () => this.onPause() };
+        ? { label: 'Resume', icon: 'pi pi-play', disabled: toggleDisabled, command: () => this.onResume() }
+        : { label: 'Pause', icon: 'pi pi-pause', disabled: toggleDisabled, command: () => this.onPause() };
     return [
       toggleItem,
       { label: 'Copy magnet link', icon: 'pi pi-copy', command: () => this.copyMagnetLink() },
-      { label: 'Seeding limits…', icon: 'pi pi-gauge', command: () => this.showSeedingLimitsDialog.set(true) },
+      {
+        label: 'Seeding limits…',
+        icon: 'pi pi-gauge',
+        disabled: this.isFetchingMetadata(),
+        command: () => this.showSeedingLimitsDialog.set(true),
+      },
       { separator: true },
       { label: 'Remove', icon: 'pi pi-trash', disabled, command: () => this.onRemove() },
       {
@@ -167,7 +180,12 @@ export class TorrentRow {
     ];
   });
 
+  /** No-op while fetching metadata - there's no session for the detail panel's tabs
+   * (Files/Peers/Trackers/Pieces) to poll yet. See design_docs/0070. */
   navigateToDetail(): void {
+    if (this.isFetchingMetadata()) {
+      return;
+    }
     this.router.navigate(['/torrents', this.infoHash()]);
   }
 

@@ -3,13 +3,13 @@
   opacity: 0.7;
 }
 
-/* README's Peers tab content spec: minmax(0,1fr) 54px 62px 62px (Address/Done/Down/Up) -
- * only three columns here, not four: no per-peer completion percentage exists to put in a
- * Done column (see peers-tab.ts's own comment), so it's dropped rather than left blank. */
+/* README's Peers tab content spec: minmax(0,1fr) 54px 62px 62px (Address/Done/Down/Up) - now
+ * the full four columns (see design_docs/0067) now that per-peer completion percentage
+ * exists. */
 .peer-header,
 .peer-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 62px 62px;
+  grid-template-columns: minmax(0, 1fr) 54px 62px 62px;
   align-items: center;
   gap: 8px;
 }
@@ -62,6 +62,21 @@
 
 .peer-flag.active {
   opacity: 0.85;
+}
+
+/* Single-letter source badge (T/H/X/L) - same compact spirit as .peer-flag, a small dim
+ * capsule rather than an icon since there's no obvious icon-per-source set that wouldn't need
+ * its own legend. See design_docs/0066. */
+.peer-source {
+  display: inline-block;
+  margin-left: var(--space-2);
+  padding: 0 3px;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.4;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  opacity: 0.55;
 }
 
 .peer-rate {

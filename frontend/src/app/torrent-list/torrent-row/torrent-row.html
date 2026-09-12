@@ -42,7 +42,10 @@
 <td class="eta-cell tabular-nums" [class.col-hidden]="compact()">{{ bytesRemaining() | formatEta : downloadRateBytesPerSec() }}</td>
 <td class="actions-cell" [class.col-hidden]="compact()">
   <div class="row-actions" (click)="$event.stopPropagation()">
-    @if (state() === 'STOPPED') {
+    @if (isFetchingMetadata()) {
+      <!-- No session yet - nothing to pause/resume. Remove/copy magnet link still work,
+           via the ellipsis menu below. See design_docs/0070. -->
+    } @else if (state() === 'STOPPED') {
       <p-button
         icon="pi pi-play"
         [text]="true"

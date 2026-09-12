@@ -16,6 +16,7 @@ import com.grimtorrenter.engine.metainfo.SingleFileTorrent;
 import com.grimtorrenter.engine.metainfo.TorrentFile;
 import com.grimtorrenter.engine.metainfo.TorrentMetadata;
 import com.grimtorrenter.engine.mse.EncryptionMode;
+import com.grimtorrenter.engine.peer.PeerSource;
 import com.grimtorrenter.engine.peerwire.Bitfield;
 import com.grimtorrenter.engine.peerwire.Extended;
 import com.grimtorrenter.engine.peerwire.Handshake;
@@ -706,7 +707,7 @@ class TorrentSessionTest {
                 fakeRemotePeerId(), 6881, new RecordingListener(), null);
         try {
             session.start();
-            session.addKnownPeers(List.of(fakePeerAddress));
+            session.addKnownPeers(List.of(fakePeerAddress), PeerSource.UNKNOWN);
 
             assertTrue(handshakeReceived.await(5, TimeUnit.SECONDS));
         } finally {
@@ -1260,7 +1261,7 @@ class TorrentSessionTest {
         FakeTrackerClient tracker = new FakeTrackerClient();
         List<TrackerStatus> expected = List.of(
                 new TrackerStatus("http://tracker.example/announce", 0, TrackerStatus.State.WORKING,
-                        null, null, null, 5, 2));
+                        null, null, null, 5, 2, 30));
         tracker.statusesToReturn = expected;
 
         try (TorrentSession session = TorrentSession.create(metadata, tracker, tempDir,
@@ -1303,6 +1304,72 @@ class TorrentSessionTest {
             session.stop();
         }
         fakePeer.join(2000);
+    }
+
+    /** Distinguishes percentAvailable from relevance: the peer has piece 0 (which we already
+     * have too - restored from disk) and lacks piece 1 (which we still need). percentAvailable
+     * counts piece 0 (they have half the torrent); relevance doesn't (the one piece they have
+     * isn't one we need) - if these were computed identically, this would catch it. See
+     * design_docs/0067. */
+    @Test
+    void peersReflectsPercentAvailableAndRelevanceSeparately(@TempDir Path tempDir) throws Exception {
+        byte[] piece0 = fill(8, 1);
+        byte[] piece1 = fill(8, 2);
+        TorrentMetadata metadata = twoPieceMetadata(piece0, piece1);
+        InfoHash infoHash = metadata.infoHash();
+        PeerId remoteId = PeerId.of(fill(20, 50));
+
+        // piece0 correct (already have it), piece1 deliberately wrong (still need it).
+        byte[] onDisk = new byte[piece0.length + piece1.length];
+        System.arraycopy(piece0, 0, onDisk, 0, piece0.length);
+        Files.write(tempDir.resolve("file.bin"), onDisk);
+
+        serverSocket = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+        PeerAddress fakePeerAddress = new PeerAddress(InetAddress.getLoopbackAddress(), serverSocket.getLocalPort());
+        Thread fakePeer = new Thread(() -> {
+            try (Socket socket = serverSocket.accept()) {
+                PeerWireCodec.readHandshake(socket.getInputStream());
+                PeerWireCodec.writeHandshake(socket.getOutputStream(), Handshake.of(infoHash, remoteId));
+                // Bit 0 set (has piece 0), bit 1 clear (lacks piece 1).
+                PeerWireCodec.writeMessage(socket.getOutputStream(), new Bitfield(new byte[] {(byte) 0x80}));
+                Thread.sleep(500);
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+        fakePeer.start();
+
+        FakeTrackerClient tracker = new FakeTrackerClient();
+        tracker.peersToReturn = List.of(fakePeerAddress);
+        TorrentSession session = TorrentSession.restoreAsync(
+                metadata, tracker, tempDir, fakeRemotePeerId(), 6881, new RecordingListener(), null, true);
+        try {
+            awaitState(session, TorrentState.DOWNLOADING);
+            awaitOnePeer(session);
+            // awaitOnePeer() only waits for the connection itself to be registered - the fake
+            // peer's Bitfield arrives asynchronously afterward on the connection's own read
+            // loop, so this also waits for it to actually have been applied.
+            List<TorrentSession.PeerSnapshot> peers = awaitPercentAvailableAbove(session, 0);
+
+            assertEquals(1, peers.size());
+            assertEquals(0.5, peers.get(0).percentAvailable(), 0.001);
+            assertEquals(0.0, peers.get(0).relevance(), 0.001);
+        } finally {
+            session.stop();
+        }
+        fakePeer.join(2000);
+    }
+
+    private static List<TorrentSession.PeerSnapshot> awaitPercentAvailableAbove(TorrentSession session, double floor)
+            throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 5000;
+        List<TorrentSession.PeerSnapshot> peers = session.peers();
+        while ((peers.isEmpty() || peers.get(0).percentAvailable() <= floor)
+                && System.currentTimeMillis() < deadline) {
+            Thread.sleep(10);
+            peers = session.peers();
+        }
+        return peers;
     }
 
     /** bytesReceived() mirrors bytesUploaded()'s accumulator-plus-live-connections
