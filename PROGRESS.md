@@ -565,6 +565,149 @@ complete**, per the phased scope in [[0009-phased-scope]]:
   the ones `TorrentEngine` doesn't directly drive, like every torrent restored at startup on a
   container restart) rather than just the two `TorrentEngine`'s own call sites would have
   covered. ([[0062-local-service-discovery]])
+- **Persistent lifetime stats (2026-09-10)** — closes a gap [[0054-seeding-limits]] explicitly
+  deferred at the time: lifetime uploaded bytes, cumulative active time, and completed-on
+  timestamp now all survive an engine restart (lifetime *downloaded* bytes needed no new work —
+  completed pieces already persist on disk across restarts on their own). `TorrentSession` gains
+  `lifetimeUploadedBytes()` (a baseline plus `bytesUploaded()`, not an overload of it -
+  `bytesUploaded()` stays session-scoped since BEP 3's announce field and the seeding-limit
+  ratio check both depend on that meaning) and `timeActiveMillis()` (a genuinely new
+  `AtomicLong` accumulator, "active" meaning DOWNLOADING/VERIFYING/SEEDING, hooked into
+  `setState()`'s existing single choke point) - both user-confirmed decisions. One new marker
+  file per torrent, `.grimtorrenter-lifetime-stats` (`key=value` lines, written atomically),
+  flushed on the existing 30s `maintenanceScheduler` tick plus on pause/keep-files-remove/
+  shutdown; carries forward across a "remove but keep files" re-add, same precedent
+  `SeedingLimitOverride` already set. Fixed a real restore-time bug for free: `completedAtEpochMillis`
+  previously always started at in-memory `0` on restore, so an already-complete torrent got
+  silently re-stamped "completed" on every restart - the constructor now takes the persisted
+  value directly. New fields ride the existing always-broadcast `TorrentView`; frontend shows
+  Time Active (a new shared `humanizeDuration()` helper extracted from `FormatEtaPipe`, plus a
+  new `FormatDurationPipe`), Completed On, and a lifetime Share Ratio in the detail header's
+  fact grid, growing it from 8 to 9 cells ([[0032-style-guide-and-primeng-theme]]'s own
+  2026-09-10 addendum, confirmed with the user as a deliberate guide revision).
+  ([[0064-persistent-lifetime-stats]])
+  - **Own addendum, 2026-09-11**: a real (if rare) test flake in the seeding-limits stop check
+    traced to a memory-visibility gap - `completedAtEpochMillis` was stamped *after* the
+    `volatile state` write inside the same `synchronized` block, so a reader thread on another
+    thread could observe `state() == SEEDING` without yet seeing the completion timestamp, since
+    only the state write's own happens-before edge was guaranteed. Fixed by stamping the
+    timestamp *before* the state flip, still under the same lock. ([[0054-seeding-limits]]'s
+    own 2026-09-11 correction)
+- **Config-side per-torrent storage, and a single-file wrapper-folder fix (2026-09-10)** —
+  raised by the user while scoping the lifetime-stats work above: the download folder didn't
+  look like what other BitTorrent clients produce. Every per-torrent marker (torrent file,
+  state, seeding-limit override, added-at, and 0064's new lifetime-stats marker) moves out of
+  the download directory entirely, into `configDirectory/torrents/<infoHash-hex>/` - the
+  download folder now holds nothing but real content. `.grimtorrenter-infohash` is retired
+  outright (no longer needed once the config folder is itself keyed by info hash); a new
+  `.grimtorrenter-download-path` marker becomes the sole source of truth for where a torrent's
+  content actually lives, inverting [[0026-resume-state-persistence]]'s original "the
+  directory's existence is the record" property - accepted, not engineered around, since a
+  manually-deleted download path already self-heals via `TorrentStorage.create()`'s existing
+  unconditional preallocate-and-reverify behavior (a silent full re-download, no crash). Also
+  fixes single-file torrents getting a redundant wrapper folder
+  (`downloads/movie.mkv/movie.mkv` → `downloads/movie.mkv`) - a "known minor cosmetic quirk"
+  flagged and deferred back in [[0024-name-based-download-directories]], fixed here as the same
+  underlying `resolveDownloadDirectory` rewrite touches both issues together. No migration -
+  confirmed with the user: this app hasn't shipped yet, so the old layout is replaced outright.
+  ([[0065-config-side-per-torrent-storage]])
+- **Peer diagnostics: connection direction, peer-source attribution, wasted bytes (2026-09-10)**
+  — the last three High-value qBittorrent-parity items. `PeerConnection` gains a `boolean
+  incoming` field, hardcoded from its two existing factory families (`connect()` always
+  outbound, `accept()` always inbound) rather than threaded through as new caller-supplied data.
+  `TorrentSession.knownAddresses` becomes `Map<PeerAddress, PeerSource>` (`TRACKER`/`DHT`/`PEX`/
+  `LSD`/`UNKNOWN`, a new `peer`-package enum) - first-source-wins (`putIfAbsent`, confirmed with
+  the user: answers "how did we originally learn of this peer," not "what's vouching for it
+  right now"), tagged at every `knownAddresses`-adding call site. Direction and source are
+  deliberately separate fields, not one combined enum - an incoming connection's source is
+  always `UNKNOWN`, since "how a peer found our address" isn't answerable from our side of an
+  inbound connection. Wasted bytes: a new counter incremented by exactly the piece length
+  whenever a live-download hash check fails (not restore-time re-verification - a meaningfully
+  different thing) - persisted as a fourth field joining `PersistedLifetimeStats` rather than
+  new infrastructure ([[0064-persistent-lifetime-stats]]'s marker/flush machinery, confirmed
+  with the user). Peers tab gets a compact icon pair (direction arrow, source letter, both
+  tooltipped) rather than new columns - no room in the drawer's 430px width; the detail header's
+  fact grid grows to 10 cells for `Wasted`, a same-day extension of
+  [[0032-style-guide-and-primeng-theme]]'s addendum above. ([[0066-peer-diagnostics]])
+- **Per-peer progress/relevance, lifetime average speed, tracker peer count, re-announce
+  countdown (2026-09-10)** — the remaining plain-metric Medium-value items (per-torrent
+  bandwidth/connection limits, the fifth, is a control not a metric and stays a separate future
+  decision). `TorrentSession.peers()` now computes `percentAvailable` (pieces the peer has /
+  total) and `relevance` (pieces the peer has that we still need / pieces we still need - what
+  actually explains "why is this peer not helping me") by iterating `peerHasPiece()` across
+  every piece per connection per 3s poll. Both ride the Peers tab's existing `Done` column slot
+  (already reserved in the README spec, never filled until now) rather than a new column;
+  relevance rides a tooltip on it. Average lifetime download/upload speed is a pure frontend
+  derivation (`lifetimeUploadedBytes`/`bytesDownloaded` over `timeActiveMillis`, both already on
+  `Torrent` since the two bullets above) shown as a tooltip on the existing Down/Up fact cells,
+  not new cells. `TrackerStatus`/`TrackerView` gain a `peers` field (`response.peers().size()`
+  from a successful announce, survives a subsequent failure like `seeders`/`leechers` already
+  do) shown in the existing non-working-tracker tooltip. Tracker re-announce countdown replaces
+  the tooltip's absolute `Next: <date>` with a relative, humanized countdown (`Re-announces in
+  4m 12s`, via the same shared `humanizeDuration()` helper).
+  ([[0067-per-peer-progress-and-tracker-metrics]])
+- **SPA fallback routing for direct navigation/refresh (2026-09-11)** — closes a long-standing
+  `TODO.md` item: refreshing (or directly navigating to) a client-side route like
+  `/torrents/<infoHash>` 404'd, since static-resource serving has no notion of Angular's own
+  router. **Not** a JAX-RS catch-all resource - traced through `AuthenticationFilter`
+  ([[0061-authentication]]) and found that a `@PreMatching` filter runs before resource matching
+  even happens, so a plain unauthenticated page refresh with `authEnabled` on would get a 401
+  instead of the intended fallback, worse than the bug being fixed. Registered directly on the
+  Vert.x `Router` instead (`SpaFallbackRoute`, `@Observes`-on-`Router`-at-startup, same idiom
+  `TorrentEngineLifecycle` already uses), entirely outside RESTEasy Reactive's dispatch pipeline
+  - the same way the built-in static-file handler already bypasses auth. `.last()` so it only
+  ever fires for a GET nothing else claimed; `/api`/`/ws` explicitly excluded inside the handler
+  too, defensively. `index.html`'s bytes are read once at Router-registration time, not per
+  request; if absent (a plain local `mvn test`/`quarkus:dev` run with no Docker-built frontend
+  bundle), the fallback route is simply never registered rather than failing startup.
+  ([[0068-spa-fallback-routing]])
+- **Persist a torrent's existence before starting it, not after (2026-09-11)** — raised by the
+  user while looking at the SPA-fallback bug above: `TorrentEngine.addTorrent()` used to run the
+  initial synchronous tracker announce *before* writing the torrent-file/state/added-at markers
+  `restore()`'s entire discovery mechanism depends on, so a crash in that window left a torrent
+  genuinely running (possibly already writing real piece data to disk) with nothing on disk
+  saying it had ever been added - the next `restore()` would never find it. Fixed by writing
+  every config marker before constructing or starting the session at all. Confirmed with the
+  user as the intended behavior generally, not just a crash-safety nitpick: "added, but not
+  currently able to start" is a real, valid state, the same way a tracker/DHT failure already
+  leaves a torrent visible in `ERROR` rather than silently un-adding it
+  ([[0036-dht-backstop-for-tracker-bearing-torrents]]). Metadata parsing and download-path
+  resolution still come first, deliberately unchanged - a torrent that never successfully
+  parsed was never really "added." ([[0069-persist-before-starting]])
+- **Pending magnets as a first-class, restart-durable, REST-visible state (2026-09-11)** —
+  closes a real gap raised by the user: a magnet's metadata-fetch was entirely transient
+  (nothing on disk, nothing in any REST response said it was happening), so a page refresh lost
+  the client's only record of it and an engine restart lost it even harder. Modeled as a state,
+  not a separate entity: a new lightweight `TorrentEngine`-owned `Map<InfoHash, PendingMagnet>`
+  registry, rendered through the exact same `TorrentView` DTO shape every real torrent already
+  uses via a new `TorrentView.fromPendingMagnet(...)` factory - `state = "FETCHING_METADATA"` (a
+  literal string, not a new `TorrentState` enum value; that enum stays reserved for real
+  `TorrentSession` transitions). Persisted via a new `.grimtorrenter-magnet-pending` marker
+  written before the background fetch thread even starts (same declare-before-acting principle
+  as the bullet above), deleted the moment the attempt concludes by whatever path concludes it;
+  a crash mid-fetch leaves the marker in place and `restore()` re-drives the fetch with a fresh
+  time budget, not resumed elapsed time. `POST /api/torrents/magnet` now returns the pending
+  entry's `TorrentView` synchronously instead of an empty 200 - mirrors the file-upload
+  endpoint's existing shape and is what let the frontend drop its bespoke
+  placeholder-reconciliation logic entirely (`PendingUpload.infoHash`, `pendingInfoHashEffect`,
+  `magnetDisplayName()`'s placeholder use, all removed). `GET /api/torrents` (list and single),
+  and the periodic WebSocket snapshot, all merge pending magnets in alongside real sessions with
+  no bespoke per-consumer handling needed. Cancellation checks the pending registry first in
+  `removeTorrent()`, falling through to real-session removal - bounded, not instant (the
+  in-flight fetch loop checks "am I still pending" once per retry round, not
+  mid-network-call). ([[0070-pending-magnet-as-first-class-torrent]])
+- **Thin frontend as a standing consideration for every decision (2026-09-11)** — stated
+  directly by the user while scoping the pending-magnets work above, promoted to a standing
+  consideration alongside [[0051-stability-as-a-standing-consideration]], not a one-off
+  preference: a different client built against the REST API alone should have to recreate as
+  little UI-side logic as possible. Concretely, when a decision touches both layers: prefer
+  modeling new behavior as a state/field on an existing generic resource shape over a parallel
+  frontend-only concept to merge/reconcile; prefer a synchronous REST response carrying the real
+  resource over an acknowledgement the client polls/reconstructs state around; treat existing
+  frontend-only reconciliation logic as a signal worth checking against this principle. Doesn't
+  rule out genuine input-validation/preview logic or per-viewer ergonomics (remembered UI state)
+  - only logic that stands in for durable backend state.
+  ([[0071-thin-frontend-as-a-standing-consideration]])
 
 **Not yet built** (the rest of Phase 3):
 
@@ -655,13 +798,15 @@ torrent's files were opened once and held open for its whole lifetime, even whil
 
 ## Known gaps / TODO
 
-- **Upload/magnet-add latency has no deeper fix, only better feedback.**
-  `TorrentSession.start()`'s initial tracker announce is still fully
-  synchronous within the add request; 0029's optimistic "Processing" row
-  covers the *feedback* gap, not the underlying latency. Revisit if it
-  proves to matter in practice — would mean loosening `start()`'s
-  synchronous contract, a bigger change than it looks given how much
-  else assumes it.
+- **Upload latency (a `.torrent` file's initial synchronous tracker announce) has no deeper
+  fix, only better feedback and crash-safety.** `TorrentSession.start()`'s initial tracker
+  announce is still fully synchronous within the add request; 0029's optimistic "Processing"
+  row covers the *feedback* gap, [[0069-persist-before-starting]] covers the *crash-safety* gap
+  (a failure after this point now leaves a recoverable, `restore()`-visible record), but neither
+  touches the underlying latency itself. Revisit if it proves to matter in practice — would mean
+  loosening `start()`'s synchronous contract, a bigger change than it looks given how much else
+  assumes it. (Magnet adds don't share this gap the same way any more — [[0070-pending-magnet-as-first-class-torrent]]
+  made a magnet's own slow metadata-fetch a first-class, durable, immediately-visible state.)
 - **A per-row pending action (Pause/Resume/Remove) clears its spinner on
   response, but the row's displayed state still only catches up on the
   next ~2s WebSocket snapshot** — a brief window where the row looks
@@ -683,19 +828,46 @@ peer/seed-count investigation (DHT as a concurrent source, BEP 27 private-torren
 continuous connection refill, concurrent multi-tracker announce - all picked from `TODO.md`),
 REST/WebSocket authentication (picked from `TODO.md`, built and test-verified), and Local
 Service Discovery (BEP 14, picked from `TODO.md`, the last peer-discovery backlog item) are
-done:
+done. Since then, the full qBittorrent-parity backlog scoped into `TODO.md` on 2026-09-10 is
+also done — persistent lifetime stats, config-side per-torrent storage (plus the single-file
+wrapper-folder fix), peer diagnostics (connection direction, peer-source attribution, wasted
+bytes), and the remaining per-peer/tracker metrics (progress %, relevance, average lifetime
+speed, tracker peer count, re-announce countdown) — along with two user-raised fixes found while
+working nearby (SPA fallback routing for direct navigation/refresh, and persisting a torrent's
+existence before starting it rather than after) and a genuinely new feature shape, pending
+magnets as a first-class REST-visible/restart-durable state, which also produced a new standing
+design consideration (thin frontend) alongside the existing stability one:
 
-1. The remaining `TODO.md` items: a notification service (still fully unscoped), running a
-   user-configured script automatically on torrent completion, a per-tracker
-   seeders/leechers/peers UI (summary + detail view, from a qBittorrent comparison),
-   per-tracker independent announce scheduling (deferred as the bigger alternative to the
-   shared-cycle tracker-concurrency fix above), retrying a failed peer address after a
-   cooldown (deferred as the simpler option when the connection-refill fix landed), and UI
-   themes (unscoped).
-2. The pending-action-vs-2s-snapshot-lag gap noted above, if it proves to
-   matter in practice.
-3. The rate-limiting settings group's remaining natural additions (per-torrent overrides,
+1. **Peer-source summary UI in the Trackers tab** — DHT/PeX/LSD as their own rows alongside real
+   trackers, each with per-source seed/peer/leech counts (from a qBittorrent screenshot
+   comparison, `TODO.md`, 2026-09-06) — the data already exists (`TrackerStatus`, and now
+   per-source peer attribution from [[0066-peer-diagnostics]]), it's a display gap, not a
+   backend one. Flagged in `TODO.md` as more valuable now that more trackers show real
+   `WORKING` status after the concurrent-announce fix.
+2. **Per-torrent bandwidth/connection limits** — a real feature gap (only global + scheduled
+   limits exist today, [[0042-rate-limiting]]/[[0046-rate-limit-schedule]]), explicitly kept out
+   of the metrics-bundle work above and flagged in `TODO.md` as deserving its own design doc
+   when picked up.
+3. **µTP (BEP 29) transport support** — the peer connection layer has been TCP-only since
+   [[0015-peer-connection]], the first peer-connection design doc, never a deliberate decision. Two real costs
+   beyond a missing UI column: a shrunk effective peer pool (can't reach µTP-only peers) and no
+   LEDBAT congestion backoff (more likely to saturate a shared home connection than a
+   µTP-capable client). Flagged in `TODO.md` as a substantial, self-contained subsystem needing
+   its own design doc — would also unlock the Peers tab's currently-excluded "Connection type"
+   column.
+4. **Per-tracker independent announce scheduling** — the more-correct alternative to the current
+   shared-cycle concurrent-announce model ([[0022-multi-tracker-fallback]]), deferred as
+   substantially bigger scope (`MultiTrackerClient` would need to own scheduling and push peers
+   back asynchronously). Worth revisiting if the shared model's soft politeness cost (some
+   trackers polled more often than their own stated interval) turns out to matter in practice.
+5. **Retrying a failed peer address after a cooldown** — `failedAddresses` exclusion is
+   currently permanent for the whole session; deferred as the simpler option when the
+   connection-refill fix landed (2026-09-06), worth revisiting if evidence shows transient
+   failures (NAT timing, a briefly-offline peer) actually cost real peer count in practice.
+6. Smaller/unscoped `TODO.md` items: a notification service, running a user-configured script
+   automatically on torrent completion, multi-select on the torrent list
+   (checkboxes/shift-click for bulk Pause/Resume/Remove, 2026-09-03), and UI themes.
+7. The pending-action-vs-2s-snapshot-lag gap noted above, if it proves to matter in practice.
+8. The rate-limiting settings group's remaining natural additions (per-torrent overrides,
    multi-rule schedule) — pushed to the back of the backlog (2026-08-25), marginal real-world
    value relative to the items above.
-4. Multi-select on the torrent list (checkboxes/shift-click for bulk Pause/Resume/Remove) —
-   noted in `TODO.md`, 2026-09-03, unscoped.
