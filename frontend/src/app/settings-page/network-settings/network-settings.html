@@ -143,12 +143,34 @@
     <div class="settings-row-label">
       <label for="utpEnabled">µTP (experimental)</label>
       <p class="settings-row-description">
-        Accept incoming peer connections over µTP, alongside TCP. Inbound only for now - this
-        app still only ever connects out over TCP. Takes effect after the app restarts.
+        Connect to and accept connections from peers over µTP, alongside TCP. Takes effect
+        after the app restarts.
       </p>
     </div>
     <div class="settings-row-control">
       <p-toggleswitch inputId="utpEnabled" formControlName="utpEnabled" />
+    </div>
+  </div>
+
+  <div class="settings-row">
+    <div class="settings-row-label">
+      <label for="utpConnectTimeoutSeconds">µTP connect timeout</label>
+      <p class="settings-row-description">
+        How long an outbound connection attempt waits for a peer to answer µTP before falling
+        back to TCP. Applies to new connection attempts immediately.
+      </p>
+    </div>
+    <div class="settings-row-control">
+      <p-inputgroup class="settings-number-group">
+        <p-inputnumber
+          inputId="utpConnectTimeoutSeconds"
+          formControlName="utpConnectTimeoutSeconds"
+          [min]="1"
+          [showButtons]="false"
+          inputStyleClass="settings-number-input"
+        />
+        <p-inputgroup-addon class="settings-number-unit">seconds</p-inputgroup-addon>
+      </p-inputgroup>
     </div>
   </div>
 </div>

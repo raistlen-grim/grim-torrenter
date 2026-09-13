@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Timeout;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.time.Duration;
 import java.util.Random;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -18,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /** Real UtpSocket pairs over real loopback DatagramSockets - design_docs/0074's slice 1 own
  * Testing section. Each test owns its sockets/connections and closes them itself; there's no
@@ -180,6 +182,24 @@ class UtpSocketTest {
         } finally {
             executor.shutdown();
             b.close();
+        }
+    }
+
+    /** design_docs/0074's slice 4 - proves the Duration-based overload actually honors a short,
+     * dedicated budget rather than falling back to HANDSHAKE_MAX_RETRIES's own several-second
+     * one; the @Timeout below is the actual assertion that it does. */
+    @Test
+    @Timeout(value = 5, unit = TimeUnit.SECONDS)
+    void connectWithADurationTimeoutGivesUpQuicklyWhenNothingAnswers() throws Exception {
+        DatagramSocket initiatorSocket = new DatagramSocket();
+        DatagramSocket unusedSocket = new DatagramSocket();
+        int unreachablePort = unusedSocket.getLocalPort();
+        unusedSocket.close(); // nothing is listening on this port for the rest of the test
+        try {
+            assertThrows(UtpException.class,
+                    () -> UtpSocket.connect(initiatorSocket, loopback(unreachablePort), Duration.ofSeconds(1)));
+        } finally {
+            initiatorSocket.close();
         }
     }
 }

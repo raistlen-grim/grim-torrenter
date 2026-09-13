@@ -41,6 +41,7 @@ import com.grimtorrenter.engine.utp.UtpSocket;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.file.Path;
@@ -131,6 +132,18 @@ public final class TorrentSession implements AutoCloseable {
      * computed from TorrentEngine at TorrentView-assembly time the way a naive "just ask the
      * engine" approach would. See design_docs/0062. */
     private final boolean lsdActive;
+    /** design_docs/0074's slice 4 - gates attemptConnect()'s own µTP-first attempt before the
+     * plain-TCP fallback. Captured once at construction, same restart-required treatment as
+     * lsdActive above - there's no live-resizable resource at stake the way dhtEnabled/
+     * lsdEnabled have, but keeping this one setting's liveness semantics uniform between its
+     * inbound (slice 3, structurally restart-required - DhtNode's acceptor is wired at
+     * TorrentEngine construction) and outbound (this field) uses avoids a confusing "half-live"
+     * setting. */
+    private final boolean utpEnabled;
+    /** Read live on every outbound µTP attempt, unlike utpEnabled above - see
+     * Settings.utpConnectTimeoutSeconds's own Javadoc for why this one has no restart-required
+     * resource tied to it. Never null; only ever read when utpEnabled is true. */
+    private final Supplier<Integer> utpConnectTimeoutSeconds;
     /** Shared across every connection this session makes - see design_docs/0042. Never
      * null; callers that don't care about rate limiting get RateLimiters.unlimited() via
      * create()/restoreAsync()'s own lower-arity overloads. */
@@ -332,7 +345,8 @@ public final class TorrentSession implements AutoCloseable {
                             SeedingLimitOverride seedingLimitOverride, TorrentState initialState,
                             Instant addedAt, Supplier<Long> dhtReannounceIntervalSeconds, boolean lsdActive,
                             PersistedLifetimeStats persistedLifetimeStats,
-                            TorrentLimitOverride torrentLimitOverride, int maxConnections) {
+                            TorrentLimitOverride torrentLimitOverride, int maxConnections, boolean utpEnabled,
+                            Supplier<Integer> utpConnectTimeoutSeconds) {
         this.metadata = metadata;
         this.trackerClient = trackerClient;
         this.storage = storage;
@@ -352,6 +366,8 @@ public final class TorrentSession implements AutoCloseable {
         this.state = initialState;
         this.addedAt = addedAt;
         this.dhtReannounceIntervalSeconds = dhtReannounceIntervalSeconds;
+        this.utpEnabled = utpEnabled;
+        this.utpConnectTimeoutSeconds = utpConnectTimeoutSeconds;
         this.lifetimeUploadedBytesBaseline = persistedLifetimeStats.uploadedBytesBaseline();
         this.activeMillisAccumulated = new AtomicLong(persistedLifetimeStats.activeMillisBaseline());
         this.completedAtEpochMillis = persistedLifetimeStats.completedAtEpochMillis();
@@ -507,10 +523,8 @@ public final class TorrentSession implements AutoCloseable {
                 TorrentLimitOverride.INHERIT, DEFAULT_MAX_CONNECTIONS);
     }
 
-    /** torrentLimitOverride is the value TorrentEngine already read back from this torrent's own
-     * marker file (design_docs/0072); maxConnections is the already-resolved effective value
-     * (TorrentLimits.effectiveMaxConnections()) - resolved once here, not re-resolved later, per
-     * connectionSlots's own Javadoc on why a Semaphore can't be live-resized. */
+    /** Same as the twenty-one-arg overload below but with no outbound µTP support - for every
+     * caller that predates design_docs/0074's slice 4 (tests, mainly). */
     public static TorrentSession create(TorrentMetadata metadata, TrackerClient trackerClient,
                                          Path downloadDirectory, PeerId ourPeerId, int ourListenPort,
                                          TorrentSessionListener listener, DhtNode dhtNode,
@@ -524,12 +538,39 @@ public final class TorrentSession implements AutoCloseable {
                                          PersistedLifetimeStats persistedLifetimeStats,
                                          TorrentLimitOverride torrentLimitOverride,
                                          int maxConnections) throws IOException {
+        return create(metadata, trackerClient, downloadDirectory, ourPeerId, ourListenPort, listener, dhtNode,
+                rateLimiters, fileHandlePool, pieceVerificationLimiter, encryptionMode, seedingLimitOverride,
+                addedAt, dhtReannounceIntervalSeconds, lsdActive, persistedLifetimeStats, torrentLimitOverride,
+                maxConnections, false, () -> 0);
+    }
+
+    /** torrentLimitOverride is the value TorrentEngine already read back from this torrent's own
+     * marker file (design_docs/0072); maxConnections is the already-resolved effective value
+     * (TorrentLimits.effectiveMaxConnections()) - resolved once here, not re-resolved later, per
+     * connectionSlots's own Javadoc on why a Semaphore can't be live-resized. utpEnabled/
+     * utpConnectTimeoutSeconds are design_docs/0074's slice 4 - see this class's own matching
+     * field Javadoc for their differing liveness. */
+    public static TorrentSession create(TorrentMetadata metadata, TrackerClient trackerClient,
+                                         Path downloadDirectory, PeerId ourPeerId, int ourListenPort,
+                                         TorrentSessionListener listener, DhtNode dhtNode,
+                                         RateLimiters rateLimiters, FileHandlePool fileHandlePool,
+                                         Semaphore pieceVerificationLimiter,
+                                         Supplier<EncryptionMode> encryptionMode,
+                                         SeedingLimitOverride seedingLimitOverride,
+                                         Instant addedAt,
+                                         Supplier<Long> dhtReannounceIntervalSeconds,
+                                         boolean lsdActive,
+                                         PersistedLifetimeStats persistedLifetimeStats,
+                                         TorrentLimitOverride torrentLimitOverride,
+                                         int maxConnections,
+                                         boolean utpEnabled,
+                                         Supplier<Integer> utpConnectTimeoutSeconds) throws IOException {
         TorrentStorage storage = TorrentStorage.create(metadata, downloadDirectory, fileHandlePool);
         PieceManager pieceManager = new PieceManager(metadata);
         return new TorrentSession(metadata, trackerClient, storage, pieceManager, ourPeerId, ourListenPort,
                 listener, dhtNode, rateLimiters, pieceVerificationLimiter, encryptionMode, seedingLimitOverride,
                 TorrentState.STOPPED, addedAt, dhtReannounceIntervalSeconds, lsdActive, persistedLifetimeStats,
-                torrentLimitOverride, maxConnections);
+                torrentLimitOverride, maxConnections, utpEnabled, utpConnectTimeoutSeconds);
     }
 
     /** Same as the nine-arg overload below but with no rate limiting - see create()'s own
@@ -700,8 +741,8 @@ public final class TorrentSession implements AutoCloseable {
                 persistedLifetimeStats, TorrentLimitOverride.INHERIT, DEFAULT_MAX_CONNECTIONS);
     }
 
-    /** torrentLimitOverride/maxConnections - see create()'s matching overload's own Javadoc;
-     * the same reasoning applies here. */
+    /** Same as the twenty-two-arg overload below but with no outbound µTP support - for every
+     * caller that predates design_docs/0074's slice 4 (tests, mainly). */
     public static TorrentSession restoreAsync(TorrentMetadata metadata, TrackerClient trackerClient,
                                                Path downloadDirectory, PeerId ourPeerId, int ourListenPort,
                                                TorrentSessionListener listener, DhtNode dhtNode,
@@ -716,13 +757,38 @@ public final class TorrentSession implements AutoCloseable {
                                                PersistedLifetimeStats persistedLifetimeStats,
                                                TorrentLimitOverride torrentLimitOverride,
                                                int maxConnections) throws IOException {
+        return restoreAsync(metadata, trackerClient, downloadDirectory, ourPeerId, ourListenPort, listener,
+                dhtNode, rateLimiters, fileHandlePool, pieceVerificationLimiter, encryptionMode,
+                seedingLimitOverride, addedAt, dhtReannounceIntervalSeconds, lsdActive, autoStart,
+                persistedLifetimeStats, torrentLimitOverride, maxConnections, false, () -> 0);
+    }
+
+    /** torrentLimitOverride/maxConnections - see create()'s matching overload's own Javadoc;
+     * the same reasoning applies here. utpEnabled/utpConnectTimeoutSeconds are design_docs/0074's
+     * slice 4 - see this class's own matching field Javadoc for their differing liveness. */
+    public static TorrentSession restoreAsync(TorrentMetadata metadata, TrackerClient trackerClient,
+                                               Path downloadDirectory, PeerId ourPeerId, int ourListenPort,
+                                               TorrentSessionListener listener, DhtNode dhtNode,
+                                               RateLimiters rateLimiters, FileHandlePool fileHandlePool,
+                                               Semaphore pieceVerificationLimiter,
+                                               Supplier<EncryptionMode> encryptionMode,
+                                               SeedingLimitOverride seedingLimitOverride,
+                                               Instant addedAt,
+                                               Supplier<Long> dhtReannounceIntervalSeconds,
+                                               boolean lsdActive,
+                                               boolean autoStart,
+                                               PersistedLifetimeStats persistedLifetimeStats,
+                                               TorrentLimitOverride torrentLimitOverride,
+                                               int maxConnections,
+                                               boolean utpEnabled,
+                                               Supplier<Integer> utpConnectTimeoutSeconds) throws IOException {
         TorrentStorage storage = TorrentStorage.create(metadata, downloadDirectory, fileHandlePool);
         PieceManager pieceManager = new PieceManager(metadata);
         TorrentSession session = new TorrentSession(metadata, trackerClient, storage, pieceManager,
                 ourPeerId, ourListenPort, listener, dhtNode, rateLimiters, pieceVerificationLimiter,
                 encryptionMode, seedingLimitOverride, TorrentState.VERIFYING, addedAt,
                 dhtReannounceIntervalSeconds, lsdActive, persistedLifetimeStats,
-                torrentLimitOverride, maxConnections);
+                torrentLimitOverride, maxConnections, utpEnabled, utpConnectTimeoutSeconds);
         Thread.ofVirtual().start(() -> session.verifyThenSettle(autoStart));
         return session;
     }
@@ -1198,8 +1264,7 @@ public final class TorrentSession implements AutoCloseable {
     private void attemptConnect(PeerAddress address) {
         try {
             PeerSource source = knownAddresses.getOrDefault(address, PeerSource.UNKNOWN);
-            PeerConnection connection = PeerConnection.connect(address, metadata.infoHash(), ourPeerId,
-                    new PeerListener(), extensionsToAdvertise(), rateLimiters, encryptionMode.get(), source);
+            PeerConnection connection = connect(address, source);
             connections.add(connection);
             // Now covered by the connections-based filter in fillConnections() instead -
             // removing the inFlightAddresses claim just avoids that set growing forever with
@@ -1231,6 +1296,42 @@ public final class TorrentSession implements AutoCloseable {
             // Javadoc).
             connectionSlots.release();
             fillConnections();
+        }
+    }
+
+    /** design_docs/0074's slice 4 - µTP first, TCP fallback on timeout (confirmed with the
+     * user - not a race, see that doc's own Alternatives-considered section). A µTP failure is
+     * swallowed and logged here, not rethrown - attemptConnect()'s own catch block only ever
+     * needs to see the final (TCP) outcome, exactly as it did before this slice existed. */
+    private PeerConnection connect(PeerAddress address, PeerSource source) throws IOException {
+        if (utpEnabled) {
+            try {
+                return connectViaUtp(address, source);
+            } catch (IOException | RuntimeException e) {
+                LOG.log(System.Logger.Level.DEBUG, "uTP connect to " + address + " for "
+                        + metadata.infoHash() + " failed, falling back to TCP: " + e, e);
+            }
+        }
+        return PeerConnection.connect(address, metadata.infoHash(), ourPeerId, new PeerListener(),
+                extensionsToAdvertise(), rateLimiters, encryptionMode.get(), source);
+    }
+
+    /** No MSE over µTP, matching design_docs/0074's slice 3 inbound precedent - µTP already
+     * looks like ordinary UDP traffic to DPI (MSE's whole point), so real clients (e.g.
+     * libtorrent) skip MSE there too. socket is only ever closed here on failure - on success,
+     * UtpSocket.close() (called transitively once the resulting PeerConnection closes) already
+     * closes its own ownsSocket=true socket, the same lifecycle slice 1 established. */
+    private PeerConnection connectViaUtp(PeerAddress address, PeerSource source) throws IOException {
+        DatagramSocket socket = new DatagramSocket();
+        try {
+            UtpSocket utpSocket = UtpSocket.connect(socket,
+                    new InetSocketAddress(address.address(), address.port()),
+                    Duration.ofSeconds(utpConnectTimeoutSeconds.get()));
+            return PeerConnection.connectViaUtp(utpSocket, address, metadata.infoHash(), ourPeerId,
+                    new PeerListener(), extensionsToAdvertise(), rateLimiters, source);
+        } catch (IOException | RuntimeException e) {
+            socket.close();
+            throw e;
         }
     }
 

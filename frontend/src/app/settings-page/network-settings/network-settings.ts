@@ -17,6 +17,7 @@ export type NetworkSettingsForm = FormGroup<{
   lsdAnnounceIntervalSeconds: FormControl<number>;
   maxConnectionsPerTorrent: FormControl<number>;
   utpEnabled: FormControl<boolean>;
+  utpConnectTimeoutSeconds: FormControl<number>;
 }>;
 
 export function buildNetworkSettingsForm(settings: Settings): NetworkSettingsForm {
@@ -32,6 +33,7 @@ export function buildNetworkSettingsForm(settings: Settings): NetworkSettingsFor
     lsdAnnounceIntervalSeconds: new FormControl(settings.lsdAnnounceIntervalSeconds, { nonNullable: true }),
     maxConnectionsPerTorrent: new FormControl(settings.maxConnectionsPerTorrent, { nonNullable: true }),
     utpEnabled: new FormControl(settings.utpEnabled, { nonNullable: true }),
+    utpConnectTimeoutSeconds: new FormControl(settings.utpConnectTimeoutSeconds, { nonNullable: true }),
   });
 }
 
@@ -45,6 +47,7 @@ export function networkSettingsPatch(value: {
   lsdAnnounceIntervalSeconds: number;
   maxConnectionsPerTorrent: number;
   utpEnabled: boolean;
+  utpConnectTimeoutSeconds: number;
 }): Partial<Settings> {
   return {
     dhtEnabled: value.dhtEnabled,
@@ -56,6 +59,7 @@ export function networkSettingsPatch(value: {
     lsdAnnounceIntervalSeconds: value.lsdAnnounceIntervalSeconds,
     maxConnectionsPerTorrent: value.maxConnectionsPerTorrent,
     utpEnabled: value.utpEnabled,
+    utpConnectTimeoutSeconds: value.utpConnectTimeoutSeconds,
   };
 }
 
@@ -76,9 +80,12 @@ export function networkSettingsPatch(value: {
  * global default a per-torrent override (the row-level "Torrent limits…" dialog) inherits from
  * unless it sets its own - takes effect only the next time a torrent is constructed (a restart
  * or a remove-and-re-add), not on a plain pause/resume, since it sizes a Semaphore that can't
- * be live-resized the way a RateLimiter's limit can. utpEnabled (design_docs/0074's slice 3) is
- * also restart-required, same shape as dhtEnabled - gates real inbound µTP connections, off by
- * default since this client's own µTP congestion control is still deliberately unsophisticated.
+ * be live-resized the way a RateLimiter's limit can. utpEnabled (design_docs/0074) is also
+ * restart-required, same shape as dhtEnabled - gates real µTP connections (both inbound and
+ * outbound), off by default since this client's own µTP congestion control is still
+ * deliberately unsophisticated. utpConnectTimeoutSeconds (design_docs/0074's slice 4) is live
+ * instead - how long an outbound connection attempt waits for a peer to answer µTP before
+ * falling back to plain TCP, read fresh on every attempt.
  */
 @Component({
   selector: 'app-network-settings',

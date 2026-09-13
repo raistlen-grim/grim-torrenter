@@ -239,12 +239,12 @@ public final class PeerConnection implements AutoCloseable {
                 infoHash, ourPeerId, listener, extensionsToAdvertise, rateLimiters, source);
     }
 
-    /** Package-private, design_docs/0074's slice 2 - lets PeerConnectionUtpTransportTest prove
-     * this facade genuinely carries a real BT handshake/message exchange over a real UtpSocket,
-     * not just compiles. Not a production entry point yet - slice 4 decides the real public
-     * shape once TorrentSession actually needs one. */
-    static PeerConnection connectViaUtp(UtpSocket utpSocket, PeerAddress address, InfoHash infoHash, PeerId ourPeerId,
-                                         PeerConnectionListener listener, Map<String, Integer> extensionsToAdvertise,
+    /** Public since design_docs/0074's slice 4 - TorrentSession.connectViaUtp() (a different
+     * package) is now this method's real production caller, the same way acceptViaUtp() became
+     * public for slice 3's inbound path. */
+    public static PeerConnection connectViaUtp(UtpSocket utpSocket, PeerAddress address, InfoHash infoHash,
+                                         PeerId ourPeerId, PeerConnectionListener listener,
+                                         Map<String, Integer> extensionsToAdvertise,
                                          RateLimiters rateLimiters, PeerSource source) throws IOException {
         return completeOutboundHandshake(new UtpPeerTransport(utpSocket), utpSocket.getInputStream(),
                 utpSocket.getOutputStream(), address, infoHash, ourPeerId, listener, extensionsToAdvertise,

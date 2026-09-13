@@ -122,11 +122,15 @@ export interface Settings {
    * construction (a backend restart, or removing and re-adding that torrent), not on a plain
    * pause/resume. See design_docs/0072. */
   maxConnectionsPerTorrent: number;
-  /** design_docs/0074's slice 3 - gates real inbound µTP connections. Off by default: slices
-   * 1-4 only give the backend an interim, deliberately unsophisticated congestion window, not
-   * yet a polite citizen on a shared connection - see that doc's own cost/benefit section.
-   * Same restart-required shape as dhtEnabled/acceptIncomingConnections. Inbound-only until
-   * slice 4 (outbound) lands - turning this on lets other clients' outbound µTP attempts reach
-   * us, but this client still only ever initiates outbound connections over TCP. */
+  /** design_docs/0074 - gates real µTP connections, both inbound (slice 3) and outbound
+   * (slice 4). Off by default: slices 1-4 only give the backend an interim, deliberately
+   * unsophisticated congestion window, not yet a polite citizen on a shared connection - see
+   * that doc's own cost/benefit section. Same restart-required shape as dhtEnabled/
+   * acceptIncomingConnections. */
   utpEnabled: boolean;
+  /** design_docs/0074's slice 4 - how long an outbound connection attempt waits for a peer to
+   * answer µTP before falling back to plain TCP. Genuinely live (unlike utpEnabled) - read
+   * fresh on every connection attempt. Same no-unlimited-value, silently-normalized-below-1
+   * treatment as the other tunable interval fields above. Default 2s. */
+  utpConnectTimeoutSeconds: number;
 }

@@ -8,6 +8,7 @@ import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
 import java.net.SocketException;
 import java.security.SecureRandom;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
@@ -161,13 +162,30 @@ public final class UtpSocket implements AutoCloseable {
      * or closed by this method - the caller owns its lifecycle (see this class's own Scope
      * note). */
     public static UtpSocket connect(DatagramSocket socket, InetSocketAddress remoteAddress) {
-        return connect(socket, remoteAddress, randomUint16());
+        return connect(socket, remoteAddress, randomUint16(), HANDSHAKE_MAX_RETRIES);
+    }
+
+    /** design_docs/0074's slice 4 - TorrentSession's own µTP-first/TCP-fallback attempt needs a
+     * short, dedicated budget (Settings.utpConnectTimeoutSeconds) rather than this class's own
+     * general-purpose HANDSHAKE_MAX_RETRIES: a peer that never answers µTP (most peers today)
+     * should fall back to TCP quickly, not after several seconds. Retry *count* is derived from
+     * timeout at the existing fixed HANDSHAKE_RETRY_INTERVAL_MILLIS cadence - a shorter timeout
+     * means fewer retries, not a shorter interval between them (this class has only ever had one
+     * retry cadence; there's no need for a second independent timing knob). */
+    public static UtpSocket connect(DatagramSocket socket, InetSocketAddress remoteAddress, Duration timeout) {
+        int maxRetries = Math.max(0, (int) (timeout.toMillis() / HANDSHAKE_RETRY_INTERVAL_MILLIS) - 1);
+        return connect(socket, remoteAddress, randomUint16(), maxRetries);
     }
 
     /** Package-private seam for UtpSocketTest to exercise sequence-number-wraparound behavior
      * deterministically - the public connect() always picks a random initial sequence number,
      * which can't reliably be steered near the 2^16 wrap boundary from outside the package. */
     static UtpSocket connect(DatagramSocket socket, InetSocketAddress remoteAddress, int initialSeqNr) {
+        return connect(socket, remoteAddress, initialSeqNr, HANDSHAKE_MAX_RETRIES);
+    }
+
+    private static UtpSocket connect(DatagramSocket socket, InetSocketAddress remoteAddress, int initialSeqNr,
+                                      int maxRetries) {
         int recvId = randomUint16();
         int sendId = wrap16(recvId + 1);
 
@@ -175,7 +193,7 @@ public final class UtpSocket implements AutoCloseable {
                 VERSION_UNUSED_ACK, new byte[0]);
 
         try {
-            for (int attempt = 0; attempt <= HANDSHAKE_MAX_RETRIES; attempt++) {
+            for (int attempt = 0; attempt <= maxRetries; attempt++) {
                 sendRaw(socket, remoteAddress, syn);
                 try {
                     socket.setSoTimeout((int) HANDSHAKE_RETRY_INTERVAL_MILLIS);
@@ -204,7 +222,7 @@ public final class UtpSocket implements AutoCloseable {
         } finally {
             resetSoTimeoutQuietly(socket);
         }
-        throw new UtpException("uTP handshake to " + remoteAddress + " timed out after " + HANDSHAKE_MAX_RETRIES
+        throw new UtpException("uTP handshake to " + remoteAddress + " timed out after " + maxRetries
                 + " retries");
     }
 

@@ -46,6 +46,7 @@ import com.grimtorrenter.engine.tracker.TrackerStatus;
 import com.grimtorrenter.engine.utp.UtpSocket;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
@@ -956,6 +957,97 @@ class TorrentSessionTest {
             assertEquals(1, peers.size());
             assertEquals(fakePeerAddress, peers.get(0).address());
             assertFalse(session.isDhtBackstopActive());
+        } finally {
+            session.stop();
+        }
+        fakePeer.join(2000);
+    }
+
+    /** design_docs/0074's slice 4 - proves attemptConnect() (driven here via addKnownPeers(),
+     * exactly like addKnownPeersSeedsAdditionalPeersAndAttemptsConnection above) actually tries
+     * µTP first when Settings.utpEnabled is on and a real µTP-speaking peer answers, rather than
+     * just compiling. Uses the widest create() overload directly since utpEnabled/
+     * utpConnectTimeoutSeconds are its own two newest trailing params. */
+    @Test
+    @Timeout(value = 15, unit = TimeUnit.SECONDS)
+    void attemptConnectPrefersUtpWhenEnabledAndThePeerSpeaksIt(@TempDir Path tempDir) throws Exception {
+        TorrentMetadata metadata = singlePieceMetadata(fill(20, 3));
+        InfoHash infoHash = metadata.infoHash();
+
+        DatagramSocket fakePeerSocket = new DatagramSocket();
+        PeerAddress fakePeerAddress =
+                new PeerAddress(InetAddress.getLoopbackAddress(), fakePeerSocket.getLocalPort());
+
+        CountDownLatch handshakeReceived = new CountDownLatch(1);
+        Thread fakePeer = new Thread(() -> {
+            try {
+                UtpSocket accepted = UtpSocket.accept(fakePeerSocket);
+                Handshake theirHandshake = PeerWireCodec.readHandshake(accepted.getInputStream());
+                if (infoHash.equals(theirHandshake.infoHash())) {
+                    handshakeReceived.countDown();
+                }
+                PeerWireCodec.writeHandshake(accepted.getOutputStream(), Handshake.of(infoHash, fakeRemotePeerId()));
+                Thread.sleep(500); // keep the connection open long enough for the assertion below
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+        fakePeer.start();
+
+        TorrentSession session = TorrentSession.create(metadata, new NoOpTrackerClient(), tempDir,
+                fakeRemotePeerId(), 6881, new RecordingListener(), null, RateLimiters.unlimited(),
+                FileHandlePool.unbounded(), new Semaphore(Integer.MAX_VALUE), () -> EncryptionMode.DISABLED,
+                SeedingLimitOverride.INHERIT, Instant.now(), () -> 300L, false, TorrentSession.PersistedLifetimeStats.NONE,
+                TorrentLimitOverride.INHERIT, 30, true, () -> 2);
+        try {
+            session.start();
+            session.addKnownPeers(List.of(fakePeerAddress), PeerSource.UNKNOWN);
+
+            assertTrue(handshakeReceived.await(10, TimeUnit.SECONDS));
+        } finally {
+            session.stop();
+        }
+        fakePeer.join(2000);
+    }
+
+    /** design_docs/0074's slice 4 - proves the µTP-first attempt actually falls back to TCP
+     * (rather than just failing outright) when nothing answers µTP: fakePeerAddress's port has a
+     * real TCP listener but nothing bound to it over UDP, and a short utpConnectTimeoutSeconds
+     * (1) keeps the test fast. */
+    @Test
+    @Timeout(value = 15, unit = TimeUnit.SECONDS)
+    void attemptConnectFallsBackToTcpWhenUtpTimesOut(@TempDir Path tempDir) throws Exception {
+        TorrentMetadata metadata = singlePieceMetadata(fill(20, 4));
+        InfoHash infoHash = metadata.infoHash();
+
+        serverSocket = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+        PeerAddress fakePeerAddress = new PeerAddress(InetAddress.getLoopbackAddress(), serverSocket.getLocalPort());
+
+        CountDownLatch handshakeReceived = new CountDownLatch(1);
+        Thread fakePeer = new Thread(() -> {
+            try (Socket socket = serverSocket.accept()) {
+                Handshake theirHandshake = PeerWireCodec.readHandshake(socket.getInputStream());
+                if (infoHash.equals(theirHandshake.infoHash())) {
+                    handshakeReceived.countDown();
+                }
+                PeerWireCodec.writeHandshake(socket.getOutputStream(), Handshake.of(infoHash, fakeRemotePeerId()));
+                Thread.sleep(500); // keep the connection open long enough for the assertion below
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+        fakePeer.start();
+
+        TorrentSession session = TorrentSession.create(metadata, new NoOpTrackerClient(), tempDir,
+                fakeRemotePeerId(), 6881, new RecordingListener(), null, RateLimiters.unlimited(),
+                FileHandlePool.unbounded(), new Semaphore(Integer.MAX_VALUE), () -> EncryptionMode.DISABLED,
+                SeedingLimitOverride.INHERIT, Instant.now(), () -> 300L, false, TorrentSession.PersistedLifetimeStats.NONE,
+                TorrentLimitOverride.INHERIT, 30, true, () -> 1);
+        try {
+            session.start();
+            session.addKnownPeers(List.of(fakePeerAddress), PeerSource.UNKNOWN);
+
+            assertTrue(handshakeReceived.await(10, TimeUnit.SECONDS));
         } finally {
             session.stop();
         }

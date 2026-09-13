@@ -284,6 +284,10 @@ public final class TorrentEngine {
      * eligible for, not just a genuinely trackerless one. See design_docs/0036's own 2026-09-06
      * revision. */
     private final Supplier<Long> dhtReannounceIntervalSeconds;
+    /** Same live-read-per-use shape as dhtReannounceIntervalSeconds above - design_docs/0074's
+     * slice 4, passed straight through to every TorrentSession, which reads it fresh on every
+     * outbound µTP-first connection attempt (only ever used when Settings.utpEnabled is true). */
+    private final Supplier<Integer> utpConnectTimeoutSeconds;
     /** Read once, at construction time, to schedule refreshDhtRoutingTable()'s tick on
      * maintenanceScheduler below - unlike dhtReannounceIntervalSeconds above, this
      * drives an engine-wide scheduled task rather than a per-torrent one, so a live change
@@ -531,6 +535,7 @@ public final class TorrentEngine {
         this.encryptionMode = () -> settingsStore.current().encryptionMode();
         this.dhtReannounceIntervalSeconds =
                 () -> (long) settingsStore.current().dhtReannounceIntervalSeconds();
+        this.utpConnectTimeoutSeconds = () -> settingsStore.current().utpConnectTimeoutSeconds();
         this.dhtRefreshIntervalSeconds = settingsStore.current().dhtRefreshIntervalSeconds();
         this.watchFolderScanIntervalSeconds = settingsStore.current().watchFolderPollIntervalSeconds();
         this.peerServer = acceptIncomingConnections ? createPeerServer(ourListenPort, eventStore) : null;
@@ -1234,12 +1239,14 @@ public final class TorrentEngine {
                                 ourPeerId, ourListenPort, listener, dhtNode, perTorrentRateLimiters, fileHandlePool,
                                 pieceVerificationLimiter, encryptionMode, seedingLimitOverride, addedAt,
                                 dhtReannounceIntervalSeconds, lsdService != null, true, persistedLifetimeStats,
-                                torrentLimitOverride, effectiveMaxConnections)
+                                torrentLimitOverride, effectiveMaxConnections, settingsStore.current().utpEnabled(),
+                                utpConnectTimeoutSeconds)
                         : TorrentSession.create(metadata, trackerClient, torrentDirectory, ourPeerId,
                                 ourListenPort, listener, dhtNode, perTorrentRateLimiters, fileHandlePool,
                                 pieceVerificationLimiter, encryptionMode, seedingLimitOverride, addedAt,
                                 dhtReannounceIntervalSeconds, lsdService != null, persistedLifetimeStats,
-                                torrentLimitOverride, effectiveMaxConnections);
+                                torrentLimitOverride, effectiveMaxConnections, settingsStore.current().utpEnabled(),
+                                utpConnectTimeoutSeconds);
                 sessionRef.set(created);
                 directories.put(infoHash, contentPathFor(metadata, torrentDirectory));
                 if (!resolution.preExisting()) {
@@ -1612,7 +1619,8 @@ public final class TorrentEngine {
                     metadata, trackerClient, torrentDirectory, ourPeerId, ourListenPort, listener, dhtNode,
                     perTorrentRateLimiters, fileHandlePool, pieceVerificationLimiter, encryptionMode,
                     seedingLimitOverride, addedAt, dhtReannounceIntervalSeconds, lsdService != null, running,
-                    persistedLifetimeStats, torrentLimitOverride, effectiveMaxConnections);
+                    persistedLifetimeStats, torrentLimitOverride, effectiveMaxConnections,
+                    settingsStore.current().utpEnabled(), utpConnectTimeoutSeconds);
             sessionRef.set(session);
             sessions.put(metadata.infoHash(), session);
             directories.put(metadata.infoHash(), contentPathFor(metadata, torrentDirectory));

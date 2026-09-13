@@ -200,6 +200,18 @@ import com.grimtorrenter.engine.mse.EncryptionMode;
  * the correct value for a pre-0074 settings.json missing this field entirely (no
  * inbound-µTP-support default to preserve, unlike lsdEnabled's true default), so there's no
  * absent-vs-explicitly-false distinction worth making here.
+ *
+ * <p>utpConnectTimeoutSeconds (design_docs/0074's slice 4) bounds how long TorrentSession's own
+ * outbound µTP-first attempt waits for a peer to answer before falling back to plain TCP - a
+ * peer that never answers µTP (most peers today) must not add several seconds of latency to
+ * every outbound connection attempt. Genuinely live, unlike utpEnabled - read fresh by
+ * TorrentSession on every connection attempt (the same Supplier-based pattern encryptionMode/
+ * dhtReannounceIntervalSeconds already use), since there's no socket/resource tied to this
+ * value's lifetime the way there is for utpEnabled's own DhtNode-side wiring. Same **no**
+ * "0/negative means unlimited" treatment as dhtReannounceIntervalSeconds/
+ * magnetFetchTimeBudgetSeconds and for the same reason - there's no sensible "unlimited" for a
+ * connect timeout, so 0/negative is silently normalized to the default (2s) by the compact
+ * constructor below instead.
  */
 public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
                         long uploadRateLimitBytesPerSec, long downloadRateLimitBytesPerSec,
@@ -221,7 +233,8 @@ public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
                         Boolean lsdEnabled,
                         int lsdAnnounceIntervalSeconds,
                         int maxConnectionsPerTorrent,
-                        boolean utpEnabled) {
+                        boolean utpEnabled,
+                        int utpConnectTimeoutSeconds) {
 
     /** design_docs/0072 - the global default a per-torrent TorrentLimitOverride inherits from
      * unless it sets its own. Unlike the rate-limit fields above, a per-torrent connection-count
@@ -272,6 +285,9 @@ public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
     /** design_docs/0056's own 2026-09-06 addendum - matches the fixed 30s cadence this field
      * replaces. */
     private static final int DEFAULT_WATCH_FOLDER_POLL_INTERVAL_SECONDS = 30;
+    /** design_docs/0074's slice 4 - short enough that a peer not answering µTP doesn't
+     * meaningfully delay falling back to TCP, per the user's own explicit call on the tradeoff. */
+    private static final int DEFAULT_UTP_CONNECT_TIMEOUT_SECONDS = 2;
 
     /** Backfills encryptionMode to PREFERRED when null - the common case being a settings.json
      * persisted before this field existed, which Jackson otherwise deserializes with this
@@ -327,6 +343,46 @@ public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
         if (maxConnectionsPerTorrent <= 0) {
             maxConnectionsPerTorrent = DEFAULT_MAX_CONNECTIONS_PER_TORRENT;
         }
+        if (utpConnectTimeoutSeconds <= 0) {
+            utpConnectTimeoutSeconds = DEFAULT_UTP_CONNECT_TIMEOUT_SECONDS;
+        }
+    }
+
+    /** Same as the canonical constructor above but without utpConnectTimeoutSeconds - for every
+     * caller that predates this addition (every secondary constructor below, plus any direct
+     * thirty-five-arg caller), defaulting to 0 (the compact constructor above normalizes that to
+     * DEFAULT_UTP_CONNECT_TIMEOUT_SECONDS, so passing 0 here is equivalent to passing the
+     * default explicitly). Same "add a sibling overload, touch zero existing call sites" pattern
+     * used for every prior field addition to this record. See design_docs/0074's slice 4. */
+    public Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
+                     long uploadRateLimitBytesPerSec, long downloadRateLimitBytesPerSec,
+                     boolean rateLimitScheduleEnabled, String rateLimitScheduleStart, String rateLimitScheduleEnd,
+                     long scheduledUploadRateLimitBytesPerSec, long scheduledDownloadRateLimitBytesPerSec,
+                     EncryptionMode encryptionMode, long rateLimitBurstSeconds,
+                     boolean seedRatioLimitEnabled, double seedRatioLimit,
+                     boolean seedTimeLimitEnabled, long seedTimeLimitMinutes,
+                     int eventLogRetentionDays,
+                     boolean watchFolderEnabled, int watchFolderRetentionDays,
+                     ThemePreference theme,
+                     int magnetFetchTimeBudgetSeconds, int magnetFetchCandidatesPerRound,
+                     int magnetFetchConcurrencyLimit,
+                     int dhtReannounceIntervalSeconds,
+                     int dhtRefreshIntervalSeconds,
+                     int watchFolderPollIntervalSeconds,
+                     boolean authEnabled,
+                     int authTokenTtlDays,
+                     Boolean lsdEnabled,
+                     int lsdAnnounceIntervalSeconds,
+                     int maxConnectionsPerTorrent,
+                     boolean utpEnabled) {
+        this(dhtEnabled, acceptIncomingConnections, uploadRateLimitBytesPerSec, downloadRateLimitBytesPerSec,
+                rateLimitScheduleEnabled, rateLimitScheduleStart, rateLimitScheduleEnd,
+                scheduledUploadRateLimitBytesPerSec, scheduledDownloadRateLimitBytesPerSec, encryptionMode,
+                rateLimitBurstSeconds, seedRatioLimitEnabled, seedRatioLimit, seedTimeLimitEnabled,
+                seedTimeLimitMinutes, eventLogRetentionDays, watchFolderEnabled, watchFolderRetentionDays, theme,
+                magnetFetchTimeBudgetSeconds, magnetFetchCandidatesPerRound, magnetFetchConcurrencyLimit,
+                dhtReannounceIntervalSeconds, dhtRefreshIntervalSeconds, watchFolderPollIntervalSeconds, authEnabled,
+                authTokenTtlDays, lsdEnabled, lsdAnnounceIntervalSeconds, maxConnectionsPerTorrent, utpEnabled, 0);
     }
 
     /** Same as the canonical constructor above but without utpEnabled - for every caller that
