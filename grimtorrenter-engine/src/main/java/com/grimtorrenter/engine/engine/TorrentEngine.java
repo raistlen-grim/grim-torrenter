@@ -23,6 +23,8 @@ import com.grimtorrenter.engine.mse.EncryptionMode;
 import com.grimtorrenter.engine.peer.IncomingConnectionHandler;
 import com.grimtorrenter.engine.peer.PeerServer;
 import com.grimtorrenter.engine.peer.PeerSource;
+import com.grimtorrenter.engine.peer.UtpIncomingConnectionHandler;
+import com.grimtorrenter.engine.peer.UtpPeerAcceptor;
 import com.grimtorrenter.engine.ratelimit.RateLimiters;
 import com.grimtorrenter.engine.settings.InMemorySettingsStore;
 import com.grimtorrenter.engine.settings.Settings;
@@ -30,6 +32,8 @@ import com.grimtorrenter.engine.settings.SettingsStore;
 import com.grimtorrenter.engine.storage.FileHandlePool;
 import com.grimtorrenter.engine.torrent.SeedingLimitOverride;
 import com.grimtorrenter.engine.torrent.SeedingLimits;
+import com.grimtorrenter.engine.torrent.TorrentLimitOverride;
+import com.grimtorrenter.engine.torrent.TorrentLimits;
 import com.grimtorrenter.engine.torrent.TorrentSession;
 import com.grimtorrenter.engine.torrent.TorrentSessionListener;
 import com.grimtorrenter.engine.torrent.TorrentState;
@@ -45,6 +49,7 @@ import com.grimtorrenter.engine.tracker.TrackerRequest;
 import com.grimtorrenter.engine.tracker.TrackerResponse;
 import com.grimtorrenter.engine.tracker.TrackerStatusListener;
 import com.grimtorrenter.engine.tracker.UdpTrackerClient;
+import com.grimtorrenter.engine.utp.UtpSocket;
 
 import java.io.IOException;
 import java.net.InetAddress;
@@ -84,6 +89,7 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
@@ -144,6 +150,12 @@ public final class TorrentEngine {
      * torrent's record, same as the download-path marker does. See design_docs/0054/0065. */
     private static final String SEEDING_LIMIT_OVERRIDE_MARKER_FILENAME = ".grimtorrenter-seeding-limit-override";
     private static final long SEEDING_LIMIT_CHECK_INTERVAL_SECONDS = 30;
+
+    /** This torrent's TorrentLimitOverride, same plain key=value shape as the seeding-limit
+     * override marker just above, for the same reason. Deliberately never deleted by
+     * removeTorrent(infoHash, false) (keep files) - same "torrent-config-scoped preference
+     * stays with the record" reasoning. See design_docs/0072/0065. */
+    private static final String TORRENT_LIMIT_OVERRIDE_MARKER_FILENAME = ".grimtorrenter-torrent-limit-override";
 
     /** Lifetime uploaded bytes, cumulative active time, and completed-on timestamp - the three
      * metrics design_docs/0054 explicitly deferred persisting ("neither ratio nor seed time
@@ -502,7 +514,19 @@ public final class TorrentEngine {
         // invokes onStateChanged().
         this.listener = announceOnLsdActivation(listener);
         this.ourPeerId = PeerId.generate();
-        this.dhtNode = enableDht ? createDhtNode(configDirectory, ourListenPort, eventStore) : null;
+        // design_docs/0074's slice 3: real inbound µTP connections only ever get routed to a
+        // session when both accepting incoming connections at all, and Settings.utpEnabled,
+        // are on - otherwise every inbound ST_SYN completes its own uTP-level handshake then is
+        // immediately closed (DhtNode's own default), the same observable "no inbound µTP" outcome
+        // as before this slice existed. Read once here, restart-required like acceptIncomingConnections
+        // itself.
+        Consumer<UtpSocket> onUtpConnectionAccepted =
+                (acceptIncomingConnections && settingsStore.current().utpEnabled())
+                        ? new UtpPeerAcceptor(this::findIncomingUtpConnectionHandler)::accept
+                        : UtpSocket::close;
+        this.dhtNode = enableDht
+                ? createDhtNode(configDirectory, ourListenPort, eventStore, onUtpConnectionAccepted)
+                : null;
         this.dhtBindFailed = enableDht && this.dhtNode == null;
         this.encryptionMode = () -> settingsStore.current().encryptionMode();
         this.dhtReannounceIntervalSeconds =
@@ -841,6 +865,12 @@ public final class TorrentEngine {
         return Optional.ofNullable(sessions.get(infoHash)).map(session -> session::acceptIncomingConnection);
     }
 
+    /** The µTP counterpart to findIncomingConnectionHandler() above (design_docs/0074's slice
+     * 3) - same bridging role, for UtpPeerAcceptor instead of PeerServer. */
+    private Optional<UtpIncomingConnectionHandler> findIncomingUtpConnectionHandler(InfoHash infoHash) {
+        return Optional.ofNullable(sessions.get(infoHash)).map(session -> session::acceptIncomingUtpConnection);
+    }
+
     private LsdService createLsdService(int torrentListenPort, EventStore eventStore,
                                          List<NetworkInterface> interfacesForTesting) {
         try {
@@ -944,10 +974,11 @@ public final class TorrentEngine {
      * than delaying this constructor. configDirectory, not baseDownloadDirectory - see this
      * class's own configDirectory field Javadoc (design_docs/0028's own 2026-08-30
      * addendum). */
-    private static DhtNode createDhtNode(Path configDirectory, int ourListenPort, EventStore eventStore) {
+    private static DhtNode createDhtNode(Path configDirectory, int ourListenPort, EventStore eventStore,
+                                          Consumer<UtpSocket> onUtpConnectionAccepted) {
         try {
             NodeId nodeId = loadOrGenerateDhtNodeId(configDirectory);
-            DhtNode node = new DhtNode(nodeId, ourListenPort);
+            DhtNode node = new DhtNode(nodeId, ourListenPort, onUtpConnectionAccepted);
             List<InetSocketAddress> persistedContacts = loadPersistedDhtContacts(configDirectory);
             Thread.ofVirtual().start(() -> node.bootstrap(persistedContacts));
             return node;
@@ -1173,6 +1204,19 @@ public final class TorrentEngine {
                 // genuinely new torrent, since no marker exists yet. See design_docs/0064.
                 TorrentSession.PersistedLifetimeStats persistedLifetimeStats =
                         readLifetimeStatsMarker(configTorrentDirectory);
+                // Same reused-path reasoning again, now for bandwidth/connection limits - see
+                // design_docs/0072.
+                TorrentLimitOverride torrentLimitOverride = readTorrentLimitOverrideMarker(configTorrentDirectory);
+                int effectiveMaxConnections = TorrentLimits.effectiveMaxConnections(settingsStore.current(), torrentLimitOverride);
+                // RateLimiters.forTorrent() needs a live-readable override before the
+                // TorrentSession it belongs to exists yet - resolved with this AtomicReference
+                // rather than any restructuring inside TorrentSession itself. Safe: no peer
+                // connection (and therefore no acquire() call) can happen before create()/
+                // restoreAsync() returns and sessionRef.set(created) runs below. See
+                // design_docs/0072.
+                AtomicReference<TorrentSession> sessionRef = new AtomicReference<>();
+                RateLimiters perTorrentRateLimiters =
+                        RateLimiters.forTorrent(rateLimiters, settingsStore, () -> sessionRef.get().torrentLimits());
                 Instant addedAt = Instant.now();
                 // Declared - markers written - before the session is even constructed, let
                 // alone started: a crash (or a start() that fails outright) between here and
@@ -1187,13 +1231,16 @@ public final class TorrentEngine {
                 writeAddedAtMarker(configTorrentDirectory, addedAt);
                 TorrentSession created = resolution.preExisting()
                         ? TorrentSession.restoreAsync(metadata, trackerClient, torrentDirectory,
-                                ourPeerId, ourListenPort, listener, dhtNode, rateLimiters, fileHandlePool,
+                                ourPeerId, ourListenPort, listener, dhtNode, perTorrentRateLimiters, fileHandlePool,
                                 pieceVerificationLimiter, encryptionMode, seedingLimitOverride, addedAt,
-                                dhtReannounceIntervalSeconds, lsdService != null, true, persistedLifetimeStats)
+                                dhtReannounceIntervalSeconds, lsdService != null, true, persistedLifetimeStats,
+                                torrentLimitOverride, effectiveMaxConnections)
                         : TorrentSession.create(metadata, trackerClient, torrentDirectory, ourPeerId,
-                                ourListenPort, listener, dhtNode, rateLimiters, fileHandlePool,
+                                ourListenPort, listener, dhtNode, perTorrentRateLimiters, fileHandlePool,
                                 pieceVerificationLimiter, encryptionMode, seedingLimitOverride, addedAt,
-                                dhtReannounceIntervalSeconds, lsdService != null, persistedLifetimeStats);
+                                dhtReannounceIntervalSeconds, lsdService != null, persistedLifetimeStats,
+                                torrentLimitOverride, effectiveMaxConnections);
+                sessionRef.set(created);
                 directories.put(infoHash, contentPathFor(metadata, torrentDirectory));
                 if (!resolution.preExisting()) {
                     created.start();
@@ -1548,16 +1595,25 @@ public final class TorrentEngine {
             Instant addedAt = readAddedAtMarker(configTorrentDirectory);
             TorrentSession.PersistedLifetimeStats persistedLifetimeStats =
                     readLifetimeStatsMarker(configTorrentDirectory);
+            TorrentLimitOverride torrentLimitOverride = readTorrentLimitOverrideMarker(configTorrentDirectory);
+            int effectiveMaxConnections = TorrentLimits.effectiveMaxConnections(settingsStore.current(), torrentLimitOverride);
             Path torrentDirectory = readDownloadPathMarker(configTorrentDirectory);
             if (torrentDirectory == null) {
                 LOG.log(System.Logger.Level.WARNING,
                         "No download-path marker in " + configTorrentDirectory + " - skipping");
                 return;
             }
+            // See addTorrent()'s matching AtomicReference for why this indirection is needed -
+            // same reasoning applies here. See design_docs/0072.
+            AtomicReference<TorrentSession> sessionRef = new AtomicReference<>();
+            RateLimiters perTorrentRateLimiters =
+                    RateLimiters.forTorrent(rateLimiters, settingsStore, () -> sessionRef.get().torrentLimits());
             TorrentSession session = TorrentSession.restoreAsync(
                     metadata, trackerClient, torrentDirectory, ourPeerId, ourListenPort, listener, dhtNode,
-                    rateLimiters, fileHandlePool, pieceVerificationLimiter, encryptionMode, seedingLimitOverride,
-                    addedAt, dhtReannounceIntervalSeconds, lsdService != null, running, persistedLifetimeStats);
+                    perTorrentRateLimiters, fileHandlePool, pieceVerificationLimiter, encryptionMode,
+                    seedingLimitOverride, addedAt, dhtReannounceIntervalSeconds, lsdService != null, running,
+                    persistedLifetimeStats, torrentLimitOverride, effectiveMaxConnections);
+            sessionRef.set(session);
             sessions.put(metadata.infoHash(), session);
             directories.put(metadata.infoHash(), contentPathFor(metadata, torrentDirectory));
         } catch (IOException | RuntimeException e) {
@@ -1701,6 +1757,20 @@ public final class TorrentEngine {
         }
     }
 
+    /** Same crash-safety ordering and no-op convention as setSeedingLimitOverride above. Only
+     * the bandwidth half of this takes effect on the already-running session immediately
+     * (session.setTorrentLimits() updates the volatile field RateLimiters.forTorrent() reads
+     * live) - the maxConnectionsOverride half has no effect until this torrent is next
+     * constructed (a restart or remove-and-re-add), since connectionSlots can't be
+     * live-resized. See design_docs/0072. */
+    public void setTorrentLimits(InfoHash infoHash, TorrentLimitOverride override) {
+        TorrentSession session = sessions.get(infoHash);
+        if (session != null) {
+            writeTorrentLimitOverrideMarker(configTorrentDirectory(infoHash), override);
+            session.setTorrentLimits(override);
+        }
+    }
+
     public Collection<TorrentSession> listTorrents() {
         return List.copyOf(sessions.values());
     }
@@ -1773,6 +1843,18 @@ public final class TorrentEngine {
         } catch (IOException e) {
             throw new TorrentEngineException(
                     "Could not persist seeding limit override to " + directory + ": " + e.getMessage());
+        }
+    }
+
+    private static void writeTorrentLimitOverrideMarker(Path directory, TorrentLimitOverride override) {
+        try {
+            Files.writeString(directory.resolve(TORRENT_LIMIT_OVERRIDE_MARKER_FILENAME),
+                    "uploadBytesPerSecOverride=" + override.uploadBytesPerSecOverride()
+                            + "\ndownloadBytesPerSecOverride=" + override.downloadBytesPerSecOverride()
+                            + "\nmaxConnectionsOverride=" + override.maxConnectionsOverride() + "\n");
+        } catch (IOException e) {
+            throw new TorrentEngineException(
+                    "Could not persist torrent limit override to " + directory + ": " + e.getMessage());
         }
     }
 
@@ -1980,6 +2062,32 @@ public final class TorrentEngine {
             }
         }
         return new SeedingLimitOverride(ratioLimit, timeLimitMinutes);
+    }
+
+    private static TorrentLimitOverride readTorrentLimitOverrideMarker(Path directory) throws IOException {
+        Path marker = directory.resolve(TORRENT_LIMIT_OVERRIDE_MARKER_FILENAME);
+        if (!Files.exists(marker)) {
+            return TorrentLimitOverride.INHERIT;
+        }
+        long uploadBytesPerSecOverride = TorrentLimitOverride.INHERIT.uploadBytesPerSecOverride();
+        long downloadBytesPerSecOverride = TorrentLimitOverride.INHERIT.downloadBytesPerSecOverride();
+        int maxConnectionsOverride = TorrentLimitOverride.INHERIT.maxConnectionsOverride();
+        for (String line : Files.readAllLines(marker)) {
+            String[] parts = line.split("=", 2);
+            if (parts.length != 2) {
+                continue;
+            }
+            switch (parts[0]) {
+                case "uploadBytesPerSecOverride" -> uploadBytesPerSecOverride = Long.parseLong(parts[1]);
+                case "downloadBytesPerSecOverride" -> downloadBytesPerSecOverride = Long.parseLong(parts[1]);
+                case "maxConnectionsOverride" -> maxConnectionsOverride = Integer.parseInt(parts[1]);
+                default -> {
+                    // Unknown line - ignore rather than fail, forward-compatible with a
+                    // future field this version doesn't know about yet.
+                }
+            }
+        }
+        return new TorrentLimitOverride(uploadBytesPerSecOverride, downloadBytesPerSecOverride, maxConnectionsOverride);
     }
 
     private static void deleteIfExists(Path path) {

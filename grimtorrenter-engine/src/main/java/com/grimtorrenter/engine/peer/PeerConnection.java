@@ -28,6 +28,7 @@ import com.grimtorrenter.engine.peerwire.Unchoke;
 import com.grimtorrenter.engine.ratelimit.RateLimiters;
 import com.grimtorrenter.engine.tracker.PeerAddress;
 import com.grimtorrenter.engine.tracker.PeerId;
+import com.grimtorrenter.engine.utp.UtpSocket;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -64,7 +65,7 @@ public final class PeerConnection implements AutoCloseable {
      * reused-many-times pattern SecureRandom is meant for. */
     private static final SecureRandom MSE_RANDOM = new SecureRandom();
 
-    private final Socket socket;
+    private final PeerTransport transport;
     private final InputStream in;
     private final OutputStream out;
     private final Object writeLock = new Object();
@@ -103,14 +104,15 @@ public final class PeerConnection implements AutoCloseable {
     private volatile boolean peerInterested = false;
     private volatile boolean closed = false;
 
-    /** in/out are passed in explicitly rather than derived from socket here, so that a
+    /** in/out are passed in explicitly rather than derived from transport here, so that a
      * caller which already completed MSE negotiation (design_docs/0052) can hand over the
      * resulting - possibly RC4-wrapped - stream pair instead of this constructor silently
-     * grabbing the socket's raw ones. */
-    private PeerConnection(Socket socket, InputStream in, OutputStream out, PeerAddress remoteAddress,
+     * grabbing the transport's raw ones. transport itself is PeerTransport, not java.net.Socket
+     * directly, since design_docs/0074's slice 2 - see that interface's own Javadoc. */
+    private PeerConnection(PeerTransport transport, InputStream in, OutputStream out, PeerAddress remoteAddress,
                             PeerId remotePeerId, PeerConnectionListener listener, RateLimiters rateLimiters,
                             boolean incoming, PeerSource source) {
-        this.socket = socket;
+        this.transport = transport;
         this.in = in;
         this.out = out;
         this.remoteAddress = remoteAddress;
@@ -199,30 +201,18 @@ public final class PeerConnection implements AutoCloseable {
                                                      Map<String, Integer> extensionsToAdvertise,
                                                      RateLimiters rateLimiters, PeerSource source) throws IOException {
         Socket socket = new Socket();
+        InputStream in;
+        OutputStream out;
         try {
             socket.connect(new InetSocketAddress(address.address(), address.port()), CONNECT_TIMEOUT_MS);
-            socket.setSoTimeout(HANDSHAKE_TIMEOUT_MS);
-
-            InputStream in = socket.getInputStream();
-            OutputStream out = socket.getOutputStream();
-            PeerWireCodec.writeHandshake(out, Handshake.withExtensionProtocol(infoHash, ourPeerId));
-            Handshake remoteHandshake = PeerWireCodec.readHandshake(in);
-            if (!remoteHandshake.infoHash().equals(infoHash)) {
-                throw new PeerConnectionException(
-                        "Peer " + address + " handshake info hash mismatch: expected " + infoHash
-                                + ", got " + remoteHandshake.infoHash());
-            }
-
-            socket.setSoTimeout(IDLE_READ_TIMEOUT_MS);
-            PeerConnection connection = new PeerConnection(socket, in, out, address, remoteHandshake.peerId(),
-                    listener, rateLimiters, false, source);
-            connection.startReadLoop();
-            connection.sendExtendedHandshakeIfSupported(remoteHandshake, extensionsToAdvertise);
-            return connection;
-        } catch (IOException | RuntimeException e) {
+            in = socket.getInputStream();
+            out = socket.getOutputStream();
+        } catch (IOException e) {
             closeQuietly(socket);
             throw e;
         }
+        return completeOutboundHandshake(new SocketPeerTransport(socket), in, out, address, infoHash, ourPeerId,
+                listener, extensionsToAdvertise, rateLimiters, source);
     }
 
     /** MSE negotiation happens before the ordinary BT handshake, over the same socket -
@@ -235,29 +225,61 @@ public final class PeerConnection implements AutoCloseable {
                                                      RateLimiters rateLimiters,
                                                      boolean requireEncryption, PeerSource source) throws IOException {
         Socket socket = new Socket();
+        MseOutboundResult negotiated;
         try {
             socket.connect(new InetSocketAddress(address.address(), address.port()), CONNECT_TIMEOUT_MS);
             socket.setSoTimeout(HANDSHAKE_TIMEOUT_MS);
-
-            MseOutboundResult negotiated = MseHandshake.negotiateOutbound(
+            negotiated = MseHandshake.negotiateOutbound(
                     socket.getInputStream(), socket.getOutputStream(), infoHash, requireEncryption, MSE_RANDOM);
+        } catch (IOException e) {
+            closeQuietly(socket);
+            throw e;
+        }
+        return completeOutboundHandshake(new SocketPeerTransport(socket), negotiated.in(), negotiated.out(), address,
+                infoHash, ourPeerId, listener, extensionsToAdvertise, rateLimiters, source);
+    }
 
-            PeerWireCodec.writeHandshake(negotiated.out(), Handshake.withExtensionProtocol(infoHash, ourPeerId));
-            Handshake remoteHandshake = PeerWireCodec.readHandshake(negotiated.in());
+    /** Package-private, design_docs/0074's slice 2 - lets PeerConnectionUtpTransportTest prove
+     * this facade genuinely carries a real BT handshake/message exchange over a real UtpSocket,
+     * not just compiles. Not a production entry point yet - slice 4 decides the real public
+     * shape once TorrentSession actually needs one. */
+    static PeerConnection connectViaUtp(UtpSocket utpSocket, PeerAddress address, InfoHash infoHash, PeerId ourPeerId,
+                                         PeerConnectionListener listener, Map<String, Integer> extensionsToAdvertise,
+                                         RateLimiters rateLimiters, PeerSource source) throws IOException {
+        return completeOutboundHandshake(new UtpPeerTransport(utpSocket), utpSocket.getInputStream(),
+                utpSocket.getOutputStream(), address, infoHash, ourPeerId, listener, extensionsToAdvertise,
+                rateLimiters, source);
+    }
+
+    /** The shared outbound tail every connect() path (plaintext, MSE-negotiated, or - slice 2 -
+     * uTP) funnels through once it has an established transport and stream pair: write our
+     * handshake, read theirs, verify the info hash, construct and start the connection. See
+     * design_docs/0074. */
+    private static PeerConnection completeOutboundHandshake(PeerTransport transport, InputStream in,
+                                                              OutputStream out, PeerAddress address,
+                                                              InfoHash infoHash, PeerId ourPeerId,
+                                                              PeerConnectionListener listener,
+                                                              Map<String, Integer> extensionsToAdvertise,
+                                                              RateLimiters rateLimiters,
+                                                              PeerSource source) throws IOException {
+        try {
+            transport.setSoTimeout(HANDSHAKE_TIMEOUT_MS);
+            PeerWireCodec.writeHandshake(out, Handshake.withExtensionProtocol(infoHash, ourPeerId));
+            Handshake remoteHandshake = PeerWireCodec.readHandshake(in);
             if (!remoteHandshake.infoHash().equals(infoHash)) {
                 throw new PeerConnectionException(
                         "Peer " + address + " handshake info hash mismatch: expected " + infoHash
                                 + ", got " + remoteHandshake.infoHash());
             }
 
-            socket.setSoTimeout(IDLE_READ_TIMEOUT_MS);
-            PeerConnection connection = new PeerConnection(socket, negotiated.in(), negotiated.out(), address,
-                    remoteHandshake.peerId(), listener, rateLimiters, false, source);
+            transport.setSoTimeout(IDLE_READ_TIMEOUT_MS);
+            PeerConnection connection = new PeerConnection(transport, in, out, address, remoteHandshake.peerId(),
+                    listener, rateLimiters, false, source);
             connection.startReadLoop();
             connection.sendExtendedHandshakeIfSupported(remoteHandshake, extensionsToAdvertise);
             return connection;
         } catch (IOException | RuntimeException e) {
-            closeQuietly(socket);
+            closeQuietly(transport);
             throw e;
         }
     }
@@ -296,19 +318,44 @@ public final class PeerConnection implements AutoCloseable {
                                          PeerId ourPeerId, PeerConnectionListener listener,
                                          Map<String, Integer> extensionsToAdvertise,
                                          RateLimiters rateLimiters) throws IOException {
+        return completeInboundHandshake(new SocketPeerTransport(socket), in, out, remoteHandshake, ourPeerId,
+                listener, extensionsToAdvertise, rateLimiters);
+    }
+
+    /** Public since design_docs/0074's slice 3 - TorrentSession.acceptIncomingUtpConnection()
+     * (a different package) is now this method's real production caller, the same way it already
+     * calls the Socket-based accept() overloads above. remoteHandshake is already-read by the
+     * caller, exactly like those - UtpPeerAcceptor's own role for a real inbound connection, or
+     * PeerConnectionUtpTransportTest's own stand-in for it. */
+    public static PeerConnection acceptViaUtp(UtpSocket utpSocket, Handshake remoteHandshake, PeerId ourPeerId,
+                                        PeerConnectionListener listener, Map<String, Integer> extensionsToAdvertise,
+                                        RateLimiters rateLimiters) throws IOException {
+        return completeInboundHandshake(new UtpPeerTransport(utpSocket), utpSocket.getInputStream(),
+                utpSocket.getOutputStream(), remoteHandshake, ourPeerId, listener, extensionsToAdvertise,
+                rateLimiters);
+    }
+
+    /** The shared inbound tail every accept() path funnels through - mirror image of
+     * completeOutboundHandshake(): no read (the caller already read the remote's handshake), so
+     * only writes ours back. See design_docs/0074. */
+    private static PeerConnection completeInboundHandshake(PeerTransport transport, InputStream in, OutputStream out,
+                                                             Handshake remoteHandshake, PeerId ourPeerId,
+                                                             PeerConnectionListener listener,
+                                                             Map<String, Integer> extensionsToAdvertise,
+                                                             RateLimiters rateLimiters) throws IOException {
         try {
-            socket.setSoTimeout(HANDSHAKE_TIMEOUT_MS);
+            transport.setSoTimeout(HANDSHAKE_TIMEOUT_MS);
             PeerWireCodec.writeHandshake(out, Handshake.withExtensionProtocol(remoteHandshake.infoHash(), ourPeerId));
 
-            socket.setSoTimeout(IDLE_READ_TIMEOUT_MS);
-            PeerAddress remoteAddress = new PeerAddress(socket.getInetAddress(), socket.getPort());
-            PeerConnection connection = new PeerConnection(socket, in, out, remoteAddress, remoteHandshake.peerId(),
-                    listener, rateLimiters, true, PeerSource.UNKNOWN);
+            transport.setSoTimeout(IDLE_READ_TIMEOUT_MS);
+            PeerAddress remoteAddress = new PeerAddress(transport.getInetAddress(), transport.getPort());
+            PeerConnection connection = new PeerConnection(transport, in, out, remoteAddress,
+                    remoteHandshake.peerId(), listener, rateLimiters, true, PeerSource.UNKNOWN);
             connection.startReadLoop();
             connection.sendExtendedHandshakeIfSupported(remoteHandshake, extensionsToAdvertise);
             return connection;
         } catch (IOException | RuntimeException e) {
-            closeQuietly(socket);
+            closeQuietly(transport);
             throw e;
         }
     }
@@ -316,6 +363,14 @@ public final class PeerConnection implements AutoCloseable {
     private static void closeQuietly(Socket socket) {
         try {
             socket.close();
+        } catch (IOException ignored) {
+            // best effort - we're already handling a failure
+        }
+    }
+
+    private static void closeQuietly(PeerTransport transport) {
+        try {
+            transport.close();
         } catch (IOException ignored) {
             // best effort - we're already handling a failure
         }
@@ -434,7 +489,7 @@ public final class PeerConnection implements AutoCloseable {
             return;
         }
         closed = true;
-        closeQuietly(socket);
+        closeQuietly(transport);
         listener.onDisconnected(this, cause);
     }
 

@@ -708,23 +708,136 @@ complete**, per the phased scope in [[0009-phased-scope]]:
   rule out genuine input-validation/preview logic or per-viewer ergonomics (remembered UI state)
   - only logic that stands in for durable backend state.
   ([[0071-thin-frontend-as-a-standing-consideration]])
+- **Per-torrent bandwidth and connection limits (2026-09-12)** — picked from `TODO.md`, the
+  "deserves its own decision" item flagged when the qBittorrent-parity metrics work landed. One
+  combined feature, one `TorrentLimitOverride` record (upload/download/max-connections), one
+  marker file (`.grimtorrenter-torrent-limit-override`, config-side per
+  [[0065-config-side-per-torrent-storage]]), one context-menu dialog - structurally the same
+  shape [[0054-seeding-limits]] already established, reusing that dialog's `LimitMode`/
+  `modeFor`/`sentinelFor`/`modeOptions` helpers (extracted to a shared `limit-mode.ts`) for a
+  third row rather than inventing a new UI paradigm. Two real, deliberate asymmetries from
+  seeding limits' own precedent, both confirmed with the user:
+  - **A per-torrent bandwidth override *replaces* the global cap for that torrent, rather than
+    nesting under it** - a departure from [[0042-rate-limiting]]'s original "one global cap over
+    combined traffic" framing. `RateLimiters` (previously a bare record) became a small class
+    backed by a `Supplier<RateLimiter>` per direction so `forTorrent()` can pick, live on every
+    call, between the literal shared global `RateLimiter` (inherit) or a dedicated per-torrent
+    one (override) - zero changes needed at either real call site
+    (`PeerConnection.java:369,508`). Accepted tradeoff, stated plainly: an overridden torrent's
+    traffic is no longer bounded by the global cap at all, so total engine bandwidth can exceed
+    the configured limit once any torrent is overridden.
+  - **The connections override is resolved once, at construction/restore time only - not live**,
+    unlike bandwidth. A `Semaphore`'s permit count can't be live-resized the way a
+    `RateLimiter`'s limit can; building that resizing was judged disproportionate effort for
+    this feature. Precisely: `pauseTorrent()`/`resumeTorrent()` reuse the same `TorrentSession`
+    object, so a change only takes effect on a full app restart or a remove-and-re-add of that
+    torrent, never on a plain pause/resume - both the Settings-page row and the dialog's own
+    copy say this exactly, not a vaguer "restart required." `MAX_CONNECTIONS` (a hardcoded
+    constant, never previously user-facing) became `DEFAULT_MAX_CONNECTIONS` plus a real
+    `Settings.maxConnectionsPerTorrent` field and per-session instance field. Explicit-`0`-for-
+    connections resolves to `Integer.MAX_VALUE`, the same "unbounded" convention
+    `pieceVerificationLimiter`'s own lower-arity overload already uses.
+  New `GET`/`PUT /api/torrents/{infoHash}/limits`, exact mirror of the seeding-limits REST pair.
+  ([[0072-per-torrent-limits]])
+- **Tracker and peer-source details dialog (2026-09-12)** — picked from `PROGRESS.md`'s own
+  suggested-next-steps list / `TODO.md`'s 2026-09-06 "UI idea, still open." Turned out to be a
+  pure display gap, zero backend/REST changes: `TrackerView`/`Tracker` already carried
+  seeders/leechers/peers for every tracker (just never shown for a *working* one - only hidden
+  in a tooltip on non-working ones), and per-peer `source`/`percentAvailable`
+  ([[0066-peer-diagnostics]]/[[0067-per-peer-progress-and-tracker-metrics]]) were already fully
+  delivered by the existing `/peers` endpoint. New `TrackerDetailsDialog`, fully self-sufficient
+  (fetches both trackers and peers itself, each via its own small visibility-gated poll -
+  `pollWhileInput`, the existing shared helper, is keyed to a string and can't gate on a plain
+  boolean), opened identically from a small trigger at the top of *both* the Trackers tab and
+  the Peers tab (a plain styled `<button>`, not `p-button` - no existing small-link precedent
+  elsewhere in the app to match instead, and duplicated per-component since styles are scoped
+  that way here). One combined dialog, not two - the peer-source breakdown already treats
+  "Tracker" as one of its own rows, so splitting it would either duplicate tracker info or
+  arbitrarily drop that row depending on entry point; mirrors qBittorrent's own layout (the
+  original inspiration), which shows DHT/PeX/LSD inside its trackers view rather than
+  separately. Both main tabs are otherwise completely unchanged, keeping the style guide's
+  deliberate "N trackers working" collapse rather than reopening it. Two halves inside the
+  dialog: a full per-tracker table (every tracker, not just non-working), and a peer-source
+  connected/seeding breakdown (Tracker/DHT/PeX/LSD/"Other (incoming)", always all five rows) -
+  the latter computed entirely client-side from the `/peers` response, the
+  [[0071-thin-frontend-as-a-standing-consideration]]-aligned choice here specifically because
+  nothing outside this on-demand dialog needs the aggregate (unlike `usesDht`/`usesLsd`, which
+  ride the always-broadcast `TorrentView` because the main tab view needs them too). Introduces
+  a new "counts as seeding" convention (`percentAvailable >= 1`) that didn't exist anywhere in
+  the frontend before. ([[0073-tracker-and-peer-source-details]], including its own same-day
+  addendum)
+- **µTP (BEP 29) transport, slice 1 of 5: wire codec + standalone reliable-delivery state
+  machine (2026-09-13)** — picked from `TODO.md`, full commitment confirmed with the user after
+  an explicit cost/benefit review (the peer connection layer has been TCP-only since
+  [[0015-peer-connection]], never a deliberate decision; the review weighed that against real
+  costs - this being comparable in scope to [[0028-magnet-links-and-dht]], a genuinely new
+  per-connection resource-timing shape [[0007-concurrency-model]] didn't cover, and a benefit
+  this project's own peer/seed-count investigation suggests is real but secondary to the
+  connection-management fixes already shipped). New `utp` package: `UtpPacketType`/`UtpPacket`/
+  `UtpPacketCodec` (the 20-byte BEP 29 header, styled after `dht/KrpcCodec.java`) and `UtpSocket`
+  (handshake, wraparound-safe seq/ack tracking, Jacobson/Karels RTO estimation with Karn's
+  algorithm, per-packet retransmission with no selective-ack yet, a fixed non-LEDBAT interim
+  congestion window) - entirely standalone, not wired into `PeerConnection`/`TorrentSession`/
+  `DhtNode` (slices 2-4) or replaced with real LEDBAT (slice 5) yet. Two real bugs caught by the
+  test suite and fixed same-day: the initiator's own connection-ID assignment was backwards
+  (every post-handshake packet carried the wrong ID and was silently rejected by the acceptor,
+  hanging every data-transfer test), and `UtpPacket`'s generated `equals()` compared its
+  `byte[]` payload field by reference identity rather than content (a well-known Java records
+  gotcha). See [[0074-utp-transport]]'s own slice 1 implementation notes for both.
+- **µTP (BEP 29) transport, slice 2 of 5: `PeerConnection` transport facade (2026-09-13)** — new
+  `PeerTransport` interface (`peer` package - `getInetAddress`/`getPort`/`setSoTimeout`/`close`,
+  the four `Socket`-specific operations `PeerConnection` needs beyond the `InputStream`/
+  `OutputStream` pair it already treats independently) plus `SocketPeerTransport`/
+  `UtpPeerTransport` adapters, so `PeerConnection` can sit on either transport. The dependency
+  runs one way (`peer` → `utp`) - `UtpSocket` itself never references `PeerTransport`, gaining
+  only new, transport-agnostic public methods (`getInputStream()`/`getOutputStream()` via new
+  `UtpInputStream`/`UtpOutputStream`, mirroring `mse`'s own `Rc4InputStream`/`Rc4OutputStream`;
+  `remoteAddress()`; `setReceiveTimeoutMillis()`, closing a real gap - without it a silently-dead
+  µTP peer would hang `PeerConnection`'s read loop forever, since µTP has no equivalent of a TCP
+  socket's own "peer is gone" read failure). **Every existing `PeerConnection` call site and
+  test is completely unchanged** - the only diff is internal (`Socket` field → `PeerTransport`).
+  New package-private `connectViaUtp()`/`acceptViaUtp()` (not a production entry point yet -
+  slices 3-4 decide that) exist purely so a new test could prove the facade carries a genuinely
+  real BT handshake and message over a real `UtpSocket` pair, not just compile. One real bug
+  caught in review (a cleanup-robustness regression in the refactor) and one real test flake
+  caught by the actual `mvn test` run (both real sides in the new test advertise BEP 10
+  extension-protocol support, unlike every existing `PeerConnectionTest` fake peer, so both
+  auto-fire an extended handshake message that raced the test's own explicit message) - both
+  fixed same-day, see [[0074-utp-transport]]'s own slice 2 implementation notes.
+- **µTP (BEP 29) transport, slice 3 of 5: inbound wiring (2026-09-13)** — `DhtNode` now demuxes
+  µTP from KRPC on its own shared UDP socket/port (a new `utp.UtpAcceptor` registry, keyed by
+  remote address + connection id, that's the only thing allowed to call `socket.receive()`) and
+  routes an accepted connection into `TorrentSession` by info hash, mirroring `PeerServer`'s own
+  TCP path end to end via three new siblings (`peer.UtpIncomingConnectionHandler`/
+  `peer.UtpPeerAcceptor`/`TorrentSession.acceptIncomingUtpConnection`) rather than force-fitting
+  the existing `Socket`-typed `IncomingConnectionHandler` a µTP connection has no real socket
+  for. `UtpSocket` itself gained a second, shared-socket mode (`acceptShared()`/
+  `deliverIncoming()`/`setOnClosed()`) alongside its original self-contained one - the "many
+  connections sharing `DhtNode`'s one socket" design work slice 1 explicitly deferred. Gated
+  behind new `Settings.utpEnabled` (default off, restart-required, exposed in the Network
+  settings group) - introduced in this slice rather than deferred to slice 4 as originally
+  scoped, since the interim congestion window's "not yet a polite citizen" risk applies to
+  accepting an inbound connection just as much as initiating an outbound one, and real clients
+  already attempt inbound µTP against any reachable peer regardless of this codebase's own
+  outbound support. Test-verified end to end, including a real `UtpSocket` connecting against
+  `DhtNode` while ordinary DHT `ping()` traffic flows through the very same socket
+  (`DhtNodeUtpTest`) - `mvn test` passed cleanly on the first run, no bugs found. See
+  [[0074-utp-transport]]'s own slice 3 implementation notes.
 
 **Not yet built** (the rest of Phase 3):
 
-- Per-torrent rate limit overrides and multiple/day-of-week-specific schedule rules — the
-  remaining natural additions to the rate-limiting settings group
-  ([[0045-settings-page]], [[0046-rate-limit-schedule]]). **Deliberately pushed to the back of
-  the backlog** (2026-08-25 user decision) — both have a plausible but marginal real-world
-  case (per-torrent overrides is at least precedented in real clients, but largely substitutable
-  by pause/resume; multi-rule scheduling is a narrow edge case the existing single daily window
-  already mostly covers), and lower priority than seeding limits (now built), which reflected a
-  much more common real-world need.
+- Multiple/day-of-week-specific rate-limit schedule rules — the one remaining natural addition
+  to the rate-limiting settings group ([[0045-settings-page]], [[0046-rate-limit-schedule]]).
+  **Deliberately pushed to the back of the backlog** (2026-08-25 user decision) — a narrow edge
+  case the existing single daily window already mostly covers, lower priority than seeding
+  limits/per-torrent limits (both now built), which reflected more common real-world needs.
+  Per-torrent rate limit overrides, originally bundled with this item, are now built - see
+  [[0072-per-torrent-limits]] below.
 - The "multi-torrent global bandwidth budget" item from [[0009-phased-scope]]'s original list
-  is now considered **retired as its own item** — it predates [[0042-rate-limiting]], which
-  already delivered exactly that (one global cap shared across every torrent's combined
-  traffic). If something more specific was meant by it (e.g. fair per-torrent allocation when
-  the global cap is saturated), that's really the per-torrent-overrides item above, not a
-  separate one.
+  is now considered **retired as its own item** — it predates [[0042-rate-limiting]] (the global
+  cap) and [[0072-per-torrent-limits]] (per-torrent overrides, including the "fair allocation
+  when the global cap is saturated" case this item's more specific reading would have meant),
+  both of which already deliver what it was asking for.
 
 ### Engine stability/scale
 
@@ -836,38 +949,34 @@ speed, tracker peer count, re-announce countdown) — along with two user-raised
 working nearby (SPA fallback routing for direct navigation/refresh, and persisting a torrent's
 existence before starting it rather than after) and a genuinely new feature shape, pending
 magnets as a first-class REST-visible/restart-durable state, which also produced a new standing
-design consideration (thin frontend) alongside the existing stability one:
+design consideration (thin frontend) alongside the existing stability one. Per-torrent
+bandwidth/connection limits and the tracker/peer-source details dialog (both picked from
+`TODO.md`, 2026-09-12) are also now done:
 
-1. **Peer-source summary UI in the Trackers tab** — DHT/PeX/LSD as their own rows alongside real
-   trackers, each with per-source seed/peer/leech counts (from a qBittorrent screenshot
-   comparison, `TODO.md`, 2026-09-06) — the data already exists (`TrackerStatus`, and now
-   per-source peer attribution from [[0066-peer-diagnostics]]), it's a display gap, not a
-   backend one. Flagged in `TODO.md` as more valuable now that more trackers show real
-   `WORKING` status after the concurrent-announce fix.
-2. **Per-torrent bandwidth/connection limits** — a real feature gap (only global + scheduled
-   limits exist today, [[0042-rate-limiting]]/[[0046-rate-limit-schedule]]), explicitly kept out
-   of the metrics-bundle work above and flagged in `TODO.md` as deserving its own design doc
-   when picked up.
-3. **µTP (BEP 29) transport support** — the peer connection layer has been TCP-only since
-   [[0015-peer-connection]], the first peer-connection design doc, never a deliberate decision. Two real costs
-   beyond a missing UI column: a shrunk effective peer pool (can't reach µTP-only peers) and no
-   LEDBAT congestion backoff (more likely to saturate a shared home connection than a
-   µTP-capable client). Flagged in `TODO.md` as a substantial, self-contained subsystem needing
-   its own design doc — would also unlock the Peers tab's currently-excluded "Connection type"
-   column.
-4. **Per-tracker independent announce scheduling** — the more-correct alternative to the current
+1. **µTP (BEP 29) transport, slices 4-5** — slices 1 (wire codec + standalone reliable-delivery
+   state machine, `UtpSocket`), 2 (the `PeerTransport` facade so `PeerConnection` can sit on
+   either transport), and 3 (inbound wiring - `DhtNode` demuxes µTP from KRPC on its shared UDP
+   socket and routes accepted connections into `TorrentSession` by info hash) are done and
+   test-verified; see [[0074-utp-transport]]. Gated behind new `Settings.utpEnabled` (default
+   off, restart-required - introduced in slice 3 rather than deferred to slice 4, since the
+   interim congestion window's citizenship risk applies to accepting a connection just as much
+   as initiating one). Next up is slice 4 (outbound wiring, µTP-first/TCP-fallback in
+   `TorrentSession.attemptConnect()`) - the Peers tab's currently-excluded "Connection type"
+   column becomes buildable once it lands. Slice 5 (real LEDBAT, replacing the interim fixed
+   congestion window) is what lets `Settings.utpEnabled` reasonably default on.
+2. **Per-tracker independent announce scheduling** — the more-correct alternative to the current
    shared-cycle concurrent-announce model ([[0022-multi-tracker-fallback]]), deferred as
    substantially bigger scope (`MultiTrackerClient` would need to own scheduling and push peers
    back asynchronously). Worth revisiting if the shared model's soft politeness cost (some
    trackers polled more often than their own stated interval) turns out to matter in practice.
-5. **Retrying a failed peer address after a cooldown** — `failedAddresses` exclusion is
+3. **Retrying a failed peer address after a cooldown** — `failedAddresses` exclusion is
    currently permanent for the whole session; deferred as the simpler option when the
    connection-refill fix landed (2026-09-06), worth revisiting if evidence shows transient
    failures (NAT timing, a briefly-offline peer) actually cost real peer count in practice.
-6. Smaller/unscoped `TODO.md` items: a notification service, running a user-configured script
+4. Smaller/unscoped `TODO.md` items: a notification service, running a user-configured script
    automatically on torrent completion, multi-select on the torrent list
    (checkboxes/shift-click for bulk Pause/Resume/Remove, 2026-09-03), and UI themes.
-7. The pending-action-vs-2s-snapshot-lag gap noted above, if it proves to matter in practice.
-8. The rate-limiting settings group's remaining natural additions (per-torrent overrides,
-   multi-rule schedule) — pushed to the back of the backlog (2026-08-25), marginal real-world
-   value relative to the items above.
+5. The pending-action-vs-2s-snapshot-lag gap noted above, if it proves to matter in practice.
+6. The rate-limiting settings group's one remaining natural addition (a multi-rule schedule,
+   per-torrent overrides now done via [[0072-per-torrent-limits]]) — pushed to the back of the
+   backlog (2026-08-25), marginal real-world value relative to the items above.

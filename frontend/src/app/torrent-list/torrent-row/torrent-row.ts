@@ -16,6 +16,7 @@ import { ActiveContextMenuRegistry } from '../../shared/active-context-menu-regi
 import { RateTrend } from '../../shared/rate-trend/rate-trend';
 import { torrentStateDisplay } from '../../shared/status-display';
 import { SeedingLimitsDialog } from './seeding-limits-dialog/seeding-limits-dialog';
+import { TorrentLimitsDialog } from './torrent-limits-dialog/torrent-limits-dialog';
 
 /**
  * One torrent's row. An attribute selector on `tr` (not an element selector) so its
@@ -46,6 +47,7 @@ import { SeedingLimitsDialog } from './seeding-limits-dialog/seeding-limits-dial
     FormatRatePipe,
     RateTrend,
     SeedingLimitsDialog,
+    TorrentLimitsDialog,
   ],
   templateUrl: './torrent-row.html',
   styleUrl: './torrent-row.scss',
@@ -95,6 +97,9 @@ export class TorrentRow {
    * this row's own template - same self-contained-per-row pattern as the row's own
    * p-contextMenu, rather than a new shared dialog service. See design_docs/0054. */
   readonly showSeedingLimitsDialog = signal(false);
+
+  /** Same self-contained-per-row pattern as showSeedingLimitsDialog above. See design_docs/0072. */
+  readonly showTorrentLimitsDialog = signal(false);
 
   readonly infoHash = computed(() => this.torrent().infoHash);
   readonly name = computed(() => this.torrent().name);
@@ -168,6 +173,12 @@ export class TorrentRow {
         icon: 'pi pi-gauge',
         disabled: this.isFetchingMetadata(),
         command: () => this.showSeedingLimitsDialog.set(true),
+      },
+      {
+        label: 'Torrent limits…',
+        icon: 'pi pi-sliders-h',
+        disabled: this.isFetchingMetadata(),
+        command: () => this.showTorrentLimitsDialog.set(true),
       },
       { separator: true },
       { label: 'Remove', icon: 'pi pi-trash', disabled, command: () => this.onRemove() },

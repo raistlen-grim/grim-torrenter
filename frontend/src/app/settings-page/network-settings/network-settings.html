@@ -116,4 +116,39 @@
       </p-inputgroup>
     </div>
   </div>
+
+  <div class="settings-row">
+    <div class="settings-row-label">
+      <label for="maxConnectionsPerTorrent">Max connections per torrent</label>
+      <p class="settings-row-description">
+        Default connection cap for each torrent (overridable per torrent from its own "Torrent
+        limits…" menu). Takes effect the next time a torrent is restarted or re-added, not on
+        pause/resume.
+      </p>
+    </div>
+    <div class="settings-row-control">
+      <p-inputgroup class="settings-number-group">
+        <p-inputnumber
+          inputId="maxConnectionsPerTorrent"
+          formControlName="maxConnectionsPerTorrent"
+          [min]="1"
+          [showButtons]="false"
+          inputStyleClass="settings-number-input"
+        />
+      </p-inputgroup>
+    </div>
+  </div>
+
+  <div class="settings-row">
+    <div class="settings-row-label">
+      <label for="utpEnabled">µTP (experimental)</label>
+      <p class="settings-row-description">
+        Accept incoming peer connections over µTP, alongside TCP. Inbound only for now - this
+        app still only ever connects out over TCP. Takes effect after the app restarts.
+      </p>
+    </div>
+    <div class="settings-row-control">
+      <p-toggleswitch inputId="utpEnabled" formControlName="utpEnabled" />
+    </div>
+  </div>
 </div>

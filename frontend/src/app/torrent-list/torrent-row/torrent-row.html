@@ -81,4 +81,10 @@
     [visible]="showSeedingLimitsDialog()"
     (visibleChange)="showSeedingLimitsDialog.set($event)"
   />
+  <app-torrent-limits-dialog
+    [infoHash]="infoHash()"
+    [torrentName]="name()"
+    [visible]="showTorrentLimitsDialog()"
+    (visibleChange)="showTorrentLimitsDialog.set($event)"
+  />
 </td>

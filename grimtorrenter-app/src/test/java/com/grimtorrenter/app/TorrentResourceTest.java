@@ -285,6 +285,7 @@ class TorrentResourceTest {
         given().when().get("/api/torrents/" + unknownHash + "/peers").then().statusCode(404);
         given().when().get("/api/torrents/" + unknownHash + "/trackers").then().statusCode(404);
         given().when().get("/api/torrents/" + unknownHash + "/seeding-limits").then().statusCode(404);
+        given().when().get("/api/torrents/" + unknownHash + "/limits").then().statusCode(404);
     }
 
     /** -1 for both fields is SeedingLimitOverride.INHERIT - a fresh upload has never had its
@@ -320,6 +321,44 @@ class TorrentResourceTest {
                 .then().statusCode(200)
                 .body("ratioLimit", equalTo(3.0f))
                 .body("timeLimitMinutes", equalTo(90));
+    }
+
+    /** -1 for all three fields is TorrentLimitOverride.INHERIT - a fresh upload has never had
+     * its override touched. See design_docs/0072. */
+    @Test
+    void getLimitsReturnsInheritForAFreshUpload() {
+        byte[] torrent = torrentBytes("limits-fresh.bin", new byte[]{1, 2, 3});
+        String infoHash = upload(torrent);
+
+        given()
+                .when().get("/api/torrents/" + infoHash + "/limits")
+                .then().statusCode(200)
+                .body("uploadBytesPerSecOverride", equalTo(-1))
+                .body("downloadBytesPerSecOverride", equalTo(-1))
+                .body("maxConnectionsOverride", equalTo(-1));
+    }
+
+    @Test
+    void putLimitsUpdatesTheOverrideAndGetReflectsIt() {
+        byte[] torrent = torrentBytes("limits-update.bin", new byte[]{1, 2, 3});
+        String infoHash = upload(torrent);
+
+        given()
+                .contentType(ContentType.JSON)
+                .body("""
+                        {"uploadBytesPerSecOverride": 500000, "downloadBytesPerSecOverride": 250000, "maxConnectionsOverride": 10}""")
+                .when().put("/api/torrents/" + infoHash + "/limits")
+                .then().statusCode(200)
+                .body("uploadBytesPerSecOverride", equalTo(500000))
+                .body("downloadBytesPerSecOverride", equalTo(250000))
+                .body("maxConnectionsOverride", equalTo(10));
+
+        given()
+                .when().get("/api/torrents/" + infoHash + "/limits")
+                .then().statusCode(200)
+                .body("uploadBytesPerSecOverride", equalTo(500000))
+                .body("downloadBytesPerSecOverride", equalTo(250000))
+                .body("maxConnectionsOverride", equalTo(10));
     }
 
     private static String upload(byte[] torrent) {

@@ -43,13 +43,16 @@ import com.grimtorrenter.engine.tracker.TrackerEvent;
 import com.grimtorrenter.engine.tracker.TrackerRequest;
 import com.grimtorrenter.engine.tracker.TrackerResponse;
 import com.grimtorrenter.engine.tracker.TrackerStatus;
+import com.grimtorrenter.engine.utp.UtpSocket;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.DatagramSocket;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.file.Files;
@@ -65,6 +68,9 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -1000,6 +1006,52 @@ class TorrentSessionTest {
         }
         fakePeer.join(2000);
         assertEquals(new Port(6881), receivedPort.get());
+    }
+
+    /** acceptIncomingUtpConnection() is the µTP counterpart to acceptIncomingConnection() above
+     * (design_docs/0074's slice 3) - same shape, a real UtpSocket pair standing in for what
+     * UtpPeerAcceptor would hand over in production, having already completed its own uTP-level
+     * handshake and read the remote's BT handshake before calling this. */
+    @Test
+    void acceptIncomingUtpConnectionAdoptsARemotelyInitiatedConnection(@TempDir Path tempDir) throws Exception {
+        TorrentMetadata metadata = singlePieceMetadata(fill(20, 2));
+        InfoHash infoHash = metadata.infoHash();
+        PeerId remoteId = PeerId.of(fill(20, 51));
+
+        DatagramSocket acceptorSocket = new DatagramSocket();
+        DatagramSocket initiatorSocket = new DatagramSocket();
+        ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+        UtpSocket initiator;
+        UtpSocket accepted;
+        try {
+            Future<UtpSocket> acceptFuture = executor.submit(() -> UtpSocket.accept(acceptorSocket));
+            initiator = UtpSocket.connect(initiatorSocket,
+                    new InetSocketAddress(InetAddress.getLoopbackAddress(), acceptorSocket.getLocalPort()));
+            accepted = acceptFuture.get(10, TimeUnit.SECONDS);
+        } finally {
+            executor.shutdown();
+        }
+        try {
+            PeerWireCodec.writeHandshake(initiator.getOutputStream(), Handshake.of(infoHash, remoteId));
+            Handshake remoteHandshake = PeerWireCodec.readHandshake(accepted.getInputStream());
+
+            TorrentSession session = TorrentSession.create(metadata, new FakeTrackerClient(), tempDir,
+                    fakeRemotePeerId(), 6881, new RecordingListener(), null);
+            try {
+                session.start();
+                session.acceptIncomingUtpConnection(accepted, remoteHandshake);
+
+                List<TorrentSession.PeerSnapshot> peers = awaitOnePeer(session);
+                assertEquals(1, peers.size());
+                assertEquals(remoteId, peers.get(0).peerId());
+            } finally {
+                session.stop();
+            }
+        } finally {
+            initiator.close();
+            initiatorSocket.close();
+            acceptorSocket.close();
+        }
     }
 
     /** Extracts the id a peer's own extended handshake (extendedMessageId 0) advertised

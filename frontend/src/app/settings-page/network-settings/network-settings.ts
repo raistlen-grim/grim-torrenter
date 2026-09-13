@@ -15,6 +15,8 @@ export type NetworkSettingsForm = FormGroup<{
   dhtRefreshIntervalSeconds: FormControl<number>;
   lsdEnabled: FormControl<boolean>;
   lsdAnnounceIntervalSeconds: FormControl<number>;
+  maxConnectionsPerTorrent: FormControl<number>;
+  utpEnabled: FormControl<boolean>;
 }>;
 
 export function buildNetworkSettingsForm(settings: Settings): NetworkSettingsForm {
@@ -28,6 +30,8 @@ export function buildNetworkSettingsForm(settings: Settings): NetworkSettingsFor
     dhtRefreshIntervalSeconds: new FormControl(settings.dhtRefreshIntervalSeconds, { nonNullable: true }),
     lsdEnabled: new FormControl(settings.lsdEnabled, { nonNullable: true }),
     lsdAnnounceIntervalSeconds: new FormControl(settings.lsdAnnounceIntervalSeconds, { nonNullable: true }),
+    maxConnectionsPerTorrent: new FormControl(settings.maxConnectionsPerTorrent, { nonNullable: true }),
+    utpEnabled: new FormControl(settings.utpEnabled, { nonNullable: true }),
   });
 }
 
@@ -39,6 +43,8 @@ export function networkSettingsPatch(value: {
   dhtRefreshIntervalSeconds: number;
   lsdEnabled: boolean;
   lsdAnnounceIntervalSeconds: number;
+  maxConnectionsPerTorrent: number;
+  utpEnabled: boolean;
 }): Partial<Settings> {
   return {
     dhtEnabled: value.dhtEnabled,
@@ -48,6 +54,8 @@ export function networkSettingsPatch(value: {
     dhtRefreshIntervalSeconds: value.dhtRefreshIntervalSeconds,
     lsdEnabled: value.lsdEnabled,
     lsdAnnounceIntervalSeconds: value.lsdAnnounceIntervalSeconds,
+    maxConnectionsPerTorrent: value.maxConnectionsPerTorrent,
+    utpEnabled: value.utpEnabled,
   };
 }
 
@@ -64,7 +72,13 @@ export function networkSettingsPatch(value: {
  * construction/restart rather than a torrent's next start() - see Settings.java's own Javadoc
  * (design_docs/0028's own 2026-08-30 addendum). lsdEnabled/lsdAnnounceIntervalSeconds
  * (design_docs/0062) are both restart-required, same shape as dhtEnabled/
- * dhtRefreshIntervalSeconds respectively.
+ * dhtRefreshIntervalSeconds respectively. maxConnectionsPerTorrent (design_docs/0072) is the
+ * global default a per-torrent override (the row-level "Torrent limits…" dialog) inherits from
+ * unless it sets its own - takes effect only the next time a torrent is constructed (a restart
+ * or a remove-and-re-add), not on a plain pause/resume, since it sizes a Semaphore that can't
+ * be live-resized the way a RateLimiter's limit can. utpEnabled (design_docs/0074's slice 3) is
+ * also restart-required, same shape as dhtEnabled - gates real inbound µTP connections, off by
+ * default since this client's own µTP congestion control is still deliberately unsophisticated.
  */
 @Component({
   selector: 'app-network-settings',

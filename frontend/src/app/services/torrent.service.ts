@@ -9,6 +9,7 @@ import {
   SeedingLimitOverride,
   Torrent,
   TorrentFile,
+  TorrentLimitOverride,
   Tracker,
 } from '../models/torrent.model';
 
@@ -72,5 +73,13 @@ export class TorrentService {
 
   updateSeedingLimits(infoHash: string, override: SeedingLimitOverride): Observable<SeedingLimitOverride> {
     return this.http.put<SeedingLimitOverride>(`${this.baseUrl}/${infoHash}/seeding-limits`, override);
+  }
+
+  limits(infoHash: string): Observable<TorrentLimitOverride> {
+    return this.http.get<TorrentLimitOverride>(`${this.baseUrl}/${infoHash}/limits`);
+  }
+
+  updateLimits(infoHash: string, override: TorrentLimitOverride): Observable<TorrentLimitOverride> {
+    return this.http.put<TorrentLimitOverride>(`${this.baseUrl}/${infoHash}/limits`, override);
   }
 }

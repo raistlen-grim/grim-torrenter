@@ -4,6 +4,7 @@ import com.grimtorrenter.engine.engine.TorrentEngine;
 import com.grimtorrenter.engine.magnet.MagnetLink;
 import com.grimtorrenter.engine.metainfo.InfoHash;
 import com.grimtorrenter.engine.torrent.SeedingLimitOverride;
+import com.grimtorrenter.engine.torrent.TorrentLimitOverride;
 import com.grimtorrenter.engine.torrent.TorrentSession;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.BadRequestException;
@@ -160,6 +161,26 @@ public class TorrentResource {
         InfoHash infoHash = parseInfoHash(infoHashHex);
         torrentEngine.setSeedingLimitOverride(infoHash, override);
         return requireSession(infoHashHex).seedingLimitOverride();
+    }
+
+    /** No DTO wrapper - TorrentLimitOverride has no engine internals to hide, same reasoning as
+     * seedingLimits() above. See design_docs/0072. */
+    @GET
+    @Path("/{infoHash}/limits")
+    @Produces(MediaType.APPLICATION_JSON)
+    public TorrentLimitOverride limits(@PathParam("infoHash") String infoHashHex) {
+        return requireSession(infoHashHex).torrentLimits();
+    }
+
+    @PUT
+    @Path("/{infoHash}/limits")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    public TorrentLimitOverride updateLimits(@PathParam("infoHash") String infoHashHex,
+                                              TorrentLimitOverride override) {
+        InfoHash infoHash = parseInfoHash(infoHashHex);
+        torrentEngine.setTorrentLimits(infoHash, override);
+        return requireSession(infoHashHex).torrentLimits();
     }
 
     private TorrentSession requireSession(String infoHashHex) {

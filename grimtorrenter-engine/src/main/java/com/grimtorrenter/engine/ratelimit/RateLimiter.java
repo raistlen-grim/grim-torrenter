@@ -3,6 +3,7 @@ package com.grimtorrenter.engine.ratelimit;
 import com.grimtorrenter.engine.settings.Settings;
 import com.grimtorrenter.engine.settings.SettingsStore;
 
+import java.util.function.LongSupplier;
 import java.util.function.ToLongFunction;
 
 /**
@@ -32,15 +33,27 @@ public final class RateLimiter {
 
     private static final long DEFAULT_BURST_SECONDS = 1;
 
-    private final SettingsStore settingsStore;
-    private final ToLongFunction<Settings> limitBytesPerSecond;
+    private final LongSupplier limitBytesPerSecond;
+    private final LongSupplier burstSecondsSupplier;
 
     private double availableTokens;
     private long lastRefillNanos = System.nanoTime();
 
-    public RateLimiter(SettingsStore settingsStore, ToLongFunction<Settings> limitBytesPerSecond) {
-        this.settingsStore = settingsStore;
+    /** The general-purpose constructor - both the limit and the burst window are read fresh
+     * on every acquire() call via these suppliers, so this class has no idea whether either
+     * one is backed by a shared SettingsStore, a per-torrent override, or anything else. See
+     * design_docs/0072 - this generalization is what lets RateLimiters.forTorrent() build a
+     * dedicated per-torrent RateLimiter without needing a SettingsStore of its own. */
+    public RateLimiter(LongSupplier limitBytesPerSecond, LongSupplier burstSecondsSupplier) {
         this.limitBytesPerSecond = limitBytesPerSecond;
+        this.burstSecondsSupplier = burstSecondsSupplier;
+    }
+
+    /** Convenience overload for the common case - reads both the limit and the burst window
+     * from the same live Settings snapshot. */
+    public RateLimiter(SettingsStore settingsStore, ToLongFunction<Settings> limitBytesPerSecond) {
+        this(() -> limitBytesPerSecond.applyAsLong(settingsStore.current()),
+                () -> burstSeconds(settingsStore.current()));
     }
 
     /** Blocks the calling thread, in short increments (re-reading the live limit each time
@@ -55,12 +68,11 @@ public final class RateLimiter {
         while (true) {
             long waitMs;
             synchronized (this) {
-                Settings settings = settingsStore.current();
-                long limit = limitBytesPerSecond.applyAsLong(settings);
+                long limit = limitBytesPerSecond.getAsLong();
                 if (limit <= 0) {
                     return;
                 }
-                refill(limit, burstSeconds(settings), bytes);
+                refill(limit, burstSecondsSupplier.getAsLong(), bytes);
                 if (availableTokens >= bytes) {
                     availableTokens -= bytes;
                     return;
@@ -72,7 +84,10 @@ public final class RateLimiter {
         }
     }
 
-    private static long burstSeconds(Settings settings) {
+    /** Package-private, not private - RateLimiters.forTorrent() also needs this exact
+     * normalization for its dedicated per-torrent limiters, not just the SettingsStore-backed
+     * convenience constructor above. See design_docs/0072. */
+    static long burstSeconds(Settings settings) {
         long configured = settings.rateLimitBurstSeconds();
         return configured > 0 ? configured : DEFAULT_BURST_SECONDS;
     }

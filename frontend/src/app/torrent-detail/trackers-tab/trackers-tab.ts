@@ -1,5 +1,5 @@
 import { DatePipe } from '@angular/common';
-import { ChangeDetectionStrategy, Component, LOCALE_ID, computed, inject, input } from '@angular/core';
+import { ChangeDetectionStrategy, Component, LOCALE_ID, computed, inject, input, signal } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { TooltipModule } from 'primeng/tooltip';
 
@@ -8,6 +8,7 @@ import { TorrentEventsService } from '../../services/torrent-events.service';
 import { TorrentService } from '../../services/torrent.service';
 import { humanizeDuration } from '../../shared/humanize-duration';
 import { pollWhileInput } from '../../shared/poll-while-input';
+import { TrackerDetailsDialog } from './tracker-details-dialog/tracker-details-dialog';
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -21,10 +22,15 @@ const POLL_INTERVAL_MS = 3000;
  * times move into a tooltip on each still-individually-listed (non-working) tracker rather
  * than a column - not shown at all for a collapsed working tracker, matching the guide's own
  * "nobody reads it while it's healthy" philosophy rather than working around it.
+ *
+ * <p>This tab's own view stays exactly this simple - a richer per-tracker table (every tracker,
+ * not just non-working ones) plus a peer-source connected/seeding breakdown live in a separate,
+ * self-sufficient TrackerDetailsDialog instead, opened by a small trigger at the top of this
+ * tab (also opened, identically, from PeersTab - see design_docs/0073's own addendum).
  */
 @Component({
   selector: 'app-trackers-tab',
-  imports: [TooltipModule],
+  imports: [TooltipModule, TrackerDetailsDialog],
   templateUrl: './trackers-tab.html',
   styleUrl: './trackers-tab.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -38,6 +44,10 @@ export class TrackersTab {
   private readonly datePipe = new DatePipe(inject(LOCALE_ID));
 
   readonly infoHash = input.required<string>();
+
+  /** Opens TrackerDetailsDialog (design_docs/0073) - same self-contained-per-host toggle
+   * pattern as torrent-row's own seeding/torrent-limits dialogs. */
+  readonly showTrackerDetailsDialog = signal(false);
 
   readonly trackers = toSignal(
     pollWhileInput(this.infoHash, POLL_INTERVAL_MS, (infoHash) => this.torrentService.trackers(infoHash)),

@@ -1,5 +1,5 @@
 import { DecimalPipe } from '@angular/common';
-import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, input, signal } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { map } from 'rxjs';
 
@@ -10,6 +10,7 @@ import { FormatRatePipe } from '../../shared/format-rate.pipe';
 import { pollWhileInput } from '../../shared/poll-while-input';
 import { RateTrend } from '../../shared/rate-trend/rate-trend';
 import { RateTracker } from '../../shared/rate-tracker';
+import { TrackerDetailsDialog } from '../trackers-tab/tracker-details-dialog/tracker-details-dialog';
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -30,16 +31,26 @@ function peerKey(peer: Peer): string {
 /** Existing-field subset plus a client-side rate. `peerId` (raw BEP 20 hex, not yet decoded
  * into a client name - design_docs/0031 left that as a deferred, isolated utility) is still
  * absent; the guide's "Done" column (per-peer completion percentage) is now filled in via
- * `percentAvailable` - see design_docs/0067. */
+ * `percentAvailable` - see design_docs/0067.
+ *
+ * <p>Also opens TrackerDetailsDialog (design_docs/0073, shared with TrackersTab) via a small
+ * trigger at the top - the peer-source connected/seeding breakdown it shows is peer-discovery
+ * information just as relevant from this tab as from the Trackers tab, and the dialog is fully
+ * self-sufficient (fetches its own data), so hosting it here needs nothing beyond the toggle
+ * signal below. */
 @Component({
   selector: 'app-peers-tab',
-  imports: [DecimalPipe, FormatRatePipe, RateTrend],
+  imports: [DecimalPipe, FormatRatePipe, RateTrend, TrackerDetailsDialog],
   templateUrl: './peers-tab.html',
   styleUrl: './peers-tab.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class PeersTab {
   private readonly torrentService = inject(TorrentService);
+
+  /** Opens TrackerDetailsDialog - same self-contained-per-host toggle pattern as
+   * TrackersTab's own showTrackerDetailsDialog. See design_docs/0073. */
+  readonly showTrackerDetailsDialog = signal(false);
 
   /** Scoped to this component's lifetime, not shared with TorrentEventsService's
    * session-level trackers - a peer's key (address:port) only makes sense within one

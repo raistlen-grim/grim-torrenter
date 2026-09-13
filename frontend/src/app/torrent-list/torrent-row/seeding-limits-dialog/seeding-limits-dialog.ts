@@ -10,36 +10,9 @@ import { finalize, forkJoin } from 'rxjs';
 import { SeedingLimitOverride } from '../../../models/torrent.model';
 import { SettingsService } from '../../../services/settings.service';
 import { TorrentService } from '../../../services/torrent.service';
+import { LimitMode, modeFor, modeOptions, sentinelFor, syncValueDisabled } from '../limit-mode';
 
 const MINUTES_PER_HOUR = 60;
-
-/** Mirrors SeedingLimitOverride's own sentinel convention (design_docs/0054) as a form-
- * friendly 3-way choice, rather than exposing the raw negative/zero/positive number directly
- * - "Use default"/"Custom"/"No limit" is what a user actually picks between; the sentinel
- * encoding is this component's own implementation detail to translate to and from. */
-type LimitMode = 'default' | 'custom' | 'unlimited';
-
-function modeFor(sentinel: number): LimitMode {
-  if (sentinel < 0) {
-    return 'default';
-  }
-  return sentinel === 0 ? 'unlimited' : 'custom';
-}
-
-function sentinelFor(mode: LimitMode, customValue: number): number {
-  if (mode === 'default') {
-    return -1;
-  }
-  return mode === 'unlimited' ? 0 : customValue;
-}
-
-function modeOptions(defaultLabel: string): { label: string; value: LimitMode }[] {
-  return [
-    { label: defaultLabel, value: 'default' },
-    { label: 'Custom', value: 'custom' },
-    { label: 'No limit', value: 'unlimited' },
-  ];
-}
 
 /**
  * A torrent's override of the global seeding-limit defaults (design_docs/0054) - the first
@@ -172,13 +145,4 @@ export class SeedingLimitsDialog {
   close(): void {
     this.visibleChange.emit(false);
   }
-}
-
-/** The value field only makes sense while its mode is 'custom' - disabled otherwise, same
- * enable/disable-on-a-sibling-control's-value idea rate-limit-settings' own
- * syncUnlimitedDisabled already established for its 2-state case. */
-function syncValueDisabled(mode: FormControl<LimitMode>, value: FormControl<number>): void {
-  const apply = (currentMode: LimitMode) => (currentMode === 'custom' ? value.enable() : value.disable());
-  apply(mode.value);
-  mode.valueChanges.subscribe(apply);
 }

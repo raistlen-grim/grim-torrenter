@@ -97,4 +97,22 @@ class RateLimiterTest {
 
         assertTrue(elapsed < 100, "settings change should have made this unlimited, took " + elapsed + "ms");
     }
+
+    /** design_docs/0072 - the general-purpose (LongSupplier, LongSupplier) constructor, not
+     * backed by a SettingsStore at all, is what lets RateLimiters.forTorrent() build a
+     * dedicated per-torrent limiter reading a live TorrentLimitOverride instead. A mutable
+     * array stands in for that live source here. */
+    @Test
+    void theGeneralPurposeConstructorReadsBothSuppliersFreshOnEveryAcquireCall() {
+        long[] limit = {0};
+        RateLimiter limiter = new RateLimiter(() -> limit[0], () -> 1);
+
+        long firstElapsed = elapsedMs(() -> limiter.acquire(10_000_000));
+        assertTrue(firstElapsed < 100, "limit <= 0 should return immediately, took " + firstElapsed + "ms");
+
+        limit[0] = 1000;
+        long secondElapsed = elapsedMs(() -> limiter.acquire(1000));
+        assertTrue(secondElapsed >= 700,
+                "a live change to a real limit should now throttle, took " + secondElapsed + "ms");
+    }
 }

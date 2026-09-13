@@ -1,0 +1,65 @@
+<p-dialog
+  [visible]="visible()"
+  (visibleChange)="visibleChange.emit($event)"
+  [modal]="true"
+  [dismissableMask]="true"
+  header="Tracker & peer-source details"
+  styleClass="tracker-details-dialog"
+>
+  <section class="details-section">
+    <h3>Trackers</h3>
+    @if (trackers().length === 0) {
+      <p class="empty-message">No trackers — this torrent relies on DHT.</p>
+    } @else {
+      <table class="details-table">
+        <thead>
+          <tr>
+            <th>Tier</th>
+            <th>URL</th>
+            <th>Status</th>
+            <th>Seeders</th>
+            <th>Leechers</th>
+            <th>Peers</th>
+            <th>Last announced</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (tracker of trackers(); track tracker.url) {
+            <tr>
+              <td>{{ tracker.tier }}</td>
+              <td class="tracker-url" [title]="tracker.url">{{ tracker.url }}</td>
+              <td [class.tracker-alarm-status]="tracker.status === 'ERROR'">{{ tracker.status }}</td>
+              <td class="tabular-nums">{{ tracker.seeders ?? '—' }}</td>
+              <td class="tabular-nums">{{ tracker.leechers ?? '—' }}</td>
+              <td class="tabular-nums">{{ tracker.peers ?? '—' }}</td>
+              <td>{{ lastAnnouncedDisplay(tracker) }}</td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    }
+  </section>
+
+  <section class="details-section">
+    <h3>Peer sources</h3>
+    <p class="section-hint">Of currently connected peers, how each was originally discovered.</p>
+    <table class="details-table">
+      <thead>
+        <tr>
+          <th>Source</th>
+          <th>Connected</th>
+          <th>Seeding</th>
+        </tr>
+      </thead>
+      <tbody>
+        @for (row of peerSourceCounts(); track row.label) {
+          <tr>
+            <td>{{ row.label }}</td>
+            <td class="tabular-nums">{{ row.connected }}</td>
+            <td class="tabular-nums">{{ row.seeding }}</td>
+          </tr>
+        }
+      </tbody>
+    </table>
+  </section>
+</p-dialog>

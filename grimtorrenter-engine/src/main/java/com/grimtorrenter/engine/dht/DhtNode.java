@@ -6,6 +6,9 @@ import com.grimtorrenter.engine.bencode.BString;
 import com.grimtorrenter.engine.bencode.BValue;
 import com.grimtorrenter.engine.metainfo.InfoHash;
 import com.grimtorrenter.engine.tracker.PeerAddress;
+import com.grimtorrenter.engine.utp.UtpAcceptor;
+import com.grimtorrenter.engine.utp.UtpPacketCodec;
+import com.grimtorrenter.engine.utp.UtpSocket;
 
 import java.io.IOException;
 import java.net.DatagramPacket;
@@ -31,6 +34,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 /**
@@ -85,6 +89,7 @@ public final class DhtNode implements AutoCloseable {
     private final Map<BString, CompletableFuture<KrpcMessage>> pendingQueries = new ConcurrentHashMap<>();
     private final Map<InfoHash, Map<PeerAddress, Instant>> peerStore = new ConcurrentHashMap<>();
     private final Thread receiveLoopThread;
+    private final UtpAcceptor utpAcceptor;
     private volatile boolean closed;
 
     // Only ever read/rotated from the single receive-loop thread (issueToken/isValidToken
@@ -93,7 +98,23 @@ public final class DhtNode implements AutoCloseable {
     private byte[] previousSecret = randomSecret();
     private Instant secretRotatedAt = Instant.now();
 
+    /** No µTP wiring configured - every inbound ST_SYN completes the µTP-level handshake then is
+     * immediately closed, the same observable "no inbound µTP support" outcome as before slice 3
+     * existed. What every pre-slice-3 caller (production code not yet passing Settings.
+     * utpEnabled through, and every existing test) gets via the two-arg constructor below. */
     public DhtNode(NodeId ourId, int port) {
+        this(ourId, port, UtpSocket::close);
+    }
+
+    /**
+     * onUtpConnectionAccepted is called once per new inbound µTP connection, after its own
+     * ST_SYN/ST_STATE handshake has completed - on a dedicated virtual thread (see
+     * utp.UtpAcceptor), never inline from this node's own receive loop. design_docs/0074's slice
+     * 3: µTP shares this node's socket/port rather than opening a second one, gated end-to-end by
+     * Settings.utpEnabled - TorrentEngine passes UtpSocket::close here (reject every inbound
+     * attempt) whenever that setting, or inbound connections generally, are off.
+     */
+    public DhtNode(NodeId ourId, int port, Consumer<UtpSocket> onUtpConnectionAccepted) {
         this.ourId = ourId;
         try {
             // Unbound construction + setReuseAddress(true) before bind() - the convenience
@@ -110,6 +131,7 @@ public final class DhtNode implements AutoCloseable {
             throw new DhtException("Could not bind DHT socket to port " + port, e);
         }
         this.routingTable = new RoutingTable(ourId);
+        this.utpAcceptor = new UtpAcceptor(socket, onUtpConnectionAccepted);
         this.receiveLoopThread = Thread.ofVirtual().start(this::receiveLoop);
     }
 
@@ -377,8 +399,14 @@ public final class DhtNode implements AutoCloseable {
 
     /** Never lets an exception escape - a single malformed, unsupported, or otherwise
      * unhandleable packet must not kill the receive loop for every other torrent relying
-     * on this shared node. */
+     * on this shared node. µTP packets (design_docs/0074's slice 3) are demuxed ahead of the
+     * KRPC decode by their own header shape - see UtpPacketCodec.looksLikeUtpPacket - and
+     * handed to utpAcceptor rather than ever reaching KrpcCodec.decode. */
     private void handlePacket(byte[] data, InetSocketAddress from) {
+        if (UtpPacketCodec.looksLikeUtpPacket(data)) {
+            utpAcceptor.handlePacket(data, from);
+            return;
+        }
         try {
             KrpcMessage message = KrpcCodec.decode(data);
             switch (message) {

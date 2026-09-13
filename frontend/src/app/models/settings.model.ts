@@ -116,4 +116,17 @@ export interface Settings {
   authTokenTtlDays: number;
   lsdEnabled: boolean;
   lsdAnnounceIntervalSeconds: number;
+  /** The global default a per-torrent TorrentLimitOverride's maxConnectionsOverride inherits
+   * from unless it sets its own - resolved once per torrent at construction/restore time, not
+   * live like the rate-limit fields above; a change here only takes effect for a torrent's next
+   * construction (a backend restart, or removing and re-adding that torrent), not on a plain
+   * pause/resume. See design_docs/0072. */
+  maxConnectionsPerTorrent: number;
+  /** design_docs/0074's slice 3 - gates real inbound µTP connections. Off by default: slices
+   * 1-4 only give the backend an interim, deliberately unsophisticated congestion window, not
+   * yet a polite citizen on a shared connection - see that doc's own cost/benefit section.
+   * Same restart-required shape as dhtEnabled/acceptIncomingConnections. Inbound-only until
+   * slice 4 (outbound) lands - turning this on lets other clients' outbound µTP attempts reach
+   * us, but this client still only ever initiates outbound connections over TCP. */
+  utpEnabled: boolean;
 }

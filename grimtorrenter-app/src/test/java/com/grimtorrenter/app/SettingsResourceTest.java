@@ -166,4 +166,47 @@ class SettingsResourceTest {
                 .then().statusCode(200)
                 .body("eventLogRetentionDays", equalTo(30));
     }
+
+    /** Round-trips maxConnectionsPerTorrent (design_docs/0072) through GET/PUT, and confirms
+     * Settings' own compact constructor normalizes 0 to the default of 30 through the real REST
+     * layer - same shape as updateNormalizesAZeroEventLogRetentionToTheDefault above. */
+    @Test
+    void updatePersistsMaxConnectionsPerTorrentAndNormalizesZeroToTheDefault() {
+        String body = """
+                {
+                  "dhtEnabled": false,
+                  "acceptIncomingConnections": false,
+                  "uploadRateLimitBytesPerSec": 0,
+                  "downloadRateLimitBytesPerSec": 0,
+                  "maxConnectionsPerTorrent": 50
+                }""";
+
+        given()
+                .contentType(ContentType.JSON)
+                .body(body)
+                .when().put("/api/settings")
+                .then().statusCode(200)
+                .body("maxConnectionsPerTorrent", equalTo(50));
+
+        given()
+                .when().get("/api/settings")
+                .then().statusCode(200)
+                .body("maxConnectionsPerTorrent", equalTo(50));
+
+        String zeroBody = """
+                {
+                  "dhtEnabled": false,
+                  "acceptIncomingConnections": false,
+                  "uploadRateLimitBytesPerSec": 0,
+                  "downloadRateLimitBytesPerSec": 0,
+                  "maxConnectionsPerTorrent": 0
+                }""";
+
+        given()
+                .contentType(ContentType.JSON)
+                .body(zeroBody)
+                .when().put("/api/settings")
+                .then().statusCode(200)
+                .body("maxConnectionsPerTorrent", equalTo(30));
+    }
 }

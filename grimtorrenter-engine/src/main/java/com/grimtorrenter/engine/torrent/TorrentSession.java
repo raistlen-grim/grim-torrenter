@@ -36,6 +36,7 @@ import com.grimtorrenter.engine.tracker.TrackerEvent;
 import com.grimtorrenter.engine.tracker.TrackerRequest;
 import com.grimtorrenter.engine.tracker.TrackerResponse;
 import com.grimtorrenter.engine.tracker.TrackerStatus;
+import com.grimtorrenter.engine.utp.UtpSocket;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -74,7 +75,12 @@ public final class TorrentSession implements AutoCloseable {
     private static final System.Logger LOG = System.getLogger(TorrentSession.class.getName());
 
     private static final int NUM_WANT = 50;
-    private static final int MAX_CONNECTIONS = 30;
+    /** The default this session's own maxConnections field falls back to via create()/
+     * restoreAsync()'s lower-arity overloads - now a per-session instance field, not a fixed
+     * constant, since design_docs/0072 lets both the global default and a per-torrent override
+     * change what a given session is constructed with. See connectionSlots's own Javadoc for
+     * why this is resolved once at construction rather than being live like a RateLimiter. */
+    private static final int DEFAULT_MAX_CONNECTIONS = 30;
     private static final int PIPELINE_DEPTH = 5;
     private static final long KEEPALIVE_INTERVAL_SECONDS = 60;
     private static final long CHOKING_INTERVAL_SECONDS = 10;
@@ -157,6 +163,15 @@ public final class TorrentSession implements AutoCloseable {
      * per-torrent user data that can change after the session already exists. See
      * design_docs/0054. */
     private volatile SeedingLimitOverride seedingLimitOverride;
+    /** This torrent's override of the global bandwidth/connection-count defaults - never null,
+     * defaults to TorrentLimitOverride.INHERIT via create()/restoreAsync()'s own lower-arity
+     * overloads, mutable at runtime (setTorrentLimits()) for the same reason
+     * seedingLimitOverride is. Only the bandwidth half of a live change actually takes effect
+     * immediately (RateLimiters.forTorrent() reads this field live on every acquire()) - the
+     * maxConnectionsOverride half has no effect on this already-constructed session's
+     * connectionSlots until the torrent is next constructed (a restart or remove-and-re-add).
+     * See design_docs/0072. */
+    private volatile TorrentLimitOverride torrentLimitOverride;
     /** Epoch millis this torrent first reached SEEDING, 0 if never. Was purely in-memory
      * (reset to 0 on every restart, per design_docs/0054's own callout - the seeding-limit
      * check's own byte counters already reset the same way, so this matched rather than being
@@ -239,7 +254,7 @@ public final class TorrentSession implements AutoCloseable {
      * growth this introduces. */
     private final Set<PeerAddress> failedAddresses = ConcurrentHashMap.newKeySet();
     /** Bounds concurrent connection attempts *plus* established connections to
-     * MAX_CONNECTIONS, atomically - not a size-based check like fillConnections() used to
+     * maxConnections, atomically - not a size-based check like fillConnections() used to
      * rely on alone. Necessary specifically because of the 2026-09-06 refill-on-failure
      * revision below: connections.size() only counts *established* connections, not attempts
      * still in flight, so several failures resolving within milliseconds of each other (a
@@ -253,8 +268,20 @@ public final class TorrentSession implements AutoCloseable {
      * acquired before attemptConnect() ever starts and held for as long as that attempt is
      * either in flight or (on success) the resulting connection stays established - released
      * on failure (attemptConnect()'s own catch block) or on disconnect
-     * (PeerListener.onDisconnected()). See design_docs/0017's own 2026-09-06 revision. */
-    private final Semaphore connectionSlots = new Semaphore(MAX_CONNECTIONS);
+     * (PeerListener.onDisconnected()). See design_docs/0017's own 2026-09-06 revision.
+     *
+     * <p>Sized from maxConnections, resolved once at construction (design_docs/0072) - unlike
+     * a RateLimiter, a Semaphore's permit count can't be live-resized, so a changed global
+     * default or per-torrent override only takes effect the next time this session is
+     * constructed (a restart or remove-and-re-add), not on a plain pause/resume of the same
+     * object. Assigned in the constructor body, not as a field initializer - it depends on the
+     * maxConnections constructor parameter, which (being a plain instance field, not a static
+     * constant like this class's other such values) isn't available yet when field
+     * initializers run, before the constructor body. */
+    private final Semaphore connectionSlots;
+    /** Resolved once at construction (design_docs/0072) - see connectionSlots's own Javadoc for
+     * why this can't be live-updated the way RateLimiter's limit can. */
+    private final int maxConnections;
     /** A second, narrower fix needed alongside connectionSlots (found the same day, once the
      * first fix was deployed): connectionSlots alone bounds the *total* number of concurrent
      * attempts, but does nothing to stop several concurrent fillConnections() calls from each
@@ -304,7 +331,8 @@ public final class TorrentSession implements AutoCloseable {
                             Semaphore pieceVerificationLimiter, Supplier<EncryptionMode> encryptionMode,
                             SeedingLimitOverride seedingLimitOverride, TorrentState initialState,
                             Instant addedAt, Supplier<Long> dhtReannounceIntervalSeconds, boolean lsdActive,
-                            PersistedLifetimeStats persistedLifetimeStats) {
+                            PersistedLifetimeStats persistedLifetimeStats,
+                            TorrentLimitOverride torrentLimitOverride, int maxConnections) {
         this.metadata = metadata;
         this.trackerClient = trackerClient;
         this.storage = storage;
@@ -318,6 +346,9 @@ public final class TorrentSession implements AutoCloseable {
         this.pieceVerificationLimiter = pieceVerificationLimiter;
         this.encryptionMode = encryptionMode;
         this.seedingLimitOverride = seedingLimitOverride;
+        this.torrentLimitOverride = torrentLimitOverride;
+        this.maxConnections = maxConnections;
+        this.connectionSlots = new Semaphore(maxConnections);
         this.state = initialState;
         this.addedAt = addedAt;
         this.dhtReannounceIntervalSeconds = dhtReannounceIntervalSeconds;
@@ -456,6 +487,9 @@ public final class TorrentSession implements AutoCloseable {
                 addedAt, dhtReannounceIntervalSeconds, lsdActive, PersistedLifetimeStats.NONE);
     }
 
+    /** Same as the nineteen-arg overload below but with no per-torrent bandwidth/connection
+     * override and the default connection cap - for every caller that predates design_docs/0072
+     * (tests, mainly; a genuinely new torrent has no override to give it anyway). */
     public static TorrentSession create(TorrentMetadata metadata, TrackerClient trackerClient,
                                          Path downloadDirectory, PeerId ourPeerId, int ourListenPort,
                                          TorrentSessionListener listener, DhtNode dhtNode,
@@ -467,11 +501,35 @@ public final class TorrentSession implements AutoCloseable {
                                          Supplier<Long> dhtReannounceIntervalSeconds,
                                          boolean lsdActive,
                                          PersistedLifetimeStats persistedLifetimeStats) throws IOException {
+        return create(metadata, trackerClient, downloadDirectory, ourPeerId, ourListenPort, listener, dhtNode,
+                rateLimiters, fileHandlePool, pieceVerificationLimiter, encryptionMode, seedingLimitOverride,
+                addedAt, dhtReannounceIntervalSeconds, lsdActive, persistedLifetimeStats,
+                TorrentLimitOverride.INHERIT, DEFAULT_MAX_CONNECTIONS);
+    }
+
+    /** torrentLimitOverride is the value TorrentEngine already read back from this torrent's own
+     * marker file (design_docs/0072); maxConnections is the already-resolved effective value
+     * (TorrentLimits.effectiveMaxConnections()) - resolved once here, not re-resolved later, per
+     * connectionSlots's own Javadoc on why a Semaphore can't be live-resized. */
+    public static TorrentSession create(TorrentMetadata metadata, TrackerClient trackerClient,
+                                         Path downloadDirectory, PeerId ourPeerId, int ourListenPort,
+                                         TorrentSessionListener listener, DhtNode dhtNode,
+                                         RateLimiters rateLimiters, FileHandlePool fileHandlePool,
+                                         Semaphore pieceVerificationLimiter,
+                                         Supplier<EncryptionMode> encryptionMode,
+                                         SeedingLimitOverride seedingLimitOverride,
+                                         Instant addedAt,
+                                         Supplier<Long> dhtReannounceIntervalSeconds,
+                                         boolean lsdActive,
+                                         PersistedLifetimeStats persistedLifetimeStats,
+                                         TorrentLimitOverride torrentLimitOverride,
+                                         int maxConnections) throws IOException {
         TorrentStorage storage = TorrentStorage.create(metadata, downloadDirectory, fileHandlePool);
         PieceManager pieceManager = new PieceManager(metadata);
         return new TorrentSession(metadata, trackerClient, storage, pieceManager, ourPeerId, ourListenPort,
                 listener, dhtNode, rateLimiters, pieceVerificationLimiter, encryptionMode, seedingLimitOverride,
-                TorrentState.STOPPED, addedAt, dhtReannounceIntervalSeconds, lsdActive, persistedLifetimeStats);
+                TorrentState.STOPPED, addedAt, dhtReannounceIntervalSeconds, lsdActive, persistedLifetimeStats,
+                torrentLimitOverride, maxConnections);
     }
 
     /** Same as the nine-arg overload below but with no rate limiting - see create()'s own
@@ -621,6 +679,9 @@ public final class TorrentSession implements AutoCloseable {
                 PersistedLifetimeStats.NONE);
     }
 
+    /** Same as the twenty-one-arg overload below but with no per-torrent bandwidth/connection
+     * override and the default connection cap - for every caller that predates design_docs/0072
+     * (tests, mainly). */
     public static TorrentSession restoreAsync(TorrentMetadata metadata, TrackerClient trackerClient,
                                                Path downloadDirectory, PeerId ourPeerId, int ourListenPort,
                                                TorrentSessionListener listener, DhtNode dhtNode,
@@ -633,12 +694,35 @@ public final class TorrentSession implements AutoCloseable {
                                                boolean lsdActive,
                                                boolean autoStart,
                                                PersistedLifetimeStats persistedLifetimeStats) throws IOException {
+        return restoreAsync(metadata, trackerClient, downloadDirectory, ourPeerId, ourListenPort, listener,
+                dhtNode, rateLimiters, fileHandlePool, pieceVerificationLimiter, encryptionMode,
+                seedingLimitOverride, addedAt, dhtReannounceIntervalSeconds, lsdActive, autoStart,
+                persistedLifetimeStats, TorrentLimitOverride.INHERIT, DEFAULT_MAX_CONNECTIONS);
+    }
+
+    /** torrentLimitOverride/maxConnections - see create()'s matching overload's own Javadoc;
+     * the same reasoning applies here. */
+    public static TorrentSession restoreAsync(TorrentMetadata metadata, TrackerClient trackerClient,
+                                               Path downloadDirectory, PeerId ourPeerId, int ourListenPort,
+                                               TorrentSessionListener listener, DhtNode dhtNode,
+                                               RateLimiters rateLimiters, FileHandlePool fileHandlePool,
+                                               Semaphore pieceVerificationLimiter,
+                                               Supplier<EncryptionMode> encryptionMode,
+                                               SeedingLimitOverride seedingLimitOverride,
+                                               Instant addedAt,
+                                               Supplier<Long> dhtReannounceIntervalSeconds,
+                                               boolean lsdActive,
+                                               boolean autoStart,
+                                               PersistedLifetimeStats persistedLifetimeStats,
+                                               TorrentLimitOverride torrentLimitOverride,
+                                               int maxConnections) throws IOException {
         TorrentStorage storage = TorrentStorage.create(metadata, downloadDirectory, fileHandlePool);
         PieceManager pieceManager = new PieceManager(metadata);
         TorrentSession session = new TorrentSession(metadata, trackerClient, storage, pieceManager,
                 ourPeerId, ourListenPort, listener, dhtNode, rateLimiters, pieceVerificationLimiter,
                 encryptionMode, seedingLimitOverride, TorrentState.VERIFYING, addedAt,
-                dhtReannounceIntervalSeconds, lsdActive, persistedLifetimeStats);
+                dhtReannounceIntervalSeconds, lsdActive, persistedLifetimeStats,
+                torrentLimitOverride, maxConnections);
         Thread.ofVirtual().start(() -> session.verifyThenSettle(autoStart));
         return session;
     }
@@ -1067,11 +1151,11 @@ public final class TorrentSession implements AutoCloseable {
 
     /**
      * connectionSlots (a Semaphore, not a size check) is what bounds *total* concurrency -
-     * see its own field Javadoc for why a plain MAX_CONNECTIONS - connections.size() check
+     * see its own field Javadoc for why a plain maxConnections - connections.size() check
      * stopped being safe once attemptConnect()/onDisconnected() started calling this
      * reactively. inFlightAddresses.add()'s own atomic return value is what stops two
      * concurrent calls from both claiming the *same* candidate - see its own field Javadoc.
-     * The .limit(MAX_CONNECTIONS) below is purely a cheap upper bound on how much of
+     * The .limit(maxConnections) below is purely a cheap upper bound on how much of
      * knownAddresses this one call ever needs to scan; tryAcquire() is what actually stops
      * the loop once slots run out, every single call, regardless of how many other threads are
      * calling this concurrently.
@@ -1084,7 +1168,7 @@ public final class TorrentSession implements AutoCloseable {
                 .filter(address -> !failedAddresses.contains(address))
                 .filter(address -> !inFlightAddresses.contains(address))
                 .filter(address -> connections.stream().noneMatch(c -> c.remoteAddress().equals(address)))
-                .limit(MAX_CONNECTIONS)
+                .limit(maxConnections)
                 .toList();
         for (PeerAddress address : candidates) {
             if (!inFlightAddresses.add(address)) {
@@ -1175,7 +1259,7 @@ public final class TorrentSession implements AutoCloseable {
             return;
         }
         // connectionSlots, not a connections.size() check - inbound and outbound connections
-        // share the same MAX_CONNECTIONS budget, and only the semaphore accounts for outbound
+        // share the same maxConnections budget, and only the semaphore accounts for outbound
         // attempts still in flight (see connectionSlots's own Javadoc). A size check here
         // would let inbound and outbound connections each independently race past the real
         // cap, unaware of each other.
@@ -1186,6 +1270,33 @@ public final class TorrentSession implements AutoCloseable {
         PeerConnection connection;
         try {
             connection = PeerConnection.accept(socket, in, out, remoteHandshake, ourPeerId,
+                    new PeerListener(), extensionsToAdvertise(), rateLimiters);
+        } catch (IOException | RuntimeException e) {
+            connectionSlots.release();
+            throw e;
+        }
+        connections.add(connection);
+        onPeerConnected(connection);
+    }
+
+    /** The µTP counterpart to acceptIncomingConnection() (design_docs/0074's slice 3) - same
+     * inbound-counterpart-to-attemptConnect() role, same not-currently-running/at-connection-cap
+     * rejection policy, just for a connection UtpPeerAcceptor (not PeerServer) has already
+     * routed here by info hash after its own µTP-level handshake completed. Public for the same
+     * reason acceptIncomingConnection() is - TorrentEngine hands this directly to UtpPeerAcceptor
+     * as a method reference from a different package. */
+    public void acceptIncomingUtpConnection(UtpSocket utpSocket, Handshake remoteHandshake) throws IOException {
+        if (state != TorrentState.DOWNLOADING && state != TorrentState.SEEDING) {
+            utpSocket.close();
+            return;
+        }
+        if (!connectionSlots.tryAcquire()) {
+            utpSocket.close();
+            return;
+        }
+        PeerConnection connection;
+        try {
+            connection = PeerConnection.acceptViaUtp(utpSocket, remoteHandshake, ourPeerId,
                     new PeerListener(), extensionsToAdvertise(), rateLimiters);
         } catch (IOException | RuntimeException e) {
             connectionSlots.release();
@@ -1512,6 +1623,18 @@ public final class TorrentSession implements AutoCloseable {
      * seeding-limit check reads. See design_docs/0054. */
     public void setSeedingLimitOverride(SeedingLimitOverride seedingLimitOverride) {
         this.seedingLimitOverride = seedingLimitOverride;
+    }
+
+    public TorrentLimitOverride torrentLimits() {
+        return torrentLimitOverride;
+    }
+
+    /** Called by TorrentEngine after it's already persisted the new value to this torrent's
+     * marker file - only the bandwidth half takes effect immediately (RateLimiters.forTorrent()
+     * reads this field live); the maxConnectionsOverride half is stored but has no effect on
+     * this already-constructed session's connectionSlots. See design_docs/0072. */
+    public void setTorrentLimits(TorrentLimitOverride torrentLimitOverride) {
+        this.torrentLimitOverride = torrentLimitOverride;
     }
 
     public int connectedPeerCount() {

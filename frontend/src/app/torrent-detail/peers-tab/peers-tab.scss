@@ -3,6 +3,23 @@
   opacity: 0.7;
 }
 
+/* Same trigger style as trackers-tab.scss's own .tracker-details-trigger - a plain <button>
+ * reset styled as a link, not p-button. Component styles are scoped per-component, so this is
+ * a duplicate of that rule rather than a shared one; promote to a shared class if a third tab
+ * ever needs it. See design_docs/0073's own addendum. */
+.tracker-details-trigger {
+  display: block;
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--color-accent-700);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 /* README's Peers tab content spec: minmax(0,1fr) 54px 62px 62px (Address/Done/Down/Up) - now
  * the full four columns (see design_docs/0067) now that per-peer completion percentage
  * exists. */

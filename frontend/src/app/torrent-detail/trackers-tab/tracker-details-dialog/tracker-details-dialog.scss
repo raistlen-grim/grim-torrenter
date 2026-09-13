@@ -1,0 +1,60 @@
+:host {
+  display: block;
+}
+
+.details-section {
+  min-width: 32rem;
+}
+
+.details-section + .details-section {
+  margin-top: var(--space-5);
+}
+
+.details-section h3 {
+  margin: 0 0 var(--space-2);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.section-hint {
+  margin: 0 0 var(--space-2);
+  font-size: 11.5px;
+  opacity: 0.55;
+}
+
+.empty-message {
+  font-size: 0.875rem;
+  opacity: 0.7;
+}
+
+.details-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+}
+
+.details-table th {
+  text-align: left;
+  padding: 4px var(--space-2) 4px 0;
+  font-weight: 600;
+  opacity: 0.7;
+  border-bottom: 1px solid var(--rule);
+}
+
+.details-table td {
+  padding: 5px var(--space-2) 5px 0;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+}
+
+.tracker-url {
+  max-width: 22rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: monospace;
+}
+
+.tracker-alarm-status {
+  color: var(--alarm);
+}

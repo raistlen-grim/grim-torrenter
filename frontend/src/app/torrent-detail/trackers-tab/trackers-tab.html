@@ -1,3 +1,12 @@
+<button type="button" class="tracker-details-trigger" (click)="showTrackerDetailsDialog.set(true)">
+  Tracker &amp; peer-source details…
+</button>
+<app-tracker-details-dialog
+  [infoHash]="infoHash()"
+  [visible]="showTrackerDetailsDialog()"
+  (visibleChange)="showTrackerDetailsDialog.set($event)"
+/>
+
 @if (trackers().length === 0) {
   <p class="empty-message">No trackers — this torrent relies on DHT.</p>
 } @else {

@@ -189,6 +189,17 @@ import com.grimtorrenter.engine.mse.EncryptionMode;
  * deserialize a missing field to {@code false} with no way to distinguish that from an
  * explicit opt-out, silently disabling LSD for every upgrading user instead of applying
  * the documented true default. Same null-check idiom as encryptionMode/theme above.
+ *
+ * <p>utpEnabled (design_docs/0074's slice 3) gates real inbound µTP (BEP 29) connections - off
+ * by default, unlike dhtEnabled/acceptIncomingConnections/lsdEnabled, since slices 1-4 only ever
+ * give this codebase an interim, deliberately unsophisticated congestion window (a fixed send
+ * cap, no LEDBAT delay-based backoff yet), not yet a polite citizen on a connection shared with
+ * anything else - see design_docs/0074's own cost/benefit section. Same restart-required shape
+ * as dhtEnabled/acceptIncomingConnections: DhtNode's µTP acceptor is wired (or not) once, at
+ * TorrentEngine construction. Primitive boolean, not boxed like lsdEnabled - false is already
+ * the correct value for a pre-0074 settings.json missing this field entirely (no
+ * inbound-µTP-support default to preserve, unlike lsdEnabled's true default), so there's no
+ * absent-vs-explicitly-false distinction worth making here.
  */
 public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
                         long uploadRateLimitBytesPerSec, long downloadRateLimitBytesPerSec,
@@ -208,7 +219,22 @@ public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
                         boolean authEnabled,
                         int authTokenTtlDays,
                         Boolean lsdEnabled,
-                        int lsdAnnounceIntervalSeconds) {
+                        int lsdAnnounceIntervalSeconds,
+                        int maxConnectionsPerTorrent,
+                        boolean utpEnabled) {
+
+    /** design_docs/0072 - the global default a per-torrent TorrentLimitOverride inherits from
+     * unless it sets its own. Unlike the rate-limit fields above, a per-torrent connection-count
+     * override (and this global default) is resolved once, at TorrentSession construction/
+     * restore time only - a Semaphore's permit count can't be live-resized the way RateLimiter
+     * re-reads its limit on every acquire(). A change here (or to a per-torrent override) takes
+     * effect only the next time the affected torrent(s) are constructed - a full app restart, or
+     * a remove-and-re-add for a single torrent - not on a plain pause/resume, since
+     * pauseTorrent()/resumeTorrent() reuse the same TorrentSession object rather than
+     * recreating it. Matches this codebase's existing restart-required precedent
+     * (dhtEnabled/acceptIncomingConnections) rather than the fully-live precedent rate limits
+     * get. */
+    private static final int DEFAULT_MAX_CONNECTIONS_PER_TORRENT = 30;
 
     private static final int DEFAULT_AUTH_TOKEN_TTL_DAYS = 30;
     /** design_docs/0062 - see this record's own class-level Javadoc for why 300s (matching
@@ -298,6 +324,80 @@ public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
         if (lsdEnabled == null) {
             lsdEnabled = true;
         }
+        if (maxConnectionsPerTorrent <= 0) {
+            maxConnectionsPerTorrent = DEFAULT_MAX_CONNECTIONS_PER_TORRENT;
+        }
+    }
+
+    /** Same as the canonical constructor above but without utpEnabled - for every caller that
+     * predates this addition (every secondary constructor below, plus any direct
+     * thirty-four-arg caller), defaulting to false (no inbound µTP support - see this record's
+     * own class-level Javadoc for why that's the only sensible default). Same "add a sibling
+     * overload, touch zero existing call sites" pattern used for every prior field addition to
+     * this record. See design_docs/0074's slice 3. */
+    public Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
+                     long uploadRateLimitBytesPerSec, long downloadRateLimitBytesPerSec,
+                     boolean rateLimitScheduleEnabled, String rateLimitScheduleStart, String rateLimitScheduleEnd,
+                     long scheduledUploadRateLimitBytesPerSec, long scheduledDownloadRateLimitBytesPerSec,
+                     EncryptionMode encryptionMode, long rateLimitBurstSeconds,
+                     boolean seedRatioLimitEnabled, double seedRatioLimit,
+                     boolean seedTimeLimitEnabled, long seedTimeLimitMinutes,
+                     int eventLogRetentionDays,
+                     boolean watchFolderEnabled, int watchFolderRetentionDays,
+                     ThemePreference theme,
+                     int magnetFetchTimeBudgetSeconds, int magnetFetchCandidatesPerRound,
+                     int magnetFetchConcurrencyLimit,
+                     int dhtReannounceIntervalSeconds,
+                     int dhtRefreshIntervalSeconds,
+                     int watchFolderPollIntervalSeconds,
+                     boolean authEnabled,
+                     int authTokenTtlDays,
+                     Boolean lsdEnabled,
+                     int lsdAnnounceIntervalSeconds,
+                     int maxConnectionsPerTorrent) {
+        this(dhtEnabled, acceptIncomingConnections, uploadRateLimitBytesPerSec, downloadRateLimitBytesPerSec,
+                rateLimitScheduleEnabled, rateLimitScheduleStart, rateLimitScheduleEnd,
+                scheduledUploadRateLimitBytesPerSec, scheduledDownloadRateLimitBytesPerSec, encryptionMode,
+                rateLimitBurstSeconds, seedRatioLimitEnabled, seedRatioLimit, seedTimeLimitEnabled,
+                seedTimeLimitMinutes, eventLogRetentionDays, watchFolderEnabled, watchFolderRetentionDays, theme,
+                magnetFetchTimeBudgetSeconds, magnetFetchCandidatesPerRound, magnetFetchConcurrencyLimit,
+                dhtReannounceIntervalSeconds, dhtRefreshIntervalSeconds, watchFolderPollIntervalSeconds, authEnabled,
+                authTokenTtlDays, lsdEnabled, lsdAnnounceIntervalSeconds, maxConnectionsPerTorrent, false);
+    }
+
+    /** Same as the canonical constructor above but without maxConnectionsPerTorrent - for
+     * every caller that predates this addition (every secondary constructor below, plus any
+     * direct thirty-arg caller), defaulting it (the compact constructor above normalizes 0 to
+     * DEFAULT_MAX_CONNECTIONS_PER_TORRENT, so passing 0 here is equivalent to passing the
+     * default explicitly). Same "add a sibling overload, touch zero existing call sites"
+     * pattern used for every prior field addition to this record. See design_docs/0072. */
+    public Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
+                     long uploadRateLimitBytesPerSec, long downloadRateLimitBytesPerSec,
+                     boolean rateLimitScheduleEnabled, String rateLimitScheduleStart, String rateLimitScheduleEnd,
+                     long scheduledUploadRateLimitBytesPerSec, long scheduledDownloadRateLimitBytesPerSec,
+                     EncryptionMode encryptionMode, long rateLimitBurstSeconds,
+                     boolean seedRatioLimitEnabled, double seedRatioLimit,
+                     boolean seedTimeLimitEnabled, long seedTimeLimitMinutes,
+                     int eventLogRetentionDays,
+                     boolean watchFolderEnabled, int watchFolderRetentionDays,
+                     ThemePreference theme,
+                     int magnetFetchTimeBudgetSeconds, int magnetFetchCandidatesPerRound,
+                     int magnetFetchConcurrencyLimit,
+                     int dhtReannounceIntervalSeconds,
+                     int dhtRefreshIntervalSeconds,
+                     int watchFolderPollIntervalSeconds,
+                     boolean authEnabled,
+                     int authTokenTtlDays,
+                     Boolean lsdEnabled,
+                     int lsdAnnounceIntervalSeconds) {
+        this(dhtEnabled, acceptIncomingConnections, uploadRateLimitBytesPerSec, downloadRateLimitBytesPerSec,
+                rateLimitScheduleEnabled, rateLimitScheduleStart, rateLimitScheduleEnd,
+                scheduledUploadRateLimitBytesPerSec, scheduledDownloadRateLimitBytesPerSec, encryptionMode,
+                rateLimitBurstSeconds, seedRatioLimitEnabled, seedRatioLimit, seedTimeLimitEnabled,
+                seedTimeLimitMinutes, eventLogRetentionDays, watchFolderEnabled, watchFolderRetentionDays, theme,
+                magnetFetchTimeBudgetSeconds, magnetFetchCandidatesPerRound, magnetFetchConcurrencyLimit,
+                dhtReannounceIntervalSeconds, dhtRefreshIntervalSeconds, watchFolderPollIntervalSeconds, authEnabled,
+                authTokenTtlDays, lsdEnabled, lsdAnnounceIntervalSeconds, 0);
     }
 
     /** Same as the canonical constructor above but without lsdEnabled/lsdAnnounceIntervalSeconds

@@ -120,6 +120,19 @@ export interface SeedingLimitOverride {
   timeLimitMinutes: number;
 }
 
+/** Matches the backend's TorrentLimitOverride record - one torrent's override of the global
+ * bandwidth/connection-count defaults. Same sentinel convention as SeedingLimitOverride above
+ * (< 0 inherit, 0 explicit no limit, > 0 custom), independent per field. Unlike
+ * SeedingLimitOverride, a non-inherit bandwidth override replaces the global rate-limit cap for
+ * this torrent rather than narrowing it, and maxConnectionsOverride only takes effect the next
+ * time this torrent is constructed (a backend restart or a remove-and-re-add), not live. See
+ * design_docs/0072. */
+export interface TorrentLimitOverride {
+  uploadBytesPerSecOverride: number;
+  downloadBytesPerSecOverride: number;
+  maxConnectionsOverride: number;
+}
+
 /** Matches the backend's TrackerStatus.State enum. See design_docs/0031. */
 export type TrackerState = 'UNKNOWN' | 'WORKING' | 'ERROR';
 

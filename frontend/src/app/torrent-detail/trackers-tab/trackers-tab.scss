@@ -69,3 +69,20 @@
   font-size: 11.5px;
   opacity: 0.5;
 }
+
+/* A plain <button> reset styled as a link, not p-button - the only trigger for
+ * TrackerDetailsDialog (design_docs/0073), and no existing small-link precedent elsewhere in
+ * this app to match instead. Sits at the top of the tab (design_docs/0073's own addendum), so
+ * margin is below it, not above. */
+.tracker-details-trigger {
+  display: block;
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--color-accent-700);
+  text-decoration: underline;
+  cursor: pointer;
+}

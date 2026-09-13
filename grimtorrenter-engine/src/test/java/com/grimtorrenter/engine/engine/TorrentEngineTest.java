@@ -981,6 +981,32 @@ class TorrentEngineTest {
         assertEquals(override, restored.seedingLimitOverride());
     }
 
+    /** design_docs/0072 - same shape as aSeedingLimitOverrideSurvivesARestart above, for the
+     * new marker. Covers the persistence side; the live-bandwidth-vs-restart-required-
+     * connections asymmetry setTorrentLimits() itself introduces needs a real peer connection
+     * to observe directly (like RateLimiterTest's own real-transfer coverage) and isn't
+     * exercised here. */
+    @Test
+    void aTorrentLimitOverrideSurvivesARestart(@TempDir Path tempDir) throws Exception {
+        String announceUrl = startFakeTrackerServer();
+        byte[] torrentBytes = torrentBytes("limits-override-restart.bin", fill(20, 10), announceUrl);
+
+        TorrentEngine firstEngine = new TorrentEngine(tempDir, 6881, new NoOpListener());
+        TorrentSession original = firstEngine.addTorrent(torrentBytes).session();
+        InfoHash infoHash = original.metadata().infoHash();
+        com.grimtorrenter.engine.torrent.TorrentLimitOverride override =
+                new com.grimtorrenter.engine.torrent.TorrentLimitOverride(500_000, 250_000, 10);
+        firstEngine.setTorrentLimits(infoHash, override);
+        assertEquals(override, original.torrentLimits());
+        original.stop();
+
+        TorrentEngine secondEngine = new TorrentEngine(tempDir, 6881, new NoOpListener());
+        secondEngine.restore();
+
+        TorrentSession restored = secondEngine.getTorrent(infoHash).orElseThrow();
+        assertEquals(override, restored.torrentLimits());
+    }
+
     private static void awaitState(TorrentSession session, TorrentState expected) throws InterruptedException {
         long deadline = System.currentTimeMillis() + 5000;
         while (session.state() != expected && System.currentTimeMillis() < deadline) {

@@ -55,10 +55,15 @@ than something that'd change a decision someone makes.
   popularity/health signal, cheap to add.~~ **Done (2026-09-10)** - see `design_docs/0067`.
 - ~~Tracker "Re-announce In" countdown - `nextAnnounceAt - now`, derivable client-side from
   data the Trackers tab already has.~~ **Done (2026-09-10)** - see `design_docs/0067`.
-- Per-torrent bandwidth/connection limits - a control, not a metric (only global + scheduled
+- ~~Per-torrent bandwidth/connection limits - a control, not a metric (only global + scheduled
   limits exist today, `design_docs/0042`/`0046`). Real feature value for a multi-torrent
   server (stop one torrent starving the others) but a different kind of work from the metrics
-  above - deserves its own decision if picked up, not a metrics-bundle add-on.
+  above - deserves its own decision if picked up, not a metrics-bundle add-on.~~ **Done
+  (2026-09-12)** - see `design_docs/0072`. A per-torrent bandwidth override replaces the global
+  cap for that torrent rather than nesting under it (confirmed with the user, a deliberate
+  deviation from `0042`'s original global-only framing); the connections override is
+  restart-or-re-add-only, not live, since it sizes a `Semaphore` that can't be resized on the
+  fly the way a `RateLimiter`'s limit can.
 
 ### Low value - "because we can"
 
@@ -98,6 +103,23 @@ than something that'd change a decision someone makes.
   **When this is picked up, add the Peers tab's "Connection type" (TCP/µTP) column in the
   same pass** - deliberately excluded from the current peers-tab scoping precisely because
   there's only one type to show today; once µTP exists the column earns its place.
+  **Picked up (2026-09-13)** - scoped, full commitment confirmed after a cost/benefit review,
+  see `design_docs/0074` for the 5-slice plan. **Slice 1 done (2026-09-13)** - the wire codec
+  and standalone reliable-delivery state machine (`UtpSocket`), test-verified, not yet wired
+  into anything. **Slice 2 done (2026-09-13)** - the `PeerTransport` facade, letting
+  `PeerConnection` sit on either a real `Socket` or a `UtpSocket`; test-verified end to end
+  (a real BT handshake and message over a real `UtpSocket` pair), but still not reachable from
+  `TorrentSession`/`PeerServer`/`DhtNode` - zero existing call sites changed. **Slice 3 done
+  (2026-09-13)** - inbound wiring: `DhtNode` demuxes µTP from KRPC on its shared UDP socket/port
+  (new `UtpAcceptor`) and routes accepted connections into `TorrentSession` by info hash (new
+  `UtpPeerAcceptor`/`UtpIncomingConnectionHandler`/`TorrentSession.acceptIncomingUtpConnection`),
+  test-verified end to end (`DhtNodeUtpTest` - a real `UtpSocket` connecting against `DhtNode`
+  while ordinary DHT `ping()` traffic also flows through the same socket). Gated behind new
+  `Settings.utpEnabled` (default off, restart-required) - introduced in this slice rather than
+  deferred to slice 4, since the "not yet a polite citizen" congestion-control risk applies to
+  accepting a connection just as much as initiating one. Slice 4 (outbound wiring,
+  µTP-first/TCP-fallback in `TorrentSession.attemptConnect()`) remains before this note can come
+  off the list - the Peers tab's Connection-type column becomes buildable once it lands.
 - Notification service (emails, or something else yet to be defined)
 - Run a user-configured script automatically when a torrent completes
 - ~~UI bug: refreshing the page while the torrent-detail side panel is open
@@ -244,7 +266,7 @@ then revisit this as a follow-up rather than bundling both into one change.
   before this fix) now shows 9 trackers `WORKING` - the rest are genuinely dead (matching the
   qBittorrent screenshot's own "Host not found"/"timed out"/"Forbidden" trackers), not a
   regression.
-  - **UI idea, still open** (2026-09-06, from a qBittorrent screenshot): qBittorrent's own
+  - ~~**UI idea, still open** (2026-09-06, from a qBittorrent screenshot): qBittorrent's own
     trackers tab also lists DHT/PeX/LSD as rows alongside real trackers, each with its own
     peer/seed/leech counts. Worth considering a similar reshape here - a summary panel
     (aggregate counts, mirroring the current collapsed "N trackers working" line) plus a
@@ -252,7 +274,11 @@ then revisit this as a follow-up rather than bundling both into one change.
     (data already captured in `TrackerStatus` - see `design_docs/0031` - just never
     surfaced for a working tracker today, only hidden in a tooltip on non-working ones).
     More trackers now show real WORKING status (not perpetual UNKNOWN) after the fix above,
-    so this UI gap is more visible/valuable to close than before.
+    so this UI gap is more visible/valuable to close than before.~~ **Done (2026-09-12)** -
+    see `design_docs/0073`. A dialog, not a summary panel on the main tab - the main tab
+    stays exactly as simple as before; zero backend changes, both halves computed/displayed
+    entirely client-side from data already delivered by the existing `/trackers`/`/peers`
+    endpoints.
   - **Per-tracker independent scheduling** - the more-correct alternative deferred above.
     Each tracker on its own interval (matching what it actually reports), architecturally
     the same shape as `discoverPeersViaDht()`, but a substantially bigger change:

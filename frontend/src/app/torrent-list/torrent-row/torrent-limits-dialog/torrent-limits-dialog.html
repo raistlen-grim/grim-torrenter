@@ -1,0 +1,92 @@
+<p-dialog
+  [visible]="visible()"
+  (visibleChange)="visibleChange.emit($event)"
+  [modal]="true"
+  [dismissableMask]="true"
+  header="Torrent limits"
+  styleClass="torrent-limits-dialog"
+>
+  @if (loaded()) {
+    <form [formGroup]="form" class="torrent-limits-form">
+      <p class="torrent-name">{{ torrentName() }}</p>
+
+      <div class="limit-row">
+        <label for="uploadMode">Upload limit</label>
+        <div class="limit-control">
+          <p-select
+            inputId="uploadMode"
+            formControlName="uploadMode"
+            [options]="uploadModeOptions()"
+            optionLabel="label"
+            optionValue="value"
+            styleClass="limit-mode-select"
+            [appendTo]="'body'"
+          />
+          <p-inputnumber
+            formControlName="uploadValueKib"
+            aria-label="Custom upload limit, in KiB/s"
+            [min]="1"
+            [showButtons]="false"
+            suffix=" KiB/s"
+            inputStyleClass="limit-value-field"
+          />
+        </div>
+      </div>
+
+      <div class="limit-row">
+        <label for="downloadMode">Download limit</label>
+        <div class="limit-control">
+          <p-select
+            inputId="downloadMode"
+            formControlName="downloadMode"
+            [options]="downloadModeOptions()"
+            optionLabel="label"
+            optionValue="value"
+            styleClass="limit-mode-select"
+            [appendTo]="'body'"
+          />
+          <p-inputnumber
+            formControlName="downloadValueKib"
+            aria-label="Custom download limit, in KiB/s"
+            [min]="1"
+            [showButtons]="false"
+            suffix=" KiB/s"
+            inputStyleClass="limit-value-field"
+          />
+        </div>
+      </div>
+
+      <div class="limit-row">
+        <label for="connectionsMode">Max connections</label>
+        <div class="limit-control">
+          <p-select
+            inputId="connectionsMode"
+            formControlName="connectionsMode"
+            [options]="connectionsModeOptions()"
+            optionLabel="label"
+            optionValue="value"
+            styleClass="limit-mode-select"
+            [appendTo]="'body'"
+          />
+          <p-inputnumber
+            formControlName="connectionsValue"
+            aria-label="Custom max connections"
+            [min]="1"
+            [showButtons]="false"
+            inputStyleClass="limit-value-field"
+          />
+        </div>
+        <p class="settings-row-description">
+          Takes effect the next time this torrent is restarted or re-added - not on pause/resume.
+        </p>
+      </div>
+
+      <div class="dialog-actions">
+        <p-button label="Cancel" severity="secondary" [text]="true" (onClick)="close()" [disabled]="saving()" />
+        <p-button label="Save" (onClick)="save()" [loading]="saving()" />
+      </div>
+    </form>
+  } @else {
+    <p class="loading-hint">Loading…</p>
+  }
+</p-dialog>
