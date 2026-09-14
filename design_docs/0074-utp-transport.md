@@ -34,15 +34,20 @@ library (the reference implementations are C/C++, e.g. libutp). Same reasoning
 [[0052-message-stream-encryption]] already used for hand-rolling DH+RC4 rather than pulling in a
 crypto library.
 
-**Disabled by default until real LEDBAT ships (slice 5)** - confirmed with the user. Wire-level
-interoperability (does a real client even attempt/accept a connection) is fully gated on slices
-1-4 being correct regardless of congestion-control sophistication - a partially-compliant wire
-format gets zero interop benefit, there's no "mostly speaks µTP" middle ground. But shipping an
-interim, unsophisticated congestion window as the *default* would risk the exact bufferbloat/
-unfriendliness problem µTP exists to solve, before the part that actually solves it has landed.
-`Settings.utpEnabled` (new, default `false`, restart-required like `dhtEnabled`/`lsdEnabled`)
-lets an interested user opt in early once slice 4 is testable, without exposing every user to an
-unpolished congestion window by default.
+**Disabled by default until real LEDBAT ships (slice 5) - then enabled by default for new
+installs.** Wire-level interoperability (does a real client even attempt/accept a connection) was
+fully gated on slices 1-4 being correct regardless of congestion-control sophistication - a
+partially-compliant wire format gets zero interop benefit, there's no "mostly speaks µTP" middle
+ground. Shipping an interim, unsophisticated congestion window as the *default* would have risked
+the exact bufferbloat/unfriendliness problem µTP exists to solve, before the part that actually
+solves it had landed. `Settings.utpEnabled` (restart-required like `dhtEnabled`/`lsdEnabled`) let
+an interested user opt in early once slice 4 was testable, without exposing every user to an
+unpolished congestion window by default. **Now that slice 5's real LEDBAT has landed, confirmed
+with the user: `Settings.defaults()` sets `utpEnabled=true`** - see slice 5's own implementation
+notes below for why this could only be done at that one factory method, not via the compact
+constructor's usual absent-vs-explicit normalization (a primitive `boolean`, unlike `lsdEnabled`'s
+boxed one), and why that means only genuinely new installs pick it up - any existing install's
+already-persisted `settings.json` keeps `false` regardless.
 
 **Outbound strategy: µTP first, TCP fallback on timeout** - confirmed with the user, matching
 real clients (µTorrent/libtorrent both default to preferring µTP for new outbound connections).
@@ -285,6 +290,47 @@ requirement of its own) uses, rather than have it behave differently depending o
 own experience (slices 1-2's bugs were both found here; the wiring slices 3-4 haven't reproduced
 that pattern, plausibly because they mostly compose already-tested slice 1-2 building blocks
 rather than introducing new protocol-level state machinery).
+
+## Slice 5 implementation notes (2026-09-14)
+
+Built real LEDBAT exactly as scoped: a new, standalone `LedbatCongestionControl` (RFC 6817
+section 3.3's control law verbatim - base-delay tracking over a 2-minute sliding window, 100ms
+target queuing delay, `cwnd += gain * off_target * bytes_newly_acked * MSS / cwnd`) replaces the
+interim fixed 64KB send-window cap in `UtpSocket`. Loss reaction (RFC 6817 requires LEDBAT flows
+react to real loss, not just delay) piggybacks on the one signal this implementation has - an RTO
+firing - with a straightforward per-event halving, floored at one MSS. Deliberately deferred, per
+this doc's own "not a hard requirement for parity" call on extras: selective-ack-driven loss
+detection and any distinguished slow-start ramp phase (the control law alone still grows the
+window, just linearly rather than exponentially - a real, intended part of LEDBAT's "less
+aggressive than TCP" nature, not a missing feature).
+
+**One small correctness addition beyond the interim window's own behavior**: `UtpSocket` now
+also decodes and honors the *peer's* advertised receive window (BEP 29's `wnd_size` field) as an
+additional cap alongside the local congestion window - decoded on every inbound packet since
+slice 1, but never actually consulted before now. This side's own advertised window (the
+`wnd_size` it sends) stays a fixed, generous value (`ADVERTISED_RECEIVE_WINDOW_BYTES`, renamed
+from the old `WINDOW_CAP_BYTES` now that it's no longer doing double duty as the send-side cap
+too) - this class still has no bounded receive buffer to advertise a real backpressure signal
+for.
+
+**Correction to slice 3's own implementation notes above**: that text implied
+`Settings.utpEnabled`'s upgrade behavior worked the same way `lsdEnabled`'s boxed-`Boolean`
+absent-vs-explicit-false distinction does. It doesn't - `utpEnabled` is a primitive `boolean`
+(deliberately, since unlike `lsdEnabled` there was no prior true-default to preserve at the time),
+so Jackson has no way to tell "field missing from an old settings.json" apart from "field present
+and explicitly false" the way it can for a boxed field. This mattered once this slice needed to
+flip `utpEnabled`'s default to `true` (confirmed with the user, now that real LEDBAT makes that
+reasonable): the compact constructor has no normalization hook available for a primitive boolean,
+so `Settings.defaults()` itself was changed to explicitly construct with `utpEnabled=true` instead
+- every other default stays defined in exactly one place (the existing four-arg constructor
+chain), reconstructed via record accessors with only that one field overridden. The practical
+outcome is still exactly what a "new-installs-only default" should be: an *existing* install's
+`settings.json` reads back `false` either way (missing field or explicit `false`), and only a
+genuinely fresh file (via `defaults()`, never before persisted) picks up `true` - just via a
+different mechanism than originally described.
+
+`mvn test` passed cleanly on the first run for this slice too - no bugs found. This closes out
+`design_docs/0074`'s original 5-slice plan in full.
 
 ## Stability ([[0051-stability-as-a-standing-consideration]])
 

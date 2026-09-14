@@ -84,51 +84,33 @@ than something that'd change a decision someone makes.
   display.
 - Info Hash v2 on the General tab - always "N/A", this engine has no BitTorrent v2/hybrid
   support. Not worth a permanently-empty field.
-- Peers tab "Connection type" (TCP/µTP) column - see the µTP item below; excluded today only
-  because there's exactly one type to show.
+- Peers tab "Connection type" (TCP/µTP) column - excluded when the Peers tab was originally
+  scoped since there was exactly one type to show; now buildable (see the completed µTP item
+  below) but not itself built yet.
 
-- **µTP (BEP 29) transport support** - the peer connection layer has been TCP-only
+- ~~**µTP (BEP 29) transport support** - the peer connection layer has been TCP-only
   (`java.net.Socket`) since the very first peer-connection design doc (`design_docs/0015`);
   never a deliberate TCP-vs-µTP decision, just the natural default that was never revisited.
   Two real costs, not just a missing UI column: (1) can't reach/be reached by peers that are
   µTP-only for a given direction, shrinking the effective peer pool somewhat; (2) no LEDBAT
   congestion backoff, so this client is more likely than a µTP-capable one to saturate a
   shared home connection and cause latency spikes for other traffic on it - a real concern
-  for a long-running self-hosted box. Raised while scoping the Peers tab's qBittorrent-parity
-  columns (2026-09-10) - excluding a "Connection type" column made sense today only because
-  we have exactly one type; this is the underlying gap that decision surfaced. A full BEP 29
-  implementation (reliable transport over UDP with its own congestion control) is a
-  substantial, self-contained subsystem - not something to bundle into any of the metrics/UI
-  work also being scoped around the same time. Needs its own design doc if picked up.
-  **When this is picked up, add the Peers tab's "Connection type" (TCP/µTP) column in the
-  same pass** - deliberately excluded from the current peers-tab scoping precisely because
-  there's only one type to show today; once µTP exists the column earns its place.
-  **Picked up (2026-09-13)** - scoped, full commitment confirmed after a cost/benefit review,
-  see `design_docs/0074` for the 5-slice plan. **Slice 1 done (2026-09-13)** - the wire codec
-  and standalone reliable-delivery state machine (`UtpSocket`), test-verified, not yet wired
-  into anything. **Slice 2 done (2026-09-13)** - the `PeerTransport` facade, letting
-  `PeerConnection` sit on either a real `Socket` or a `UtpSocket`; test-verified end to end
-  (a real BT handshake and message over a real `UtpSocket` pair), but still not reachable from
-  `TorrentSession`/`PeerServer`/`DhtNode` - zero existing call sites changed. **Slice 3 done
-  (2026-09-13)** - inbound wiring: `DhtNode` demuxes µTP from KRPC on its shared UDP socket/port
-  (new `UtpAcceptor`) and routes accepted connections into `TorrentSession` by info hash (new
-  `UtpPeerAcceptor`/`UtpIncomingConnectionHandler`/`TorrentSession.acceptIncomingUtpConnection`),
-  test-verified end to end (`DhtNodeUtpTest` - a real `UtpSocket` connecting against `DhtNode`
-  while ordinary DHT `ping()` traffic also flows through the same socket). Gated behind new
-  `Settings.utpEnabled` (default off, restart-required) - introduced in this slice rather than
-  deferred to slice 4, since the "not yet a polite citizen" congestion-control risk applies to
-  accepting a connection just as much as initiating one. **Slice 4 done (2026-09-14)** - outbound
-  wiring: `TorrentSession.attemptConnect()` tries µTP first, falling back to plain TCP on
-  failure, gated on the same `Settings.utpEnabled`. Also added `Settings.utpConnectTimeoutSeconds`
-  (default 2s, live, user-configurable) so a peer that never answers µTP - most peers today -
-  doesn't add several seconds of latency to every connection attempt; `UtpSocket` gained a new
-  `Duration`-bounded `connect()` overload for this, leaving its general-purpose ~5-6s handshake
-  budget unchanged for every other caller. Test-verified end to end (real µTP-speaking and
-  TCP-only fake peers, both reached via `TorrentSession.addKnownPeers()`). Only slice 5 (real
-  LEDBAT, replacing the interim fixed congestion window) remains - that's also what would let
-  `utpEnabled` reasonably default on. The Peers tab's "Connection type" (TCP/µTP) column is now
-  buildable (both directions exist) but isn't itself built yet - a separate, still-unstarted
-  follow-up.
+  for a long-running self-hosted box.~~ **Done (2026-09-14)** - picked up 2026-09-13, full
+  commitment confirmed after a cost/benefit review, shipped in 5 independently-landable slices;
+  see `design_docs/0074` for the complete history. `UtpSocket` (wire codec + reliable-delivery
+  state machine), a `PeerTransport` facade so `PeerConnection` sits on either a real `Socket` or
+  a `UtpSocket`, `DhtNode` demuxing µTP from KRPC on its shared UDP socket/port for inbound,
+  `TorrentSession.attemptConnect()` trying µTP first with TCP fallback for outbound, and finally
+  real RFC 6817 LEDBAT congestion control (`LedbatCongestionControl`) replacing the interim fixed
+  window - base-delay tracking, target queuing delay, an RTO-triggered backoff. Gated behind
+  `Settings.utpEnabled` (restart-required) and a user-configurable `Settings.
+  utpConnectTimeoutSeconds` (live, default 2s - how long the outbound µTP-first attempt waits
+  before falling back to TCP). `Settings.defaults()` now sets `utpEnabled=true` for genuinely new
+  installs (confirmed with the user, now that real LEDBAT makes that reasonable) - any existing
+  install's already-persisted settings.json keeps its own value regardless. Every slice was
+  test-verified end to end, `mvn test` passing cleanly on the first run for slices 3-5.
+  **Still open: the Peers tab's "Connection type" (TCP/µTP) column** - buildable now that both
+  directions exist, but not itself built yet; a separate follow-up if picked up.
 - Notification service (emails, or something else yet to be defined)
 - Run a user-configured script automatically when a torrent completes
 - ~~UI bug: refreshing the page while the torrent-detail side panel is open

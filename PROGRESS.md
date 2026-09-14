@@ -840,7 +840,31 @@ complete**, per the phased scope in [[0009-phased-scope]]:
   of its own) uses. Test-verified end to end (a real µTP-speaking fake peer, and a TCP-only one
   proving the fallback path itself works, both reached via `TorrentSession.addKnownPeers()`) -
   `mvn test` passed cleanly on the first run, no bugs found. See [[0074-utp-transport]]'s own
-  slice 4 implementation notes. Only slice 5 (real LEDBAT) remains of the original 5-slice plan.
+  slice 4 implementation notes.
+- **µTP (BEP 29) transport, slice 5 of 5: real LEDBAT (2026-09-14)** — a new, standalone
+  `LedbatCongestionControl` (RFC 6817 section 3.3's control law verbatim - base-delay tracking
+  over a 2-minute sliding window, 100ms target queuing delay, `cwnd += gain * off_target *
+  bytes_newly_acked * MSS / cwnd`) replaces `UtpSocket`'s interim fixed 64KB send-window cap.
+  Loss reaction piggybacks on the one signal this implementation has - an RTO firing - with a
+  straightforward per-event halving, floored at one MSS; selective-ack-driven loss detection and
+  any distinguished slow-start ramp stay deliberately deferred, matching the doc's own "not a
+  hard requirement for parity" call on extras. Small correctness addition alongside the main
+  work: `UtpSocket` now also honors the *peer's* advertised receive window (BEP 29's `wnd_size`,
+  decoded since slice 1 but never consulted before now) as an additional cap alongside the local
+  congestion window. **Confirmed with the user: `Settings.defaults()` now sets `utpEnabled=true`**
+  for genuinely new installs, closing out this doc's own long-standing "the point at which
+  utpEnabled becomes reasonable to default on" framing - a primitive `boolean` (unlike
+  `lsdEnabled`'s boxed one) has no absent-vs-explicit-false distinction for Jackson to exploit at
+  the settings.json boundary, so this had to be done at `defaults()` itself rather than via the
+  usual compact-constructor normalization; the practical effect is still new-installs-only, since
+  every existing install's already-persisted file reads back `false` either way. Test-verified
+  (a new `LedbatCongestionControlTest` unit-tests the control law itself against synthetic delay
+  samples/timestamps; a new `UtpSocketTest` case proves a transfer past the old fixed 64KB cap
+  still completes correctly over a real loopback pair) - `mvn test` passed cleanly on the first
+  run, no bugs found. See [[0074-utp-transport]]'s own slice 5 implementation notes. **This
+  closes out `design_docs/0074`'s original 5-slice plan in full.** The Peers tab's "Connection
+  type" (TCP/µTP) column is now buildable (both directions exist) but isn't itself built yet - a
+  separate, still-unstarted follow-up.
 
 **Not yet built** (the rest of Phase 3):
 
@@ -971,14 +995,9 @@ design consideration (thin frontend) alongside the existing stability one. Per-t
 bandwidth/connection limits and the tracker/peer-source details dialog (both picked from
 `TODO.md`, 2026-09-12) are also now done:
 
-1. **µTP (BEP 29) transport, slice 5** — slices 1-4 (wire codec/state machine, the
-   `PeerTransport` facade, inbound wiring, and now outbound wiring - `TorrentSession.
-   attemptConnect()` tries µTP first, falling back to TCP - both directions gated behind
-   `Settings.utpEnabled`, default off) are done and test-verified; see [[0074-utp-transport]].
-   The Peers tab's currently-excluded "Connection type" (TCP/µTP) column is now buildable (both
-   directions exist) but isn't itself built yet - a separate follow-up. Only slice 5 remains:
-   real LEDBAT, replacing the interim fixed congestion window - what would let `utpEnabled`
-   reasonably default on.
+1. **Peers tab "Connection type" (TCP/µTP) column** — excluded when the Peers tab was originally
+   scoped (exactly one type existed then); now buildable now that µTP's full 5-slice effort
+   ([[0074-utp-transport]]) is done end to end, but not itself built yet.
 2. **Per-tracker independent announce scheduling** — the more-correct alternative to the current
    shared-cycle concurrent-announce model ([[0022-multi-tracker-fallback]]), deferred as
    substantially bigger scope (`MultiTrackerClient` would need to own scheduling and push peers
