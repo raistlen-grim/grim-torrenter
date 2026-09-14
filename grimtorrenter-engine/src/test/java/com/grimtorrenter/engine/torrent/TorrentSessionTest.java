@@ -17,6 +17,7 @@ import com.grimtorrenter.engine.metainfo.TorrentFile;
 import com.grimtorrenter.engine.metainfo.TorrentMetadata;
 import com.grimtorrenter.engine.mse.EncryptionMode;
 import com.grimtorrenter.engine.peer.PeerSource;
+import com.grimtorrenter.engine.peer.PeerTransportType;
 import com.grimtorrenter.engine.peerwire.Bitfield;
 import com.grimtorrenter.engine.peerwire.Extended;
 import com.grimtorrenter.engine.peerwire.Handshake;
@@ -1004,6 +1005,8 @@ class TorrentSessionTest {
             session.addKnownPeers(List.of(fakePeerAddress), PeerSource.UNKNOWN);
 
             assertTrue(handshakeReceived.await(10, TimeUnit.SECONDS));
+            List<TorrentSession.PeerSnapshot> peers = awaitOnePeer(session);
+            assertEquals(PeerTransportType.UTP, peers.get(0).transportType());
         } finally {
             session.stop();
         }
@@ -1048,6 +1051,8 @@ class TorrentSessionTest {
             session.addKnownPeers(List.of(fakePeerAddress), PeerSource.UNKNOWN);
 
             assertTrue(handshakeReceived.await(10, TimeUnit.SECONDS));
+            List<TorrentSession.PeerSnapshot> peers = awaitOnePeer(session);
+            assertEquals(PeerTransportType.TCP, peers.get(0).transportType());
         } finally {
             session.stop();
         }

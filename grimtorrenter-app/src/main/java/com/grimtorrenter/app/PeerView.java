@@ -22,7 +22,10 @@ public record PeerView(
          * need that they have - see TorrentSession.PeerSnapshot's own Javadoc. See
          * design_docs/0067. */
         double percentAvailable,
-        double relevance
+        double relevance,
+        /** Which transport this connection actually uses - "TCP" or "UTP". Orthogonal to
+         * source above. See design_docs/0066's own addendum. */
+        String transportType
 ) {
     public static PeerView from(TorrentSession.PeerSnapshot snapshot) {
         return new PeerView(
@@ -38,6 +41,7 @@ public record PeerView(
                 snapshot.incoming(),
                 snapshot.source().name(),
                 snapshot.percentAvailable(),
-                snapshot.relevance());
+                snapshot.relevance(),
+                snapshot.transportType().name());
     }
 }

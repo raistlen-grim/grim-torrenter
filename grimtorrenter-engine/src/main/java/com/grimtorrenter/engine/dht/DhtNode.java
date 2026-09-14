@@ -401,10 +401,23 @@ public final class DhtNode implements AutoCloseable {
      * unhandleable packet must not kill the receive loop for every other torrent relying
      * on this shared node. µTP packets (design_docs/0074's slice 3) are demuxed ahead of the
      * KRPC decode by their own header shape - see UtpPacketCodec.looksLikeUtpPacket - and
-     * handed to utpAcceptor rather than ever reaching KrpcCodec.decode. */
+     * handed to utpAcceptor rather than ever reaching KrpcCodec.decode.
+     *
+     * <p><b>Real bug, fixed 2026-09-15</b>: the µTP branch below originally called
+     * utpAcceptor.handlePacket() outside this method's own try/catch, trusting that method's own
+     * "never lets an exception escape" Javadoc claim instead of independently enforcing it here
+     * too - exactly the kind of single-point-of-trust this method's own class-level design
+     * otherwise avoids. UtpAcceptor.handlePacket() is now fixed to actually honor its own
+     * contract (see its own dated note), but this defense-in-depth wrapping stays regardless -
+     * this method's own guarantee must never depend on a collaborator never having a bug, the
+     * same reasoning the KRPC path below has always followed. */
     private void handlePacket(byte[] data, InetSocketAddress from) {
         if (UtpPacketCodec.looksLikeUtpPacket(data)) {
-            utpAcceptor.handlePacket(data, from);
+            try {
+                utpAcceptor.handlePacket(data, from);
+            } catch (RuntimeException e) {
+                LOG.log(System.Logger.Level.DEBUG, "Ignoring unhandleable uTP packet from " + from, e);
+            }
             return;
         }
         try {

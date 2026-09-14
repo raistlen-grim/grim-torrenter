@@ -98,6 +98,17 @@ export class PeersTab {
     }
   }
 
+  /** Same "hide the uninteresting/default case" convention as UNKNOWN source above - TCP is
+   * the common case and gets no badge; only µTP (still experimental, design_docs/0074) is worth
+   * calling out. See design_docs/0066's own addendum. */
+  transportTypeLabel(transportType: Peer['transportType']): string {
+    return transportType === 'UTP' ? 'µ' : '';
+  }
+
+  transportTypeName(transportType: Peer['transportType']): string {
+    return transportType === 'UTP' ? 'µTP connection' : '';
+  }
+
   private readonly peers = toSignal(
     pollWhileInput(this.infoHash, POLL_INTERVAL_MS, (infoHash) => this.torrentService.peers(infoHash)).pipe(
       map((peers) => this.withRates(peers)),

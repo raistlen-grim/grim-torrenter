@@ -862,9 +862,48 @@ complete**, per the phased scope in [[0009-phased-scope]]:
   samples/timestamps; a new `UtpSocketTest` case proves a transfer past the old fixed 64KB cap
   still completes correctly over a real loopback pair) - `mvn test` passed cleanly on the first
   run, no bugs found. See [[0074-utp-transport]]'s own slice 5 implementation notes. **This
-  closes out `design_docs/0074`'s original 5-slice plan in full.** The Peers tab's "Connection
-  type" (TCP/µTP) column is now buildable (both directions exist) but isn't itself built yet - a
-  separate, still-unstarted follow-up.
+  closes out `design_docs/0074`'s original 5-slice plan in full.**
+- **Peers tab "Connection type" (TCP/µTP) column (2026-09-14)** — the follow-up [[0074-utp-transport]]
+  left open, picked up immediately once µTP's own 5 slices landed (the user's own stated reason:
+  makes manual verification of real µTP connections possible from the UI, not just logs/tests).
+  See [[0066-peer-diagnostics]]'s own addendum: a third fact about a connection, orthogonal to
+  source/direction, using the identical shape - a new `PeerTransportType` (`TCP`/`UTP`) enum,
+  `PeerConnection.transportType()` derived from the concrete `PeerTransport` already held (no
+  separately-stored field to keep in sync), flowing through `PeerSnapshot`/`PeerView`/the
+  frontend `Peer` model the same way `source` already does. Rendered as a small "µ" badge next to
+  the existing source badge, shown only for `UTP` - TCP (still the common case) stays unbadged,
+  the same "hide the uninteresting/default case" convention `UNKNOWN` source already established,
+  since the drawer's 430px width still has no room for a literal extra table column. Two existing
+  `TorrentSessionTest` µTP cases extended to also assert the reported transport type matches which
+  one actually got used - `mvn test` passed cleanly on the first run, no bugs found.
+- **Post-ship bug fix: DHT receive loop could die silently (2026-09-15)** — found via real-world
+  use (the new µ badge made it possible to confirm the stalled peers were plain TCP, not µTP,
+  which was the key clue), not by `mvn test`: user-reported stalled/intermittent downloading,
+  ~10 minutes to start, well below qBittorrent's speed on the same torrents - reproducing even
+  with `Settings.utpEnabled` off. Root cause: `DhtNode.handlePacket()`'s long-standing "a single
+  malformed packet must never kill the one receive-loop thread serving DHT for every torrent"
+  invariant was broken by slice 3's own µTP-demuxing branch, which called
+  `UtpAcceptor.handlePacket()` outside `handlePacket()`'s own try/catch - and `UtpAcceptor.
+  handlePacket()` itself didn't actually back up its own "never throws" Javadoc claim beyond the
+  initial packet decode. Since the demux check runs unconditionally (only *routing* an accepted
+  connection is gated by `utpEnabled`), any µTP-shaped datagram landing on the shared DHT socket -
+  ordinary internet background noise on an open UDP port, not necessarily an attack - had a real
+  chance of silently killing DHT for the rest of the process, degrading swarm quality/speed for
+  every torrent, matching every reported symptom. Fixed at both points (see
+  [[0074-utp-transport]]'s own dated addendum) plus a new regression test reproducing the exact
+  failure. User-confirmed after the fix: throughput now comparable to qBittorrent.
+- **Peers tab row layout fix (2026-09-15)** — also found via the same real-use session: the new
+  transport badge tipped an already-tight single-line peer row over the edge, and at the user's
+  actual panel width, the row's own `overflow: hidden; text-overflow: ellipsis` truncation was
+  clipping the choke/direction/source/transport badges (rendered last) before the address text
+  even finished - sometimes the port too. See [[0066-peer-diagnostics]]'s own addendum: `.peer-row`
+  moved from one line to two (address + badges spanning the full width on their own row, Done/
+  Down/Up explicitly re-aligned under their header columns on the row below) rather than widening
+  the side panel itself, which is a deliberate constraint driving the compact-badge design and
+  whose effects on other tabs were never verified. Within that line, address text and badges now
+  sit in separate flex regions (`justify-content: space-between`) so only the address truncates
+  under pressure and the badges are always fully visible, pinned to the right edge per the user's
+  own follow-up request.
 
 **Not yet built** (the rest of Phase 3):
 
@@ -995,22 +1034,19 @@ design consideration (thin frontend) alongside the existing stability one. Per-t
 bandwidth/connection limits and the tracker/peer-source details dialog (both picked from
 `TODO.md`, 2026-09-12) are also now done:
 
-1. **Peers tab "Connection type" (TCP/µTP) column** — excluded when the Peers tab was originally
-   scoped (exactly one type existed then); now buildable now that µTP's full 5-slice effort
-   ([[0074-utp-transport]]) is done end to end, but not itself built yet.
-2. **Per-tracker independent announce scheduling** — the more-correct alternative to the current
+1. **Per-tracker independent announce scheduling** — the more-correct alternative to the current
    shared-cycle concurrent-announce model ([[0022-multi-tracker-fallback]]), deferred as
    substantially bigger scope (`MultiTrackerClient` would need to own scheduling and push peers
    back asynchronously). Worth revisiting if the shared model's soft politeness cost (some
    trackers polled more often than their own stated interval) turns out to matter in practice.
-3. **Retrying a failed peer address after a cooldown** — `failedAddresses` exclusion is
+2. **Retrying a failed peer address after a cooldown** — `failedAddresses` exclusion is
    currently permanent for the whole session; deferred as the simpler option when the
    connection-refill fix landed (2026-09-06), worth revisiting if evidence shows transient
    failures (NAT timing, a briefly-offline peer) actually cost real peer count in practice.
-4. Smaller/unscoped `TODO.md` items: a notification service, running a user-configured script
+3. Smaller/unscoped `TODO.md` items: a notification service, running a user-configured script
    automatically on torrent completion, multi-select on the torrent list
    (checkboxes/shift-click for bulk Pause/Resume/Remove, 2026-09-03), and UI themes.
-5. The pending-action-vs-2s-snapshot-lag gap noted above, if it proves to matter in practice.
-6. The rate-limiting settings group's one remaining natural addition (a multi-rule schedule,
+4. The pending-action-vs-2s-snapshot-lag gap noted above, if it proves to matter in practice.
+5. The rate-limiting settings group's one remaining natural addition (a multi-rule schedule,
    per-torrent overrides now done via [[0072-per-torrent-limits]]) — pushed to the back of the
    backlog (2026-08-25), marginal real-world value relative to the items above.

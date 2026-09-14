@@ -23,15 +23,11 @@
 /* README's Peers tab content spec: minmax(0,1fr) 54px 62px 62px (Address/Done/Down/Up) - now
  * the full four columns (see design_docs/0067) now that per-peer completion percentage
  * exists. */
-.peer-header,
-.peer-row {
+.peer-header {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 54px 62px 62px;
   align-items: center;
   gap: 8px;
-}
-
-.peer-header {
   padding: 0 0 4px;
   font-size: 10px;
   text-transform: uppercase;
@@ -48,22 +44,69 @@
   flex-direction: column;
 }
 
+/* Two lines per peer, not one - found via real use (2026-09-15): the address text and its
+ * badges (choke/direction/source/transport) genuinely need the full row width to stay legible
+ * at once (a full IP:port plus several badges doesn't fit next to the Done/Down/Up numbers in
+ * this panel's own width, and truncating either the address or the badges loses real
+ * information either way - see .peer-address-text/.peer-badges below). .peer-address spans the
+ * whole grid width on its own row; .peer-col-done/-down/-up explicitly re-align the stats
+ * underneath the header's own Done/Down/Up columns on the row below, rather than an
+ * auto-placement default that would otherwise start them back at column 1. */
 .peer-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 54px 62px 62px;
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 2px;
   padding: 6px 0;
   border-bottom: 1px solid var(--rule);
   font-size: 11.5px;
+}
+
+.peer-col-done {
+  grid-column: 2;
+}
+
+.peer-col-down {
+  grid-column: 3;
+}
+
+.peer-col-up {
+  grid-column: 4;
 }
 
 .peer-row:last-child {
   border-bottom: none;
 }
 
+/* Spans the whole row (grid-column) and is itself a flex row (address text + badges) - the old
+ * rule put overflow:hidden/ellipsis on the address text *and* every flag/badge after it as one
+ * inline unit, so on a narrow row the choke/direction/source/transport badges (rendered last)
+ * were exactly what got clipped first, right when they matter most. Now only
+ * .peer-address-text shrinks/truncates; .peer-badges never does, so the badges are always fully
+ * visible regardless of how much of the address itself has to give way. Found via real use
+ * (2026-09-15) once the transport badge made an already-tight single line noticeably worse. */
 .peer-address {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.peer-address-text {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: monospace;
+}
+
+.peer-badges {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 /* Compact choke/interest state, inline rather than the old full-width StatusIndicator
@@ -85,6 +128,22 @@
  * capsule rather than an icon since there's no obvious icon-per-source set that wouldn't need
  * its own legend. See design_docs/0066. */
 .peer-source {
+  display: inline-block;
+  margin-left: var(--space-2);
+  padding: 0 3px;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.4;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  opacity: 0.55;
+}
+
+/* Connection type (µTP) badge - own class rather than reusing .peer-source, same "separately
+ * named despite visually identical" precedent .peer-flag/.peer-source already set. Only ever
+ * rendered for µTP (TCP, the common case, gets no badge - see peers-tab.ts's own
+ * transportTypeLabel()). See design_docs/0066's own addendum, design_docs/0074. */
+.peer-transport {
   display: inline-block;
   margin-left: var(--space-2);
   padding: 0 3px;

@@ -13,6 +13,7 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
@@ -112,5 +113,26 @@ class UtpAcceptorTest {
             initiatorSocket.close();
             readLoop.interrupt();
         }
+    }
+
+    /** Regression test for a real bug (fixed 2026-09-15, see handlePacket()'s own dated note):
+     * a SYN that can't be answered (here, because the shared socket is already closed - the
+     * same IOException shape a genuine transient network error would produce) used to throw an
+     * uncaught UtpException out of handlePacket() - which, called from DhtNode's own unguarded
+     * receive loop, silently killed DHT for the whole process on a single bad/hostile µTP-shaped
+     * datagram. Calling handlePacket() directly (not through a read loop) isolates exactly the
+     * property that matters: this method itself must never throw, regardless of what's calling
+     * it or how. */
+    @Test
+    @Timeout(value = 5, unit = TimeUnit.SECONDS)
+    void handlePacketNeverThrowsEvenWhenTheSharedSocketCanNoLongerSend() throws Exception {
+        DatagramSocket sharedSocket = new DatagramSocket();
+        sharedSocket.close(); // acceptShared()'s own STATE reply will now fail to send
+        UtpAcceptor acceptor = new UtpAcceptor(sharedSocket, utpSocket -> { });
+
+        UtpPacket syn = new UtpPacket(UtpPacketType.SYN, 1234, 0, 0, 1024, 1, 0, new byte[0]);
+        byte[] bytes = UtpPacketCodec.encode(syn);
+
+        assertDoesNotThrow(() -> acceptor.handlePacket(bytes, loopback(9)));
     }
 }

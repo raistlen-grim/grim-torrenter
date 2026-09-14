@@ -115,3 +115,42 @@ established.
 - **Wasted bytes reset per session, not persisted** - rejected (user decision); would have been
   inconsistent with every other lifetime metric [[0064-persistent-lifetime-stats]] just built,
   for no real savings (the marker/flush machinery already exists).
+
+## Addendum (2026-09-14): connection type (TCP/µTP)
+
+The Peers tab's "Connection type" column, deliberately excluded when this doc was originally
+written (exactly one transport existed then - see [[0074-utp-transport]]'s own TODO.md
+cross-reference), added now that µTP's full 5-slice effort is done end to end. A third fact
+about a connection, orthogonal to source/direction above, using the exact same shape: a new
+`PeerTransportType` enum (`TCP`, `UTP`; `peer` package, alongside `PeerSource`), a new
+`PeerConnection.transportType()` accessor - derived from the concrete `PeerTransport` already
+held (`instanceof UtpPeerTransport`), not a separately-stored field, since there's nothing to
+keep in sync - flowing through `PeerSnapshot`/`PeerView`/the frontend `Peer` model the same way
+`source` already does.
+
+UI treatment follows the same "hide the uninteresting/default case" convention `UNKNOWN` source
+already established: TCP (still the common case) gets no badge at all; only `UTP` renders one, a
+small "µ" capsule (`.peer-transport`, visually identical to `.peer-source` but its own class,
+matching how `.peer-flag`/`.peer-source` are already two separately-named classes despite
+similar treatment) next to the existing source badge in the peer row - the drawer's 430px width
+still has no room for a literal extra table column, the same reasoning that shaped the source
+badge's own compact-letter design.
+
+**Addendum (2026-09-15): the peer row itself needed restructuring to fit this.** Found via real
+use, not review: the new transport badge tipped an already-tight single-line row (address text +
+every choke/direction/source/transport badge, all inside one `overflow: hidden; text-overflow:
+ellipsis` span) over the edge - at the user's actual panel width, `.peer-address`'s ellipsis
+truncation was clipping the *badges* (rendered last in the DOM) before the address text even
+finished, sometimes cutting off the port too. Fixed in two steps, both confirmed against the
+user's own real layout:
+- `.peer-row` moved from one line to two: `.peer-address` now spans the full grid width
+  (`grid-column: 1 / -1`) on its own row, with `.peer-col-done`/`.peer-col-down`/`.peer-col-up`
+  explicitly re-aligned under the header's own Done/Down/Up columns on the row below (grid
+  auto-placement would otherwise restart them at column 1). Rejected widening the side panel
+  itself instead - that width is a deliberate, documented constraint driving the compact-badge
+  design in the first place, and widening it risks effects on other tabs never verified.
+- Within that now-full-width address line, `.peer-address` split into `.peer-address-text`
+  (still the only thing that truncates, via `min-width: 0; overflow: hidden`) and `.peer-badges`
+  (`flex: 0 0 auto` - never shrinks, so the badges are always fully visible regardless of
+  address length), with `justify-content: space-between` pushing the address text left and the
+  badges right.

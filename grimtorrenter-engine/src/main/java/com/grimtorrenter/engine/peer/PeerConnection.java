@@ -131,6 +131,13 @@ public final class PeerConnection implements AutoCloseable {
         return source;
     }
 
+    /** Which transport this connection actually uses - orthogonal to source()/incoming() above,
+     * derived from the concrete PeerTransport already held rather than a separately-stored
+     * field, since there's nothing to keep in sync. See design_docs/0066's own addendum. */
+    public PeerTransportType transportType() {
+        return transport instanceof UtpPeerTransport ? PeerTransportType.UTP : PeerTransportType.TCP;
+    }
+
     /** Same as the five-arg overload below but with no rate limiting - for every caller
      * that predates rate limiting and doesn't need it (tests, the one-shot magnet metadata
      * fetcher, which never transfers real piece data). See design_docs/0042. */

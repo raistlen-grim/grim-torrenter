@@ -7,6 +7,7 @@ import com.grimtorrenter.engine.mse.EncryptionMode;
 import com.grimtorrenter.engine.peer.PeerConnection;
 import com.grimtorrenter.engine.peer.PeerConnectionListener;
 import com.grimtorrenter.engine.peer.PeerSource;
+import com.grimtorrenter.engine.peer.PeerTransportType;
 import com.grimtorrenter.engine.peerwire.Bitfield;
 import com.grimtorrenter.engine.peerwire.Cancel;
 import com.grimtorrenter.engine.peerwire.Choke;
@@ -1794,7 +1795,10 @@ public final class TorrentSession implements AutoCloseable {
              * a peer isn't helping much (they may have plenty overall but little we lack). 0
              * when we need nothing (already complete/seeding) - moot once there's nothing left
              * to want. See design_docs/0067. */
-            double relevance
+            double relevance,
+            /** Orthogonal to source/incoming above - which transport this connection actually
+             * uses. See design_docs/0066's own addendum. */
+            PeerTransportType transportType
     ) {
     }
 
@@ -1823,7 +1827,7 @@ public final class TorrentSession implements AutoCloseable {
                     double relevance = stillNeeded == 0 ? 0 : (double) relevant / stillNeeded;
                     return new PeerSnapshot(c.remoteAddress(), c.remotePeerId(), c.amChoking(), c.amInterested(),
                             c.peerChoking(), c.peerInterested(), c.downloadedBytes(), c.uploadedBytes(),
-                            c.incoming(), c.source(), percentAvailable, relevance);
+                            c.incoming(), c.source(), percentAvailable, relevance, c.transportType());
                 })
                 .toList();
     }

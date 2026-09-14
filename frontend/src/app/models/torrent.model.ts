@@ -109,6 +109,9 @@ export interface Peer {
   /** Fraction (0-1) of what *we* still need that this peer has - 0 once we need nothing. See
    * design_docs/0067. */
   relevance: number;
+  /** Which transport this connection actually uses - orthogonal to source above. See
+   * design_docs/0066's own addendum. */
+  transportType: 'TCP' | 'UTP';
 }
 
 /** Matches the backend's SeedingLimitOverride record - one torrent's override of the global

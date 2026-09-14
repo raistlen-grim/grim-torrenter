@@ -332,6 +332,39 @@ different mechanism than originally described.
 `mvn test` passed cleanly on the first run for this slice too - no bugs found. This closes out
 `design_docs/0074`'s original 5-slice plan in full.
 
+## Post-ship bug (2026-09-15): DHT receive loop could die silently
+
+Found via real-world use, not `mvn test` - the user reported torrents stalling/downloading only
+intermittently, taking ~10 minutes to start at all, and running well below the same torrents'
+speed in qBittorrent, **reproducing even with `Settings.utpEnabled` off**. That last detail was
+the key clue: it ruled out the µTP-first-attempt latency tax (a real, expected cost, but one that
+can't exist at all when `utpEnabled` is false) and pointed instead at something unconditional.
+
+Root cause: `DhtNode.handlePacket()`'s own long-standing invariant - a single malformed/hostile
+packet must never kill its one receive-loop thread, since that thread serves DHT for every
+torrent in the process, not just one - was broken by slice 3's own µTP-demuxing branch. That
+branch called `UtpAcceptor.handlePacket()` *outside* `handlePacket()`'s own try/catch, trusting
+`UtpAcceptor.handlePacket()`'s own "never lets an exception escape" Javadoc claim - which the
+implementation didn't actually back up: only `UtpPacketCodec.decode()`'s own `UtpException` was
+guarded, not `deliverIncoming()`/`acceptShared()` (each of which can throw one too, via
+`sendRaw()` wrapping a send failure). The demuxing check itself
+(`UtpPacketCodec.looksLikeUtpPacket()`) runs unconditionally on every incoming datagram,
+regardless of `utpEnabled` - only routing an *accepted* connection onward is gated by that
+setting. So any µTP-shaped datagram on the shared DHT socket - not necessarily an attack, an
+actively-participating DHT node gets a constant trickle of internet background noise on its open
+UDP port regardless - had a real chance of throwing an exception that silently killed the DHT
+receive loop for the rest of the process. Once DHT dies mid-session, tracker-sourced peers still
+trickle in, but losing an entire concurrent peer-discovery source measurably degrades swarm
+quality/speed - matching every symptom reported.
+
+Fixed at both points: `UtpAcceptor.handlePacket()` now actually honors its own contract (wraps
+`deliverIncoming()`/`acceptShared()` in the same broad catch its Javadoc always claimed), and
+`DhtNode.handlePacket()` independently wraps its own call into that method too - this class's own
+guarantee must never depend on a collaborator never having a bug, the same reasoning its existing
+KRPC path already followed. New regression test (`UtpAcceptorTest`) reproduces the exact failure
+(a send that can't succeed) and proves `handlePacket()` no longer lets it escape. User-confirmed
+after the fix: throughput now comparable to qBittorrent on the same torrents.
+
 ## Stability ([[0051-stability-as-a-standing-consideration]])
 
 - **Unbounded growth**: a `UtpSocket`'s retransmission-timer/congestion-window state is bounded

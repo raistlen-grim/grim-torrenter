@@ -84,9 +84,13 @@ than something that'd change a decision someone makes.
   display.
 - Info Hash v2 on the General tab - always "N/A", this engine has no BitTorrent v2/hybrid
   support. Not worth a permanently-empty field.
-- Peers tab "Connection type" (TCP/µTP) column - excluded when the Peers tab was originally
-  scoped since there was exactly one type to show; now buildable (see the completed µTP item
-  below) but not itself built yet.
+- ~~Peers tab "Connection type" (TCP/µTP) column - excluded when the Peers tab was originally
+  scoped since there was exactly one type to show.~~ **Done (2026-09-14)** - see
+  `design_docs/0066`'s own addendum. A `PeerTransportType` (`TCP`/`UTP`) enum, same "orthogonal
+  fact about a connection" shape as `PeerSource`, flowing through `PeerSnapshot`/`PeerView`/the
+  frontend `Peer` model the same way; rendered as a small "µ" badge next to the existing source
+  badge, shown only for `UTP` (TCP, the common case, stays unbadged, same convention `UNKNOWN`
+  source already uses) - the drawer's 430px width still has no room for a literal extra column.
 
 - ~~**µTP (BEP 29) transport support** - the peer connection layer has been TCP-only
   (`java.net.Socket`) since the very first peer-connection design doc (`design_docs/0015`);
@@ -108,9 +112,9 @@ than something that'd change a decision someone makes.
   before falling back to TCP). `Settings.defaults()` now sets `utpEnabled=true` for genuinely new
   installs (confirmed with the user, now that real LEDBAT makes that reasonable) - any existing
   install's already-persisted settings.json keeps its own value regardless. Every slice was
-  test-verified end to end, `mvn test` passing cleanly on the first run for slices 3-5.
-  **Still open: the Peers tab's "Connection type" (TCP/µTP) column** - buildable now that both
-  directions exist, but not itself built yet; a separate follow-up if picked up.
+  test-verified end to end, `mvn test` passing cleanly on the first run for slices 3-5. The
+  Peers tab's "Connection type" (TCP/µTP) column follow-up is also now done - see that item
+  above.
 - Notification service (emails, or something else yet to be defined)
 - Run a user-configured script automatically when a torrent completes
 - ~~UI bug: refreshing the page while the torrent-detail side panel is open
