@@ -256,6 +256,36 @@ looks like ordinary UDP to DPI (MSE's whole point), so real clients (e.g. libtor
 `mvn test` passed cleanly on the first run for this slice - no bugs found once written, unlike
 slices 1-2's respective connection-ID-swap/record-equals and test-race findings.
 
+## Slice 4 implementation notes (2026-09-14)
+
+Built outbound wiring exactly as scoped: `TorrentSession.attemptConnect()` now tries µTP first
+(via a new private `connect()`/`connectViaUtp()` pair) and falls back to plain TCP on failure,
+gated on the same `Settings.utpEnabled` slice 3 introduced. No MSE over µTP, matching slice 3's
+inbound precedent.
+
+**One real addition beyond the original slice 4 text, per the user's own request mid-session**:
+the µTP leg's own connect timeout is a new user-configurable `Settings.utpConnectTimeoutSeconds`
+(default 2s, genuinely live - read fresh on every attempt), not a hardcoded constant. This
+mattered because `UtpSocket`'s existing general-purpose handshake budget
+(`HANDSHAKE_MAX_RETRIES`/`HANDSHAKE_RETRY_INTERVAL_MILLIS`) is ~5-6 seconds worst case - fine for
+a connection that's expected to eventually succeed, but far too slow for "try µTP, then quickly
+give TCP a chance" given most peers today aren't µTP-capable at all. `UtpSocket` gained a new
+`connect(socket, address, Duration timeout)` overload (retry *count* derived from the timeout at
+the existing fixed retry interval - no second independent timing knob), used only by
+`TorrentSession`'s own fallback path; the general-purpose 2-arg `connect()` and the
+package-private wraparound-test seam are both unchanged.
+
+`utpEnabled` itself stayed a plain, once-captured-at-construction boolean (not a `Supplier`, unlike
+`utpConnectTimeoutSeconds`) - deliberately, to keep this one setting's liveness semantics uniform
+between its inbound (slice 3, structurally restart-required since `DhtNode`'s acceptor is wired at
+`TorrentEngine` construction) and outbound (this slice, which has no structural restart
+requirement of its own) uses, rather than have it behave differently depending on direction.
+
+`mvn test` passed cleanly on the first run for this slice too - no bugs found, matching slice 3's
+own experience (slices 1-2's bugs were both found here; the wiring slices 3-4 haven't reproduced
+that pattern, plausibly because they mostly compose already-tested slice 1-2 building blocks
+rather than introducing new protocol-level state machinery).
+
 ## Stability ([[0051-stability-as-a-standing-consideration]])
 
 - **Unbounded growth**: a `UtpSocket`'s retransmission-timer/congestion-window state is bounded
@@ -290,6 +320,15 @@ slices 1-2's respective connection-ID-swap/record-equals and test-race findings.
   same un-rate-limited accept path), not a new gap uTP specifically introduces. Gated off by
   default regardless (`Settings.utpEnabled`), so this exposure doesn't exist at all until a user
   opts in.
+- **A fresh `DatagramSocket` per outbound attempt (slice 4)**: unlike inbound (shared with
+  `DhtNode`'s one socket), each outbound µTP attempt opens its own ephemeral socket - exactly
+  mirroring how outbound TCP already works (`Socket.connect()` also uses an OS-assigned ephemeral
+  port, never the fixed listen port). Cleanup on every exit path: closed explicitly on a failed
+  handshake (`TorrentSession.connectViaUtp()`'s own catch block), and transitively via
+  `UtpSocket.close()` (its `ownsSocket=true` path) once the resulting `PeerConnection` closes on
+  success - no path leaves the socket open with nothing left referencing it. Bounded by the same
+  `connectionSlots`/`maxConnections` cap every other connection attempt already respects, so this
+  isn't an unbounded-fan-out concern distinct from what already existed for TCP.
 
 ## Alternatives considered
 

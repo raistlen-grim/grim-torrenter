@@ -785,8 +785,43 @@ public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
      * defaults to disabled. Encryption mode defaults to PREFERRED - see this record's own
      * Javadoc for why that default differs from the rate limits' opt-in default. Burst
      * defaults to 0, meaning "the original 1-second default" - see this record's own Javadoc.
-     * Both seeding limits default disabled, same opt-in reasoning as the rate limits. */
+     * Both seeding limits default disabled, same opt-in reasoning as the rate limits.
+     *
+     * <p>utpEnabled defaults true here (design_docs/0074's slice 5, confirmed with the user) -
+     * unlike every other field on this record, this can't be done by changing what any of the
+     * telescoping constructors above default utpEnabled to, since every one of those
+     * legitimately needs to keep defaulting it false for its own already-established "predates
+     * this field" callers. Instead this builds the ordinary defaults first, then reconstructs
+     * with every field read back via its own accessor except utpEnabled - keeping every other
+     * default defined in exactly one place (the four-arg constructor chain above) while only
+     * this one factory method's own result actually differs. See that field's own Javadoc for
+     * why a fresh settings.json is the only thing this can affect - an existing install's
+     * already-persisted file (explicit false, or missing the field entirely) reads back false
+     * either way, a primitive boolean having no absent-vs-explicit-false distinction to exploit
+     * the way lsdEnabled's own boxed Boolean does. */
     public static Settings defaults() {
-        return new Settings(true, true, 0, 0);
+        Settings base = new Settings(true, true, 0, 0);
+        return new Settings(base.dhtEnabled(), base.acceptIncomingConnections(),
+                base.uploadRateLimitBytesPerSec(), base.downloadRateLimitBytesPerSec(),
+                base.rateLimitScheduleEnabled(), base.rateLimitScheduleStart(), base.rateLimitScheduleEnd(),
+                base.scheduledUploadRateLimitBytesPerSec(), base.scheduledDownloadRateLimitBytesPerSec(),
+                base.encryptionMode(), base.rateLimitBurstSeconds(),
+                base.seedRatioLimitEnabled(), base.seedRatioLimit(),
+                base.seedTimeLimitEnabled(), base.seedTimeLimitMinutes(),
+                base.eventLogRetentionDays(),
+                base.watchFolderEnabled(), base.watchFolderRetentionDays(),
+                base.theme(),
+                base.magnetFetchTimeBudgetSeconds(), base.magnetFetchCandidatesPerRound(),
+                base.magnetFetchConcurrencyLimit(),
+                base.dhtReannounceIntervalSeconds(),
+                base.dhtRefreshIntervalSeconds(),
+                base.watchFolderPollIntervalSeconds(),
+                base.authEnabled(),
+                base.authTokenTtlDays(),
+                base.lsdEnabled(),
+                base.lsdAnnounceIntervalSeconds(),
+                base.maxConnectionsPerTorrent(),
+                true, // utpEnabled - the one field this factory changes, see this method's own Javadoc
+                base.utpConnectTimeoutSeconds());
     }
 }

@@ -823,6 +823,24 @@ complete**, per the phased scope in [[0009-phased-scope]]:
   `DhtNode` while ordinary DHT `ping()` traffic flows through the very same socket
   (`DhtNodeUtpTest`) - `mvn test` passed cleanly on the first run, no bugs found. See
   [[0074-utp-transport]]'s own slice 3 implementation notes.
+- **µTP (BEP 29) transport, slice 4 of 5: outbound wiring (2026-09-14)** — `TorrentSession.
+  attemptConnect()` now tries µTP first, falling back to plain TCP on failure (confirmed with the
+  user - not a race), gated on the same `Settings.utpEnabled` slice 3 introduced; no MSE over
+  µTP, mirroring slice 3's inbound precedent. Per a mid-slice user request, the µTP leg's own
+  connect timeout is a new, genuinely live `Settings.utpConnectTimeoutSeconds` (default 2s, user-
+  configurable in the Network settings group) rather than a hardcoded constant - `UtpSocket`'s
+  existing general-purpose handshake budget is ~5-6 seconds worst case, which would otherwise add
+  that much latency to every connection attempt against the many peers that aren't µTP-capable.
+  `UtpSocket` gained a new `Duration`-bounded `connect()` overload for this (retry *count* derived
+  from the timeout at the existing fixed retry interval), used only by this fallback path - the
+  general-purpose 2-arg `connect()` and the wraparound-test seam are both unchanged.
+  `utpEnabled` itself stayed a plain, once-captured boolean rather than a `Supplier` (unlike
+  `utpConnectTimeoutSeconds`) - deliberately, so this one setting's liveness semantics stay
+  uniform between its inbound (structurally restart-required) and outbound (no such requirement
+  of its own) uses. Test-verified end to end (a real µTP-speaking fake peer, and a TCP-only one
+  proving the fallback path itself works, both reached via `TorrentSession.addKnownPeers()`) -
+  `mvn test` passed cleanly on the first run, no bugs found. See [[0074-utp-transport]]'s own
+  slice 4 implementation notes. Only slice 5 (real LEDBAT) remains of the original 5-slice plan.
 
 **Not yet built** (the rest of Phase 3):
 
@@ -953,17 +971,14 @@ design consideration (thin frontend) alongside the existing stability one. Per-t
 bandwidth/connection limits and the tracker/peer-source details dialog (both picked from
 `TODO.md`, 2026-09-12) are also now done:
 
-1. **µTP (BEP 29) transport, slices 4-5** — slices 1 (wire codec + standalone reliable-delivery
-   state machine, `UtpSocket`), 2 (the `PeerTransport` facade so `PeerConnection` can sit on
-   either transport), and 3 (inbound wiring - `DhtNode` demuxes µTP from KRPC on its shared UDP
-   socket and routes accepted connections into `TorrentSession` by info hash) are done and
-   test-verified; see [[0074-utp-transport]]. Gated behind new `Settings.utpEnabled` (default
-   off, restart-required - introduced in slice 3 rather than deferred to slice 4, since the
-   interim congestion window's citizenship risk applies to accepting a connection just as much
-   as initiating one). Next up is slice 4 (outbound wiring, µTP-first/TCP-fallback in
-   `TorrentSession.attemptConnect()`) - the Peers tab's currently-excluded "Connection type"
-   column becomes buildable once it lands. Slice 5 (real LEDBAT, replacing the interim fixed
-   congestion window) is what lets `Settings.utpEnabled` reasonably default on.
+1. **µTP (BEP 29) transport, slice 5** — slices 1-4 (wire codec/state machine, the
+   `PeerTransport` facade, inbound wiring, and now outbound wiring - `TorrentSession.
+   attemptConnect()` tries µTP first, falling back to TCP - both directions gated behind
+   `Settings.utpEnabled`, default off) are done and test-verified; see [[0074-utp-transport]].
+   The Peers tab's currently-excluded "Connection type" (TCP/µTP) column is now buildable (both
+   directions exist) but isn't itself built yet - a separate follow-up. Only slice 5 remains:
+   real LEDBAT, replacing the interim fixed congestion window - what would let `utpEnabled`
+   reasonably default on.
 2. **Per-tracker independent announce scheduling** — the more-correct alternative to the current
    shared-cycle concurrent-announce model ([[0022-multi-tracker-fallback]]), deferred as
    substantially bigger scope (`MultiTrackerClient` would need to own scheduling and push peers

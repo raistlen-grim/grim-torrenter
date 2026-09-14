@@ -101,6 +101,33 @@ class UtpSocketTest {
         }
     }
 
+    /** design_docs/0074's slice 5 own Testing section - the one integration risk a pure
+     * LedbatCongestionControlTest unit test can't catch on its own: a transfer larger than the
+     * old fixed 64KB window cap must still complete correctly, proving the ack-driven growth
+     * loop (acquireWindowSlot() re-checking a shrinking/growing dynamic cap) doesn't stall or
+     * deadlock across many congestion-window updates, not just a handful. */
+    @Test
+    @Timeout(value = 30, unit = TimeUnit.SECONDS)
+    void largeTransferCompletesCorrectlyUnderLedbatGrowth() throws Exception {
+        DatagramSocket initiatorSocket = new DatagramSocket();
+        DatagramSocket acceptorSocket = new DatagramSocket();
+        ConnectedPair pair = connectPair(initiatorSocket, acceptorSocket);
+        UtpSocket sender = pair.initiator();
+        UtpSocket receiver = pair.acceptor();
+        try {
+            byte[] data = new byte[200 * 1024]; // well past the old fixed 64KB cap
+            new Random(99).nextBytes(data);
+
+            sender.send(data);
+            byte[] received = readExactly(receiver, data.length);
+
+            assertArrayEquals(data, received);
+        } finally {
+            sender.close();
+            receiver.close();
+        }
+    }
+
     /** design_docs/0074's own "no selective ack yet" note: dropping the second of several
      * packets means every packet sent after it also arrives "out of order" and gets silently
      * dropped by the receiver in turn, so recovery here means the sender's own per-packet RTO

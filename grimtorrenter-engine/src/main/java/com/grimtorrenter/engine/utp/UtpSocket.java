@@ -35,12 +35,13 @@ import java.util.concurrent.atomic.AtomicInteger;
  * the external demuxer (utp.UtpAcceptor) that owns the shared socket's one reader feeds it
  * packets via deliverIncoming(), and its close() leaves the shared socket itself open.
  *
- * <p>Congestion control here is a fixed, conservative byte-window cap ({@link #WINDOW_CAP_BYTES}),
- * not LEDBAT (design_docs/0074's slice 5) - correct and interoperable, just not yet an adaptive,
- * polite citizen on a shared connection. There is no selective-ack support (also slice 5): a
- * packet that arrives out of order is never buffered for later delivery, only ever dropped and
- * recovered via the sender's own retransmission timeout - a real, accepted inefficiency under
- * loss, not a bug.
+ * <p>Congestion control (design_docs/0074's slice 5) is real LEDBAT (RFC 6817) - see
+ * {@link LedbatCongestionControl} for the delay-based control law itself; this class only feeds
+ * it delay/ack/loss signals and asks it for the current send-window cap. Still no selective-ack
+ * support (deliberately deferred, same doc): a packet that arrives out of order is never
+ * buffered for later delivery, only ever dropped and recovered via the sender's own
+ * retransmission timeout (this connection's one loss signal, also what triggers LEDBAT's own
+ * backoff) - a real, accepted inefficiency under loss, not a bug.
  *
  * <p>getInputStream()/getOutputStream()/remoteAddress()/setReceiveTimeoutMillis() (slice 2) exist
  * purely so peer.PeerConnection (a different module-internal package) can sit on top of a
@@ -51,7 +52,12 @@ public final class UtpSocket implements AutoCloseable {
 
     private static final int VERSION_UNUSED_ACK = 0;
     private static final int MAX_PAYLOAD_LENGTH = 1400;
-    private static final int WINDOW_CAP_BYTES = 64 * 1024;
+    /** This side's own advertised receive window (BEP 29's wnd_size field) - fixed and generous,
+     * since this class has no bounded receive buffer to advertise a real backpressure signal
+     * for. Decoupled from the send-side congestion window (design_docs/0074's slice 5,
+     * LedbatCongestionControl) - those are two different BEP 29 concepts this class used to
+     * conflate by reusing one constant for both. */
+    private static final int ADVERTISED_RECEIVE_WINDOW_BYTES = 64 * 1024;
     private static final int RECEIVE_BUFFER_SIZE = 4096;
 
     private static final long INITIAL_RTO_MILLIS = 1000;
@@ -85,6 +91,15 @@ public final class UtpSocket implements AutoCloseable {
     private final Map<Integer, Outstanding> outstanding = new LinkedHashMap<>();
     private final Object windowLock = new Object();
     private int bytesInFlight;
+    private final LedbatCongestionControl congestionControl = new LedbatCongestionControl(MAX_PAYLOAD_LENGTH);
+    /** The peer's own last-advertised receive window (BEP 29's wnd_size, decoded on every
+     * inbound packet) - design_docs/0074's slice 5, a small correctness addition beyond the
+     * interim window's own behavior: a well-behaved sender's effective window is
+     * min(cwnd, peer's advertised window), not the congestion window alone. Long.MAX_VALUE
+     * (effectively unconstrained by this alone) until the first real packet arrives - the
+     * handshake's own SYN/STATE exchange happens outside handleIncoming() and never updates
+     * this, same as it never fed the RTT estimator either. */
+    private volatile long remoteWindowBytes = Long.MAX_VALUE;
 
     private volatile double srttMillis = -1;
     private volatile double rttVarMillis;
@@ -189,7 +204,7 @@ public final class UtpSocket implements AutoCloseable {
         int recvId = randomUint16();
         int sendId = wrap16(recvId + 1);
 
-        UtpPacket syn = new UtpPacket(UtpPacketType.SYN, recvId, nowMicros(), 0, WINDOW_CAP_BYTES, initialSeqNr,
+        UtpPacket syn = new UtpPacket(UtpPacketType.SYN, recvId, nowMicros(), 0, ADVERTISED_RECEIVE_WINDOW_BYTES, initialSeqNr,
                 VERSION_UNUSED_ACK, new byte[0]);
 
         try {
@@ -252,7 +267,7 @@ public final class UtpSocket implements AutoCloseable {
             int initialLocalSeqNr = randomUint16();
 
             UtpPacket state = new UtpPacket(UtpPacketType.STATE, sendConnectionId, nowMicros(),
-                    delaySinceMicros(packet.timestampMicros()), WINDOW_CAP_BYTES, initialLocalSeqNr, packet.seqNr(),
+                    delaySinceMicros(packet.timestampMicros()), ADVERTISED_RECEIVE_WINDOW_BYTES, initialLocalSeqNr, packet.seqNr(),
                     new byte[0]);
             sendRaw(socket, remoteAddress, state);
             return new UtpSocket(socket, remoteAddress, sendConnectionId, receiveConnectionId,
@@ -274,7 +289,7 @@ public final class UtpSocket implements AutoCloseable {
         int initialLocalSeqNr = randomUint16();
 
         UtpPacket state = new UtpPacket(UtpPacketType.STATE, sendConnectionId, nowMicros(),
-                delaySinceMicros(syn.timestampMicros()), WINDOW_CAP_BYTES, initialLocalSeqNr, syn.seqNr(),
+                delaySinceMicros(syn.timestampMicros()), ADVERTISED_RECEIVE_WINDOW_BYTES, initialLocalSeqNr, syn.seqNr(),
                 new byte[0]);
         sendRaw(socket, remoteAddress, state);
         return new UtpSocket(socket, remoteAddress, sendConnectionId, receiveConnectionId,
@@ -333,7 +348,7 @@ public final class UtpSocket implements AutoCloseable {
 
     private void acquireWindowSlot(int length) {
         synchronized (windowLock) {
-            while (bytesInFlight + length > WINDOW_CAP_BYTES && !closed) {
+            while (bytesInFlight + length > Math.min(congestionControl.cwndBytes(), remoteWindowBytes) && !closed) {
                 try {
                     windowLock.wait();
                 } catch (InterruptedException e) {
@@ -433,8 +448,16 @@ public final class UtpSocket implements AutoCloseable {
     }
 
     private void handleIncoming(UtpPacket packet) {
-        lastObservedDelayMicros = delaySinceMicros(packet.timestampMicros());
-        acknowledgeOutstanding(packet.ackNr());
+        long delayMicros = delaySinceMicros(packet.timestampMicros());
+        lastObservedDelayMicros = delayMicros;
+        // Must happen before acknowledgeOutstanding()/onBytesAcked() below - see
+        // LedbatCongestionControl.onDelaySample()'s own Javadoc on why order matters here.
+        congestionControl.onDelaySample(delayMicros, System.currentTimeMillis());
+        remoteWindowBytes = packet.windowSize();
+        int bytesAcked = acknowledgeOutstanding(packet.ackNr());
+        if (bytesAcked > 0) {
+            congestionControl.onBytesAcked(bytesAcked, delayMicros);
+        }
 
         if (packet.type() == UtpPacketType.STATE) {
             return; // Pure ack - never advances remote sequence tracking, never triggers a reply
@@ -465,7 +488,7 @@ public final class UtpSocket implements AutoCloseable {
      * window bytes and, unless it was ever retransmitted (Karn's algorithm - a retransmitted
      * packet's timing can't tell us which attempt the ack is actually for), contributes an RTT
      * sample. */
-    private void acknowledgeOutstanding(int ackNr) {
+    private int acknowledgeOutstanding(int ackNr) {
         List<Outstanding> acked = new ArrayList<>();
         synchronized (outstandingLock) {
             Iterator<Outstanding> iterator = outstanding.values().iterator();
@@ -478,12 +501,15 @@ public final class UtpSocket implements AutoCloseable {
             }
         }
         long now = System.nanoTime();
+        int bytesAcked = 0;
         for (Outstanding o : acked) {
             releaseWindowSlot(o.payload.length);
+            bytesAcked += o.payload.length;
             if (o.retryCount == 0) {
                 sampleRtt(TimeUnit.NANOSECONDS.toMillis(now - o.sentAtNanos));
             }
         }
+        return bytesAcked;
     }
 
     private void sendAck() {
@@ -492,7 +518,7 @@ public final class UtpSocket implements AutoCloseable {
 
     private void transmit(UtpPacketType type, int seqNr, byte[] payload) {
         UtpPacket packet = new UtpPacket(type, sendConnectionId, nowMicros(), lastObservedDelayMicros,
-                WINDOW_CAP_BYTES, seqNr, remoteAckNr, payload);
+                ADVERTISED_RECEIVE_WINDOW_BYTES, seqNr, remoteAckNr, payload);
         sendRaw(socket, remoteAddress, packet);
     }
 
@@ -527,6 +553,9 @@ public final class UtpSocket implements AutoCloseable {
     private void retransmit(Outstanding outstanding) {
         outstanding.retryCount++;
         outstanding.sentAtNanos = System.nanoTime();
+        // This connection's one loss signal (design_docs/0074's slice 5) - no selective
+        // ack/fast retransmit yet, so an RTO firing is the only way loss is ever detected.
+        congestionControl.onLoss();
         if (outstanding.retryCount > MAX_RETRIES) {
             close();
             return;

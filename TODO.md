@@ -117,9 +117,18 @@ than something that'd change a decision someone makes.
   while ordinary DHT `ping()` traffic also flows through the same socket). Gated behind new
   `Settings.utpEnabled` (default off, restart-required) - introduced in this slice rather than
   deferred to slice 4, since the "not yet a polite citizen" congestion-control risk applies to
-  accepting a connection just as much as initiating one. Slice 4 (outbound wiring,
-  µTP-first/TCP-fallback in `TorrentSession.attemptConnect()`) remains before this note can come
-  off the list - the Peers tab's Connection-type column becomes buildable once it lands.
+  accepting a connection just as much as initiating one. **Slice 4 done (2026-09-14)** - outbound
+  wiring: `TorrentSession.attemptConnect()` tries µTP first, falling back to plain TCP on
+  failure, gated on the same `Settings.utpEnabled`. Also added `Settings.utpConnectTimeoutSeconds`
+  (default 2s, live, user-configurable) so a peer that never answers µTP - most peers today -
+  doesn't add several seconds of latency to every connection attempt; `UtpSocket` gained a new
+  `Duration`-bounded `connect()` overload for this, leaving its general-purpose ~5-6s handshake
+  budget unchanged for every other caller. Test-verified end to end (real µTP-speaking and
+  TCP-only fake peers, both reached via `TorrentSession.addKnownPeers()`). Only slice 5 (real
+  LEDBAT, replacing the interim fixed congestion window) remains - that's also what would let
+  `utpEnabled` reasonably default on. The Peers tab's "Connection type" (TCP/µTP) column is now
+  buildable (both directions exist) but isn't itself built yet - a separate, still-unstarted
+  follow-up.
 - Notification service (emails, or something else yet to be defined)
 - Run a user-configured script automatically when a torrent completes
 - ~~UI bug: refreshing the page while the torrent-detail side panel is open
