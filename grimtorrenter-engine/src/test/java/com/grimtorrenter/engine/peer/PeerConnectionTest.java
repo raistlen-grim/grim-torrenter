@@ -14,7 +14,9 @@ import com.grimtorrenter.engine.peerwire.Have;
 import com.grimtorrenter.engine.peerwire.Interested;
 import com.grimtorrenter.engine.peerwire.PeerMessage;
 import com.grimtorrenter.engine.peerwire.PeerWireCodec;
+import com.grimtorrenter.engine.peerwire.Piece;
 import com.grimtorrenter.engine.peerwire.Unchoke;
+import com.grimtorrenter.engine.proxy.FakeSocks5Proxy;
 import com.grimtorrenter.engine.ratelimit.RateLimiters;
 import com.grimtorrenter.engine.tracker.PeerAddress;
 import com.grimtorrenter.engine.tracker.PeerId;
@@ -139,6 +141,64 @@ class PeerConnectionTest {
      * itself to route the connection. Everything past the handshake (read loop, state)
      * shares the exact same code as connect(), so this doesn't re-test all of that - just
      * that accept() itself does the reversed handshake correctly. See design_docs/0038. */
+    /** design_docs/0079 - with a proxy provider naming a proxy, the whole connection (TCP, and
+     * therefore the handshake) is a SOCKS5 tunnel to the peer, and the proxy is told the peer's
+     * address. */
+    @Test
+    void connectsThroughTheProxyWhenOneIsConfigured() throws Exception {
+        PeerAddress address = startFakePeerServer();
+        Thread fakePeer = new Thread(() -> {
+            try (Socket socket = serverSocket.accept()) {
+                PeerWireCodec.readHandshake(socket.getInputStream());
+                PeerWireCodec.writeHandshake(socket.getOutputStream(), Handshake.of(fakeInfoHash(), theirPeerId()));
+                Thread.sleep(300);
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+        fakePeer.start();
+
+        try (FakeSocks5Proxy proxy = new FakeSocks5Proxy()) {
+            RecordingListener listener = new RecordingListener();
+            try (PeerConnection connection = PeerConnection.connect(address, fakeInfoHash(), ourPeerId(), listener,
+                    Map.of(), RateLimiters.unlimited(), EncryptionMode.DISABLED, PeerSource.UNKNOWN,
+                    () -> java.util.Optional.of(proxy.settings()))) {
+                assertEquals(theirPeerId(), connection.remotePeerId());
+            }
+            assertEquals(List.of("127.0.0.1:" + address.port()), proxy.connectTargets);
+        }
+        fakePeer.join(2000);
+    }
+
+    /** A configured proxy that can't be used must fail the connection - never silently connect
+     * straight to the peer. */
+    @Test
+    void aFailingProxyNeverFallsBackToADirectPeerConnection() throws Exception {
+        PeerAddress address = startFakePeerServer();
+        AtomicInteger directConnections = new AtomicInteger();
+        Thread watcher = new Thread(() -> {
+            try (Socket socket = serverSocket.accept()) {
+                directConnections.incrementAndGet();
+            } catch (Exception ignored) {
+                // closed at the end of the test
+            }
+        });
+        watcher.start();
+        int closedPort;
+        try (ServerSocket probe = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
+            closedPort = probe.getLocalPort();
+        }
+
+        assertThrows(IOException.class, () -> PeerConnection.connect(address, fakeInfoHash(), ourPeerId(),
+                new RecordingListener(), Map.of(), RateLimiters.unlimited(), EncryptionMode.PREFERRED,
+                PeerSource.UNKNOWN, () -> java.util.Optional.of(
+                        new com.grimtorrenter.engine.proxy.ProxySettings("127.0.0.1", closedPort, null, null))));
+
+        serverSocket.close();
+        watcher.join(2000);
+        assertEquals(0, directConnections.get(), "the peer must never have seen a direct connection");
+    }
+
     @Test
     void acceptsInboundConnectionAndExchangesHandshake() throws Exception {
         serverSocket = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
@@ -334,6 +394,46 @@ class PeerConnectionTest {
             assertTrue(connection.amInterested());
             assertTrue(receivedLatch.await(2, TimeUnit.SECONDS));
             assertEquals(new Interested(), received.get());
+        }
+        fakePeer.join(2000);
+    }
+
+    /** design_docs/0076 - IDLE with nothing wanted, WAITING once we're interested, ACTIVE once a
+     * block actually arrives, and back to WAITING once the activity window has passed (checked
+     * via activity(nowMillis) rather than sleeping out the real 10s). The fake peer holds its
+     * Piece until the test releases it, so the WAITING assertion can't race the block. */
+    @Test
+    void activityMovesFromIdleToWaitingToActiveAndBackOnceTheWindowPasses() throws Exception {
+        PeerAddress address = startFakePeerServer();
+        CountDownLatch sendBlock = new CountDownLatch(1);
+        Thread fakePeer = new Thread(() -> {
+            try (Socket socket = serverSocket.accept()) {
+                PeerWireCodec.readHandshake(socket.getInputStream());
+                PeerWireCodec.writeHandshake(socket.getOutputStream(), Handshake.of(fakeInfoHash(), theirPeerId()));
+                PeerWireCodec.readMessage(socket.getInputStream());
+                sendBlock.await(5, TimeUnit.SECONDS);
+                PeerWireCodec.writeMessage(socket.getOutputStream(), new Piece(0, 0, new byte[16]));
+                Thread.sleep(500);
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+        fakePeer.start();
+
+        RecordingListener listener = new RecordingListener();
+        listener.messageLatch = new CountDownLatch(1);
+        try (PeerConnection connection = PeerConnection.connect(address, fakeInfoHash(), ourPeerId(), listener, Map.of())) {
+            assertEquals(PeerActivity.IDLE, connection.activity());
+
+            connection.sendInterested();
+            assertEquals(PeerActivity.WAITING, connection.activity());
+
+            sendBlock.countDown();
+            assertTrue(listener.messageLatch.await(2, TimeUnit.SECONDS));
+            assertEquals(PeerActivity.ACTIVE, connection.activity());
+
+            long afterTheWindow = System.currentTimeMillis() + PeerConnection.ACTIVITY_WINDOW_MILLIS + 1000;
+            assertEquals(PeerActivity.WAITING, connection.activity(afterTheWindow));
         }
         fakePeer.join(2000);
     }

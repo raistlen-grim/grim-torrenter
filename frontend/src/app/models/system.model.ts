@@ -29,4 +29,6 @@ export type ServiceState = 'RUNNING' | 'DEGRADED' | 'DISABLED' | 'FAILED';
 export interface ServiceStatus {
   name: string;
   state: ServiceState;
+  /** Set only for a DISABLED service that a proxy turned off (design_docs/0079), null otherwise. */
+  reason: string | null;
 }

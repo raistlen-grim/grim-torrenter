@@ -237,6 +237,16 @@ h1.display-font {
   width: 26rem;
 }
 
+/* Same p-dialog [styleClass] reason as above - the sidebar's manage-labels dialog and the
+ * per-torrent assign-labels dialog (design_docs/0077). */
+.manage-labels-dialog {
+  width: 26rem;
+}
+
+.torrent-labels-dialog {
+  width: 24rem;
+}
+
 /* ══════════════════════════════════════════════════════════════════════
    Settings page redesign - shared foundation (SETTINGS_PAGE.md,
    design_docs/0045's addendum). Global, not per-group .scss, because every

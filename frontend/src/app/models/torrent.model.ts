@@ -59,6 +59,16 @@ export interface Torrent {
   /** Bytes received and discarded to a failed piece hash check, lifetime. See the backend's
    * TorrentSession.wastedBytes()/design_docs/0066. */
   wastedBytes: number;
+  /** Ids of this torrent's labels - ids, not names; resolve them through LabelService, so a
+   * rename never changes a torrent. See design_docs/0077. */
+  labelIds: string[];
+}
+
+/** A managed label: an immutable id (what torrents store) and a mutable display name. See
+ * design_docs/0077. */
+export interface Label {
+  id: string;
+  name: string;
 }
 
 /** downloadRateBytesPerSec/uploadRateBytesPerSec are computed client-side via RateTracker
@@ -85,7 +95,12 @@ export interface TorrentFile {
   pathSegments: string[];
   length: number;
   bytesDownloaded: number;
+  priority: FilePriority;
 }
+
+/** SKIP is never requested; the rest are all wanted and differ only in fetch order. See
+ * design_docs/0075. */
+export type FilePriority = 'SKIP' | 'LOW' | 'MEDIUM' | 'HIGH';
 
 /** Matches the backend's PeerView - the existing-field subset (no rate, no % piece
  * availability, no client-name decoding yet). See design_docs/0031. */
@@ -112,6 +127,9 @@ export interface Peer {
   /** Which transport this connection actually uses - orthogonal to source above. See
    * design_docs/0066's own addendum. */
   transportType: 'TCP' | 'UTP';
+  /** At-a-glance health: ACTIVE (a block moved within the last 10s), WAITING (nothing moving
+   * but we want something from them), IDLE. Computed by the backend. See design_docs/0076. */
+  activity: 'ACTIVE' | 'WAITING' | 'IDLE';
 }
 
 /** Matches the backend's SeedingLimitOverride record - one torrent's override of the global

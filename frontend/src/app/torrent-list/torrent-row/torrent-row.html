@@ -9,10 +9,42 @@
     [title]="stateDisplay().label"
     aria-hidden="true"
   ></i>
+  <!-- The row's modal dialogs live here, in the one cell that's never hidden. They used to sit
+       in the actions cell, which compact mode (details panel docked) sets to display: none - and
+       a dialog inside a display: none ancestor can't render, so opening one from the context
+       menu silently did nothing whenever the panel was open. -->
+  <app-seeding-limits-dialog
+    [infoHash]="infoHash()"
+    [torrentName]="name()"
+    [visible]="showSeedingLimitsDialog()"
+    (visibleChange)="showSeedingLimitsDialog.set($event)"
+  />
+  <app-torrent-limits-dialog
+    [infoHash]="infoHash()"
+    [torrentName]="name()"
+    [visible]="showTorrentLimitsDialog()"
+    (visibleChange)="showTorrentLimitsDialog.set($event)"
+  />
+  <app-torrent-labels-dialog
+    [infoHash]="infoHash()"
+    [torrentName]="name()"
+    [visible]="showTorrentLabelsDialog()"
+    (visibleChange)="showTorrentLabelsDialog.set($event)"
+  />
 </td>
 <td class="name-cell" [title]="name()">
   <div class="name-inner">
     <span class="name-stem">{{ nameStem() }}</span><span class="name-extension">{{ nameExtension() }}</span>
+    @if (visibleLabelNames().length > 0) {
+      <span class="label-chips">
+        @for (labelName of visibleLabelNames(); track labelName) {
+          <span class="label-chip" [title]="labelName">{{ labelName }}</span>
+        }
+        @if (hiddenLabelCount() > 0) {
+          <span class="label-chip" [title]="hiddenLabelNames()">+{{ hiddenLabelCount() }}</span>
+        }
+      </span>
+    }
   </div>
 </td>
 <td class="size-cell tabular-nums">{{ totalLength() | formatBytes }}</td>
@@ -25,7 +57,7 @@
 >
   {{ stateDisplay().label }}
   @if (lastError()) {
-    <div class="error-detail">{{ lastError() }}</div>
+    <div class="error-detail" [title]="lastError()">{{ lastError() }}</div>
   }
 </td>
 <td class="done-cell tabular-nums">{{ progressPercent() }}%</td>
@@ -75,16 +107,4 @@
     />
   </div>
   <p-contextMenu #rowMenu [model]="contextMenuItems()" [appendTo]="'body'" />
-  <app-seeding-limits-dialog
-    [infoHash]="infoHash()"
-    [torrentName]="name()"
-    [visible]="showSeedingLimitsDialog()"
-    (visibleChange)="showSeedingLimitsDialog.set($event)"
-  />
-  <app-torrent-limits-dialog
-    [infoHash]="infoHash()"
-    [torrentName]="name()"
-    [visible]="showTorrentLimitsDialog()"
-    (visibleChange)="showTorrentLimitsDialog.set($event)"
-  />
 </td>

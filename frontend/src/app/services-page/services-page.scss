@@ -42,3 +42,9 @@
   opacity: 0.55;
   font-size: 0.8rem;
 }
+
+/* Why a DISABLED service is off, when it wasn't the operator's own toggle (design_docs/0079). */
+.service-status-reason {
+  font-size: 12px;
+  opacity: 0.65;
+}

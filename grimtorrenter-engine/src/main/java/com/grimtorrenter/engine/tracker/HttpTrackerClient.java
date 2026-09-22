@@ -5,7 +5,11 @@ import com.grimtorrenter.engine.bencode.BInteger;
 import com.grimtorrenter.engine.bencode.BString;
 import com.grimtorrenter.engine.bencode.BValue;
 import com.grimtorrenter.engine.bencode.BencodeDecoder;
+import com.grimtorrenter.engine.proxy.MiniHttp;
+import com.grimtorrenter.engine.proxy.ProxyProvider;
+import com.grimtorrenter.engine.proxy.ProxySettings;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.URI;
@@ -17,6 +21,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * BEP 3 HTTP tracker client. Only requests/parses the compact peer list
@@ -37,43 +42,79 @@ public final class HttpTrackerClient implements TrackerClient {
      * many trackers to reject the request outright (403) as obvious non-client traffic. */
     private static final String USER_AGENT = "GrimTorrenter/0.1.0";
 
+    /** A tracker reply is a few KB of bencode (a compact peer list); this is a generous ceiling
+     * that only exists to bound a hostile or broken tracker. Applies to the proxied path - the
+     * direct path reads with the JDK client, as it always has. */
+    private static final long MAX_PROXIED_RESPONSE_BYTES = 4L << 20;
+    private static final int PROXIED_DEADLINE_SECONDS = 30;
+
     private final String announceUrl;
     private final HttpClient httpClient;
+    private final ProxyProvider proxyProvider;
     private volatile String trackerId;
 
     public HttpTrackerClient(String announceUrl) {
-        this(announceUrl, HttpClient.newBuilder().connectTimeout(REQUEST_TIMEOUT).build());
+        this(announceUrl, ProxyProvider.NONE);
+    }
+
+    /** proxyProvider is read on every announce: while it names a proxy the request is tunnelled
+     * through it (and the tracker's hostname is resolved by the proxy, not locally); otherwise it
+     * goes straight out as before. A proxy that can't be reached fails the announce - never a
+     * silent direct request. See design_docs/0079. */
+    public HttpTrackerClient(String announceUrl, ProxyProvider proxyProvider) {
+        this(announceUrl, HttpClient.newBuilder().connectTimeout(REQUEST_TIMEOUT).build(), proxyProvider);
     }
 
     public HttpTrackerClient(String announceUrl, HttpClient httpClient) {
+        this(announceUrl, httpClient, ProxyProvider.NONE);
+    }
+
+    private HttpTrackerClient(String announceUrl, HttpClient httpClient, ProxyProvider proxyProvider) {
         this.announceUrl = announceUrl;
         this.httpClient = httpClient;
+        this.proxyProvider = proxyProvider;
     }
 
     @Override
     public TrackerResponse announce(TrackerRequest request) {
         String fullUrl = buildUrl(request);
-        HttpRequest httpRequest = HttpRequest.newBuilder(URI.create(fullUrl))
-                .timeout(REQUEST_TIMEOUT)
-                .header("User-Agent", USER_AGENT)
-                .GET()
-                .build();
-
-        HttpResponse<byte[]> response;
-        try {
-            response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofByteArray());
-        } catch (IOException e) {
-            throw new TrackerException("Tracker request to " + fullUrl + " failed", e);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new TrackerException("Tracker request to " + fullUrl + " was interrupted", e);
+        Optional<ProxySettings> proxy = proxyProvider.current();
+        int status;
+        byte[] body;
+        if (proxy.isPresent()) {
+            ByteArrayOutputStream sink = new ByteArrayOutputStream();
+            try {
+                status = MiniHttp.get(URI.create(fullUrl), proxy.get(), MAX_PROXIED_RESPONSE_BYTES, sink, 0,
+                        PROXIED_DEADLINE_SECONDS);
+            } catch (IOException e) {
+                throw new TrackerException("Tracker request to " + announceUrl + " through the proxy failed: "
+                        + e.getMessage(), e);
+            }
+            body = sink.toByteArray();
+        } else {
+            HttpRequest httpRequest = HttpRequest.newBuilder(URI.create(fullUrl))
+                    .timeout(REQUEST_TIMEOUT)
+                    .header("User-Agent", USER_AGENT)
+                    .GET()
+                    .build();
+            HttpResponse<byte[]> response;
+            try {
+                response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofByteArray());
+            } catch (IOException e) {
+                throw new TrackerException("Tracker request to " + announceUrl + " failed", e);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new TrackerException("Tracker request to " + announceUrl + " was interrupted", e);
+            }
+            status = response.statusCode();
+            body = response.body();
         }
 
-        if (response.statusCode() != 200) {
-            throw new TrackerException("Tracker request to " + fullUrl + " returned HTTP " + response.statusCode());
+        if (status != 200) {
+            throw new TrackerException("Tracker request to " + announceUrl + " returned HTTP " + status);
         }
 
-        return parseResponse(response.body());
+        return parseResponse(body);
     }
 
     private String buildUrl(TrackerRequest request) {

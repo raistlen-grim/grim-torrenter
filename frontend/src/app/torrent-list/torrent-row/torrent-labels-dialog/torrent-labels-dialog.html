@@ -1,0 +1,48 @@
+<p-dialog
+  [visible]="visible()"
+  (visibleChange)="visibleChange.emit($event)"
+  [modal]="true"
+  [dismissableMask]="true"
+  header="Labels"
+  styleClass="torrent-labels-dialog"
+>
+  <p class="torrent-name">{{ torrentName() }}</p>
+
+  @if (labels().length === 0) {
+    <p class="hint">No labels yet - create one below.</p>
+  } @else {
+    <ul class="label-list">
+      @for (label of labels(); track label.id) {
+        <li>
+          <label class="label-option">
+            <input type="checkbox" [checked]="selected().has(label.id)" (change)="toggle(label.id)" />
+            <span class="label-name">{{ label.name }}</span>
+          </label>
+        </li>
+      }
+    </ul>
+  }
+
+  <div class="add-row">
+    <input
+      class="label-input"
+      type="text"
+      placeholder="New label"
+      aria-label="New label name"
+      [value]="newName()"
+      [attr.maxlength]="maxNameLength"
+      (input)="newName.set($any($event.target).value)"
+      (keydown.enter)="createAndSelect()"
+    />
+    <p-button label="Add" severity="secondary" [disabled]="creating() || newName().trim() === ''" (onClick)="createAndSelect()" />
+  </div>
+
+  @if (error()) {
+    <p class="error" role="alert">{{ error() }}</p>
+  }
+
+  <div class="dialog-actions">
+    <p-button label="Cancel" severity="secondary" [text]="true" (onClick)="close()" [disabled]="saving()" />
+    <p-button label="Save" (onClick)="save()" [loading]="saving()" />
+  </div>
+</p-dialog>

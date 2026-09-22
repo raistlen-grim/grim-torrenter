@@ -1,11 +1,13 @@
 package com.grimtorrenter.engine.piece;
 
 import com.grimtorrenter.engine.metainfo.PieceHashes;
+import com.grimtorrenter.engine.metainfo.TorrentFile;
 import com.grimtorrenter.engine.metainfo.TorrentMetadata;
 
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.BitSet;
+import java.util.List;
 import java.util.OptionalInt;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.IntPredicate;
@@ -18,10 +20,10 @@ import java.util.function.IntPredicate;
  * "piece" and "storage" independent siblings with no dependency between
  * them.
  *
- * <p>Does not track in-flight requests across different peers - two peers
- * could in principle both be asked for the same block. That's a bandwidth
- * optimization ("endgame mode" in most clients), not a correctness
- * requirement, and is deferred - see design_docs/0016.
+ * <p>Does not track in-flight requests itself - TorrentSession's InFlightBlocks does, so
+ * two peers aren't asked for the same block (design_docs/0080, superseding the deferral in
+ * design_docs/0016). Endgame mode (duplicate requests at the very end) is
+ * now implemented in TorrentSession (its own claims allow extra holders).
  *
  * <p>Bookkeeping methods are guarded by a ReentrantLock, not synchronized - see
  * design_docs/0050. Never actually a virtual-thread pinning risk (nothing blocking ever
@@ -44,22 +46,179 @@ public final class PieceManager {
     private final ReentrantLock lock = new ReentrantLock();
     private final BitSet[] blockReceived;
     private final BitSet completedPieces;
+    private final List<TorrentFile> files;
+    /** Guarded by lock. See design_docs/0075. */
+    private FilePriorities filePriorities;
+    private byte[] pieceTier;
 
     public PieceManager(TorrentMetadata metadata) {
         this(metadata, new SequentialPieceSelectionStrategy());
     }
 
     public PieceManager(TorrentMetadata metadata, PieceSelectionStrategy selectionStrategy) {
+        this(metadata, selectionStrategy, FilePriorities.allMedium(metadata.files().size()));
+    }
+
+    public PieceManager(TorrentMetadata metadata, FilePriorities filePriorities) {
+        this(metadata, new SequentialPieceSelectionStrategy(), filePriorities);
+    }
+
+    public PieceManager(TorrentMetadata metadata, PieceSelectionStrategy selectionStrategy,
+                        FilePriorities filePriorities) {
         this.pieces = metadata.pieces();
         this.totalLength = metadata.totalLength();
         this.nominalPieceLength = metadata.pieceLength();
         this.pieceCount = pieces.count();
         this.selectionStrategy = selectionStrategy;
+        this.files = metadata.files();
         this.blockReceived = new BitSet[pieceCount];
         for (int i = 0; i < pieceCount; i++) {
             blockReceived[i] = new BitSet(blockCount(i));
         }
         this.completedPieces = new BitSet(pieceCount);
+        this.filePriorities = filePriorities;
+        this.pieceTier = computePieceTiers(filePriorities);
+    }
+
+    /**
+     * Replaces the per-file priorities (design_docs/0075) and recomputes every piece's tier
+     * under the same lock the rest of the bookkeeping uses. Throws if nothing would be
+     * wanted - a torrent with every file skipped would "complete" instantly.
+     */
+    public void setFilePriorities(FilePriorities newPriorities) {
+        if (!newPriorities.anyWanted()) {
+            throw new IllegalArgumentException("At least one file must be wanted");
+        }
+        byte[] tiers = computePieceTiers(newPriorities);
+        lock.lock();
+        try {
+            this.filePriorities = newPriorities;
+            this.pieceTier = tiers;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public FilePriorities filePriorities() {
+        lock.lock();
+        try {
+            return filePriorities;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /** 0 = unwanted (every overlapping file is SKIP), 1-3 = LOW/MEDIUM/HIGH, the highest among
+     * the non-skipped files this piece overlaps. */
+    public int priorityTier(int pieceIndex) {
+        validateIndex(pieceIndex);
+        lock.lock();
+        try {
+            return pieceTier[pieceIndex];
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public boolean isWanted(int pieceIndex) {
+        return priorityTier(pieceIndex) > 0;
+    }
+
+    /** Wanted and not yet verified - what "still needed" means everywhere a skipped file
+     * shouldn't count (relevance, remaining bytes, completion). */
+    public boolean isStillNeeded(int pieceIndex) {
+        validateIndex(pieceIndex);
+        lock.lock();
+        try {
+            return pieceTier[pieceIndex] > 0 && !completedPieces.get(pieceIndex);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /** Whether the wanted, not-yet-verified blocks still missing number at most limit - exits
+     * early once the running count passes it, so asking "are we down to the last handful?" stays
+     * cheap in the middle of a big download. Used to detect endgame (design_docs/0080). */
+    public boolean missingWantedBlocksAtMost(int limit) {
+        lock.lock();
+        try {
+            long missing = 0;
+            for (int i = 0; i < pieceCount; i++) {
+                if (pieceTier[i] > 0 && !completedPieces.get(i)) {
+                    missing += blockCount(i) - blockReceived[i].cardinality();
+                    if (missing > limit) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public boolean isWantedComplete() {
+        lock.lock();
+        try {
+            for (int i = 0; i < pieceCount; i++) {
+                if (pieceTier[i] > 0 && !completedPieces.get(i)) {
+                    return false;
+                }
+            }
+            return true;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public long wantedBytes() {
+        lock.lock();
+        try {
+            long total = 0;
+            for (int i = 0; i < pieceCount; i++) {
+                if (pieceTier[i] > 0) {
+                    total += pieceLength(i);
+                }
+            }
+            return total;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public long wantedBytesCompleted() {
+        lock.lock();
+        try {
+            long total = 0;
+            for (int i = 0; i < pieceCount; i++) {
+                if (pieceTier[i] > 0 && completedPieces.get(i)) {
+                    total += pieceLength(i);
+                }
+            }
+            return total;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private byte[] computePieceTiers(FilePriorities priorities) {
+        byte[] tiers = new byte[pieceCount];
+        long fileStart = 0;
+        for (int f = 0; f < files.size(); f++) {
+            long length = files.get(f).length();
+            int tier = priorities.get(f).tier();
+            if (length > 0 && tier > 0 && pieceCount > 0) {
+                int first = (int) (fileStart / nominalPieceLength);
+                int last = (int) Math.min(pieceCount - 1, (fileStart + length - 1) / nominalPieceLength);
+                for (int p = first; p <= last; p++) {
+                    if (tier > tiers[p]) {
+                        tiers[p] = (byte) tier;
+                    }
+                }
+            }
+            fileStart += length;
+        }
+        return tiers;
     }
 
     public int pieceCount() {

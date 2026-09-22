@@ -1,4 +1,3 @@
-import { DecimalPipe } from '@angular/common';
 import { ChangeDetectionStrategy, Component, computed, inject, input, signal } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { map } from 'rxjs';
@@ -7,6 +6,7 @@ import { Peer } from '../../models/torrent.model';
 import { PRIMARY_RATE_WINDOW_MS } from '../../services/torrent-events.service';
 import { TorrentService } from '../../services/torrent.service';
 import { FormatRatePipe } from '../../shared/format-rate.pipe';
+import { activityDetail, comparePeersByActivity } from '../../shared/peer-activity';
 import { pollWhileInput } from '../../shared/poll-while-input';
 import { RateTrend } from '../../shared/rate-trend/rate-trend';
 import { RateTracker } from '../../shared/rate-tracker';
@@ -33,6 +33,11 @@ function peerKey(peer: Peer): string {
  * absent; the guide's "Done" column (per-peer completion percentage) is now filled in via
  * `percentAvailable` - see design_docs/0067.
  *
+ * <p>One line per peer (design_docs/0076): an activity marker (computed by the backend), the
+ * address, the connection badges, and live speeds only while data is moving. Everything else -
+ * choke/interest state, percent done, relevance, byte totals - lives in the details dialog's
+ * per-peer table and the marker's tooltip, not on the row.
+ *
  * <p>Also opens TrackerDetailsDialog (design_docs/0073, shared with TrackersTab) via a small
  * trigger at the top - the peer-source connected/seeding breakdown it shows is peer-discovery
  * information just as relevant from this tab as from the Trackers tab, and the dialog is fully
@@ -40,7 +45,7 @@ function peerKey(peer: Peer): string {
  * signal below. */
 @Component({
   selector: 'app-peers-tab',
-  imports: [DecimalPipe, FormatRatePipe, RateTrend, TrackerDetailsDialog],
+  imports: [FormatRatePipe, RateTrend, TrackerDetailsDialog],
   templateUrl: './peers-tab.html',
   styleUrl: './peers-tab.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -62,6 +67,7 @@ export class PeersTab {
 
   readonly infoHash = input.required<string>();
   readonly peerKey = peerKey;
+  readonly activityDetail = activityDetail;
 
   /** Single-letter badges, same compact convention real clients use for this (qBittorrent's
    * own X/H/L flags) - the drawer's 430px width has no room for a spelled-out "Source" column.
@@ -109,6 +115,12 @@ export class PeersTab {
     return transportType === 'UTP' ? 'µTP connection' : '';
   }
 
+  /** Done/relevance no longer have a column - the row's own tooltip, and the full table in the
+   * details dialog, carry them instead. See design_docs/0076. */
+  rowTitle(peer: Peer): string {
+    return `${Math.round(peer.percentAvailable * 100)}% of the torrent · ${Math.round(peer.relevance * 100)}% of what we still need`;
+  }
+
   private readonly peers = toSignal(
     pollWhileInput(this.infoHash, POLL_INTERVAL_MS, (infoHash) => this.torrentService.peers(infoHash)).pipe(
       map((peers) => this.withRates(peers)),
@@ -116,10 +128,10 @@ export class PeersTab {
     { initialValue: [] as PeerWithRate[] },
   );
 
-  /** "The peers you are serving matter most" - README's own reasoning for this sort order. */
-  readonly sortedPeers = computed(() =>
-    [...this.peers()].sort((a, b) => b.uploadRateBytesPerSec - a.uploadRateBytesPerSec),
-  );
+  /** Active peers first, idle last, then by lifetime bytes moved - see comparePeersByActivity()
+   * and design_docs/0076. Replaces the old "peers you are serving matter most" upload-rate
+   * order, which reshuffled rows on every poll. */
+  readonly sortedPeers = computed(() => [...this.peers()].sort(comparePeersByActivity));
 
   private withRates(peers: Peer[]): PeerWithRate[] {
     const now = Date.now();

@@ -10,57 +10,40 @@
 @if (sortedPeers().length === 0) {
   <p class="empty-message">No connected peers.</p>
 } @else {
-  <div class="peer-header">
-    <span>Address</span>
-    <span class="peer-col-right">Done</span>
-    <span class="peer-col-right">Down</span>
-    <span class="peer-col-right">Up</span>
-  </div>
   <div class="peer-list">
     @for (peer of sortedPeers(); track peerKey(peer)) {
-      <div class="peer-row">
-        <span class="peer-address">
-          <span class="peer-address-text">{{ peer.address }}:{{ peer.port }}</span>
-          <span class="peer-badges">
-            <i
-              class="pi peer-flag"
-              [class]="peer.peerChoking ? 'pi-lock' : 'pi-lock-open'"
-              [class.active]="!peer.peerChoking"
-              [title]="'They ' + (peer.peerChoking ? 'choke us' : 'unchoked us')"
-              aria-hidden="true"
-            ></i>
-            <i
-              class="pi peer-flag"
-              [class]="peer.amChoking ? 'pi-lock' : 'pi-lock-open'"
-              [class.active]="!peer.amChoking"
-              [title]="'We ' + (peer.amChoking ? 'choke them' : 'unchoked them')"
-              aria-hidden="true"
-            ></i>
-            <i
-              class="pi peer-flag active"
-              [class]="peer.incoming ? 'pi-arrow-down' : 'pi-arrow-up'"
-              [title]="peer.incoming ? 'They connected to us' : 'We connected to them'"
-              aria-hidden="true"
-            ></i>
-            @if (peer.source !== 'UNKNOWN') {
-              <span class="peer-source" [title]="'Found via ' + sourceName(peer.source)">{{ sourceLabel(peer.source) }}</span>
-            }
-            @if (peer.transportType === 'UTP') {
-              <span class="peer-transport" [title]="transportTypeName(peer.transportType)">{{ transportTypeLabel(peer.transportType) }}</span>
-            }
-          </span>
+      <div class="peer-row" [class.peer-idle]="peer.activity === 'IDLE'" [title]="rowTitle(peer)">
+        <span
+          class="activity-dot"
+          [class]="'activity-' + peer.activity.toLowerCase()"
+          role="img"
+          [attr.aria-label]="activityDetail(peer)"
+          [title]="activityDetail(peer)"
+        ></span>
+        <span class="peer-address-text">{{ peer.address }}:{{ peer.port }}</span>
+        <span class="peer-badges">
+          @if (peer.incoming) {
+            <span class="peer-tag" title="They connected to us">in</span>
+          }
+          @if (peer.source !== 'UNKNOWN') {
+            <span class="peer-tag" [title]="'Found via ' + sourceName(peer.source)">{{ sourceLabel(peer.source) }}</span>
+          }
+          @if (peer.transportType === 'UTP') {
+            <span class="peer-tag" [title]="transportTypeName(peer.transportType)">{{ transportTypeLabel(peer.transportType) }}</span>
+          }
         </span>
-        <span class="peer-rate peer-col-done tabular-nums" [title]="'Relevance: ' + (peer.relevance * 100 | number: '1.0-0') + '%'">
-          {{ peer.percentAvailable * 100 | number: '1.0-0' }}%
-        </span>
-        <span class="peer-rate peer-col-down tabular-nums">
-          <app-rate-trend [rateBytesPerSec]="peer.downloadRateBytesPerSec" [trend]="peer.downloadRateTrend" />
-        </span>
-        <span class="peer-rate peer-col-up tabular-nums" [class.idle]="peer.uploadRateBytesPerSec === 0">
+        <span class="peer-speeds tabular-nums">
+          @if (peer.downloadRateBytesPerSec > 0) {
+            <span class="peer-speed">
+              <span class="speed-arrow" aria-hidden="true">↓</span>
+              <app-rate-trend [rateBytesPerSec]="peer.downloadRateBytesPerSec" [trend]="peer.downloadRateTrend" />
+            </span>
+          }
           @if (peer.uploadRateBytesPerSec > 0) {
-            {{ peer.uploadRateBytesPerSec | formatRate }}
-          } @else {
-            &mdash;
+            <span class="peer-speed">
+              <span class="speed-arrow" aria-hidden="true">↑</span>
+              {{ peer.uploadRateBytesPerSec | formatRate }}
+            </span>
           }
         </span>
       </div>

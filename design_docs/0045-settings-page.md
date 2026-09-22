@@ -327,3 +327,12 @@ A `<h1 class="display-font">Torrents</h1>` was added and then reverted the same 
 user's "keep it consistent" ask turned out to mean font usage generally, not a new page-level
 heading on a page that never had one; this page still has no page-level heading, by design (the
 toolbar is its only chrome).
+
+**Addendum (2026-09-20): two new groups.** **Blocklist** ([[0078-ip-blocklist]]: enable, a file/URL
+source, refresh interval, and a live status line with a Reload button) and **Proxy**
+([[0079-socks5-proxy]]: enable, host/port/username, the "block anything that can't use the proxy"
+switch, a *separate* write-only password saved immediately through its own endpoint, and a Test
+button that checks the saved settings). Both follow this doc's group convention (own
+component/form-builder/patch triple, saved with the rest in one PUT) and both make Save
+unavailable with a visible reason when enabled but incomplete, the same way Security handles
+"Require a password". Their status lines are polled from their own endpoints while the page is open.

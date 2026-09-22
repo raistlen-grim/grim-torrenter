@@ -1,0 +1,91 @@
+<div [formGroup]="form()">
+  <div class="settings-row">
+    <div class="settings-row-label">
+      <label for="blocklistEnabled">Enabled</label>
+      <p class="settings-row-description">
+        Refuse to connect to, or accept connections from, any address on the list below - for
+        every torrent. Live, but checked about once a minute after you save, or use Reload.
+      </p>
+      @if (sourceRequiredError()) {
+        <p class="settings-row-error" role="alert">Enter a source below before this can be saved.</p>
+      }
+    </div>
+    <div class="settings-row-control">
+      <p-toggleswitch inputId="blocklistEnabled" formControlName="enabled" />
+    </div>
+  </div>
+
+  <div class="settings-row">
+    <div class="settings-row-label">
+      <label for="blocklistSource">Source</label>
+      <p class="settings-row-description">
+        A file path, or an http(s):// URL. PeerGuardian .p2p, eMule .dat, plain IP ranges and
+        CIDR lines are all understood, optionally gzip-compressed. IPv4 only. A relative path
+        is read from the config folder.
+      </p>
+    </div>
+    <div class="settings-row-control">
+      <input
+        pInputText
+        id="blocklistSource"
+        type="text"
+        class="source-input"
+        formControlName="source"
+        placeholder="https://… or /path/to/list"
+        autocomplete="off"
+        spellcheck="false"
+      />
+    </div>
+  </div>
+
+  <div class="settings-row">
+    <div class="settings-row-label">
+      <label for="blocklistRefreshHours">Refresh</label>
+      <p class="settings-row-description">
+        How often to re-download a URL. 0 means never - only when you click Reload or change
+        the source. A file is re-read whenever it changes, regardless.
+      </p>
+    </div>
+    <div class="settings-row-control">
+      <p-inputgroup class="settings-number-group">
+        <p-inputnumber
+          inputId="blocklistRefreshHours"
+          formControlName="refreshHours"
+          [min]="0"
+          [showButtons]="false"
+          inputStyleClass="settings-number-input"
+        />
+        <p-inputgroup-addon class="settings-number-unit">hours</p-inputgroup-addon>
+      </p-inputgroup>
+    </div>
+  </div>
+
+  <div class="settings-row">
+    <div class="settings-row-label">
+      <span class="status-heading">Status</span>
+      <p class="status-line" aria-live="polite">
+        {{ statusLine() }}
+        @if (status(); as current) {
+          @if (current.loadedAtEpochMillis > 0 && current.rangeCount > 0) {
+            <span class="status-detail">· updated {{ current.loadedAtEpochMillis | date: 'medium' }}</span>
+          }
+          @if (current.blockedCount > 0) {
+            <span class="status-detail">· {{ current.blockedCount.toLocaleString() }} blocked since startup</span>
+          }
+        }
+      </p>
+      @if (status()?.lastError; as error) {
+        <p class="settings-row-error" role="alert">{{ error }}</p>
+      }
+    </div>
+    <div class="settings-row-control">
+      <p-button
+        label="Reload"
+        severity="secondary"
+        size="small"
+        [disabled]="status()?.loading === true"
+        (onClick)="reload()"
+      />
+    </div>
+  </div>
+</div>

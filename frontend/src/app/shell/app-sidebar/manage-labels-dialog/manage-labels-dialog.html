@@ -1,0 +1,65 @@
+<p-dialog
+  [visible]="visible()"
+  (visibleChange)="$event ? visibleChange.emit(true) : close()"
+  [modal]="true"
+  [dismissableMask]="true"
+  header="Labels"
+  styleClass="manage-labels-dialog"
+>
+  @if (labels().length === 0) {
+    <p class="hint">No labels yet. Add one below, then assign it from a torrent's ⋯ menu.</p>
+  } @else {
+    <ul class="label-list">
+      @for (label of labels(); track label.id) {
+        <li class="label-row">
+          @if (editingId() === label.id) {
+            <input
+              class="label-input"
+              type="text"
+              [value]="editName()"
+              [attr.maxlength]="maxNameLength"
+              [attr.aria-label]="'New name for ' + label.name"
+              (input)="editName.set($any($event.target).value)"
+              (keydown.enter)="saveEdit()"
+              (keydown.escape)="cancelEdit()"
+            />
+            <p-button icon="pi pi-check" [text]="true" ariaLabel="Save name" [disabled]="busy()" (onClick)="saveEdit()" />
+            <p-button icon="pi pi-times" [text]="true" ariaLabel="Cancel rename" (onClick)="cancelEdit()" />
+          } @else if (confirmingDeleteId() === label.id) {
+            <span class="label-confirm">
+              Delete "{{ label.name }}"?
+              @if (torrentCount(label) > 0) {
+                It will be removed from {{ countText(label) }}.
+              }
+            </span>
+            <p-button label="Delete" severity="danger" size="small" [disabled]="busy()" (onClick)="confirmDelete(label)" />
+            <p-button label="Cancel" severity="secondary" [text]="true" size="small" (onClick)="cancelDelete()" />
+          } @else {
+            <span class="label-name">{{ label.name }}</span>
+            <span class="label-count tabular-nums">{{ torrentCount(label) }}</span>
+            <p-button icon="pi pi-pencil" [text]="true" [ariaLabel]="'Rename ' + label.name" (onClick)="startEdit(label)" />
+            <p-button icon="pi pi-trash" [text]="true" [ariaLabel]="'Delete ' + label.name" (onClick)="askDelete(label)" />
+          }
+        </li>
+      }
+    </ul>
+  }
+
+  <div class="add-row">
+    <input
+      class="label-input"
+      type="text"
+      placeholder="New label"
+      aria-label="New label name"
+      [value]="newName()"
+      [attr.maxlength]="maxNameLength"
+      (input)="newName.set($any($event.target).value)"
+      (keydown.enter)="add()"
+    />
+    <p-button label="Add" [disabled]="busy() || newName().trim() === ''" (onClick)="add()" />
+  </div>
+
+  @if (error()) {
+    <p class="error" role="alert">{{ error() }}</p>
+  }
+</p-dialog>

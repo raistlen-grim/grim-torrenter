@@ -1,6 +1,7 @@
-import { Injectable, signal } from '@angular/core';
+import { Injectable, computed, inject, signal } from '@angular/core';
 
 import { Torrent } from '../models/torrent.model';
+import { LabelService } from './label.service';
 
 export type StatusFilter = 'all' | 'downloading' | 'seeding' | 'paused' | 'error' | 'harvest';
 
@@ -39,9 +40,28 @@ export const STATUS_FILTER_LABELS: Record<StatusFilter, string> = {
   harvest: 'Harvest',
 };
 
-export function matchesSearchText(torrent: Torrent, searchText: string): boolean {
+/** Matches the torrent's name, or - when labelNames is given - any of its labels' display
+ * names (design_docs/0077), so typing "movies" finds everything carrying that label too. */
+export function matchesSearchText(torrent: Torrent, searchText: string, labelNames: readonly string[] = []): boolean {
   const trimmed = searchText.trim().toLowerCase();
-  return trimmed === '' || torrent.name.toLowerCase().includes(trimmed);
+  return (
+    trimmed === '' ||
+    torrent.name.toLowerCase().includes(trimmed) ||
+    labelNames.some((name) => name.toLowerCase().includes(trimmed))
+  );
+}
+
+/** "any": at least one of the selected labels; "all": every one. An empty selection matches
+ * everything either way. See design_docs/0077. */
+export type LabelMatchMode = 'any' | 'all';
+
+export function matchesLabelFilter(torrent: Torrent, labelIds: readonly string[], mode: LabelMatchMode): boolean {
+  if (labelIds.length === 0) {
+    return true;
+  }
+  return mode === 'all'
+    ? labelIds.every((id) => torrent.labelIds.includes(id))
+    : labelIds.some((id) => torrent.labelIds.includes(id));
 }
 
 /** Shared filter state - the sidebar's status filter and the toolbar's name search each
@@ -51,6 +71,34 @@ export function matchesSearchText(torrent: Torrent, searchText: string): boolean
  * pattern TorrentEventsService already uses. See design_docs/0043. */
 @Injectable({ providedIn: 'root' })
 export class TorrentFilterService {
+  private readonly labelService = inject(LabelService);
+
   readonly statusFilter = signal<StatusFilter>('all');
   readonly searchText = signal('');
+  /** The labels selected in the sidebar (any number - click toggles one in or out). Read
+   * `activeLabelIds` instead of this raw signal wherever filtering - see below. */
+  readonly labelFilterIds = signal<readonly string[]>([]);
+  /** How several selected labels combine: "any" (a torrent needs at least one; the default) or
+   * "all" (it needs every one). Status and search always AND with the result. */
+  readonly labelMatchMode = signal<LabelMatchMode>('any');
+
+  /** labelFilterIds minus any label that no longer exists (deleted here, or from another
+   * browser) - otherwise a deleted label would leave an invisible filter that matches nothing.
+   * See design_docs/0077. */
+  readonly activeLabelIds = computed(() => {
+    const names = this.labelService.namesById();
+    return this.labelFilterIds().filter((id) => names.has(id));
+  });
+
+  toggleLabel(id: string): void {
+    this.labelFilterIds.update((ids) => (ids.includes(id) ? ids.filter((other) => other !== id) : [...ids, id]));
+  }
+
+  removeLabel(id: string): void {
+    this.labelFilterIds.update((ids) => ids.filter((other) => other !== id));
+  }
+
+  clearLabels(): void {
+    this.labelFilterIds.set([]);
+  }
 }

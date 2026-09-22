@@ -1,6 +1,8 @@
 package com.grimtorrenter.engine.tracker;
 
 import com.grimtorrenter.engine.metainfo.InfoHash;
+import com.grimtorrenter.engine.proxy.FakeSocks5Proxy;
+import com.grimtorrenter.engine.proxy.ProxySettings;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -113,6 +115,72 @@ class UdpTrackerClientTest {
         assertEquals(6881, response.peers().get(0).port());
 
         fakeTrackerThread.join(2000);
+    }
+
+    /** design_docs/0079 - the two BEP 15 datagrams go through the proxy's UDP relay, addressed to
+     * the tracker by *name* (the proxy resolves it, nothing is looked up locally). */
+    @Test
+    void announcesThroughTheProxysUdpRelayAddressingTheTrackerByName() throws Exception {
+        int port = startFakeTracker();
+        fakeTrackerThread = new Thread(() -> {
+            try {
+                DatagramPacket connectPacket = receive();
+                ByteBuffer connectReq = ByteBuffer.wrap(connectPacket.getData(), 0, connectPacket.getLength());
+                connectReq.getLong();
+                connectReq.getInt();
+                int connectTransactionId = connectReq.getInt();
+                ByteBuffer connectResp = ByteBuffer.allocate(16);
+                connectResp.putInt(0);
+                connectResp.putInt(connectTransactionId);
+                connectResp.putLong(FAKE_CONNECTION_ID);
+                reply(connectPacket, connectResp.array());
+
+                DatagramPacket announcePacket = receive();
+                ByteBuffer announceReq = ByteBuffer.wrap(announcePacket.getData(), 0, announcePacket.getLength());
+                announceReq.getLong();
+                announceReq.getInt();
+                int announceTransactionId = announceReq.getInt();
+                byte[] compactPeer = {10, 0, 0, 7, 0x1A, (byte) 0xE1};
+                ByteBuffer announceResp = ByteBuffer.allocate(20 + compactPeer.length);
+                announceResp.putInt(1);
+                announceResp.putInt(announceTransactionId);
+                announceResp.putInt(600);
+                announceResp.putInt(1);
+                announceResp.putInt(3);
+                announceResp.put(compactPeer);
+                reply(announcePacket, announceResp.array());
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        });
+        fakeTrackerThread.start();
+
+        try (FakeSocks5Proxy proxy = new FakeSocks5Proxy()) {
+            proxy.map("tracker.invalid", new java.net.InetSocketAddress("127.0.0.1", port));
+            UdpTrackerClient client = new UdpTrackerClient("udp://tracker.invalid:" + port + "/announce",
+                    () -> java.util.Optional.of(proxy.settings()));
+
+            TrackerResponse response = client.announce(fakeRequest());
+
+            assertEquals(600, response.interval());
+            assertEquals("10.0.0.7", response.peers().get(0).address().getHostAddress());
+            assertEquals(java.util.List.of("tracker.invalid:" + port, "tracker.invalid:" + port), proxy.udpTargets);
+        }
+        fakeTrackerThread.join(2000);
+    }
+
+    @Test
+    void aProxyThatDoesNotRelayUdpFailsTheAnnounceWithItsReasonInsteadOfGoingDirect() throws Exception {
+        int port = startFakeTracker();
+        try (FakeSocks5Proxy proxy = new FakeSocks5Proxy()) {
+            proxy.rejectUdp = true;
+            UdpTrackerClient client = new UdpTrackerClient("udp://127.0.0.1:" + port + "/announce",
+                    () -> java.util.Optional.of(proxy.settings()));
+
+            TrackerException e = assertThrows(TrackerException.class, () -> client.announce(fakeRequest()));
+
+            assertTrue(e.getMessage().contains("command not supported"), e.getMessage());
+        }
     }
 
     @Test

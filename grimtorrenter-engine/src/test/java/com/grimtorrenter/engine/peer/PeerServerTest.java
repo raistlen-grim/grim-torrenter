@@ -80,6 +80,41 @@ class PeerServerTest {
         }
     }
 
+    /** design_docs/0078 - a blocked address is closed before a single byte is read or a handler is
+     * looked up (so it never costs an MSE Diffie-Hellman exchange). */
+    @Test
+    void aBlockedAddressIsClosedBeforeAnythingIsReadOrRouted() throws Exception {
+        java.util.concurrent.atomic.AtomicInteger lookups = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicInteger recorded = new java.util.concurrent.atomic.AtomicInteger();
+        server = new PeerServer(0, hash -> {
+            lookups.incrementAndGet();
+            return Optional.empty();
+        });
+        server.setIpFilter(new com.grimtorrenter.engine.blocklist.IpFilter() {
+            @Override
+            public boolean isBlocked(InetAddress address) {
+                return true;
+            }
+
+            @Override
+            public void recordBlocked() {
+                recorded.incrementAndGet();
+            }
+        });
+
+        try (Socket client = new Socket(InetAddress.getLoopbackAddress(), server.port())) {
+            PeerWireCodec.writeHandshake(client.getOutputStream(), Handshake.of(infoHashOf(1), peerIdOf(50)));
+            try {
+                assertEquals(-1, client.getInputStream().read());
+            } catch (java.net.SocketException expected) {
+                // the server closed with our handshake still unread, which the OS reports as a reset
+            }
+        }
+
+        assertEquals(0, lookups.get());
+        assertEquals(1, recorded.get());
+    }
+
     @Test
     void closesTheConnectionWhenNoHandlerKnowsTheInfoHash() throws Exception {
         server = new PeerServer(0, hash -> Optional.empty());

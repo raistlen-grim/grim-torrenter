@@ -132,6 +132,47 @@ than something that'd change a decision someone makes.
   `design_docs/0032`'s own addendum. Only `npm install` (to catch up the lockfile) remains,
   left for the user per this project's "builds run manually" convention.
 
+## Missing-feature review (2026-09-19/20)
+
+A review of what an established client has that this one didn't, worked through in this order.
+
+**Done:**
+- ~~Selective file download / per-file priorities (Skip/Low/Normal/High)~~ - see `design_docs/0075`.
+  Picking files *at add time* is still open (below).
+- ~~Multi-label support~~ - labels with stable ids, a managed list, multi-label Any/All filtering and
+  an active-filters strip: `design_docs/0077`. Assigning labels *at add time* and from the watch
+  folder are still open (below).
+- ~~IP blocklist~~ - `design_docs/0078`.
+- ~~SOCKS5 proxy~~ (with a "block anything that can't use the proxy" mode, default on) -
+  `design_docs/0079`. Also from this review, unrequested but built on the way: a backend-computed
+  peer `activity` field and a one-line-per-peer Peers tab - `design_docs/0076`.
+
+**Still open (unscoped):**
+- Force recheck and force reannounce (a manual per-torrent action; recheck today only happens
+  automatically on restart).
+- Choosing files, and labels, at add time - needs an "add paused" flow, and for a magnet, resolved
+  metadata first ([[0070-pending-magnet-as-first-class-torrent]]); also a watch-folder subfolder
+  becoming a label.
+- RSS auto-download (would build on the watch folder).
+- Moving a torrent's download location ([[0065-config-side-per-torrent-storage]] makes it feasible).
+- Proxy/blocklist follow-ups: SOCKS4/HTTP proxies, DHT and µTP over the SOCKS5 UDP relay, applying the
+  proxy block switch without a restart, IPv6 blocklist ranges, filtering DHT nodes.
+- Per-torrent priority / download queueing - parked, see the next section.
+
+## Deferred - "if we need it" (2026-09-19)
+
+- **Per-torrent priority / download queueing** - one feature, not two: a torrent priority only
+  means something once torrents compete for slots, and today every added torrent starts at once
+  (bandwidth is one shared pool, plus per-torrent overrides from `design_docs/0072`). Sketch
+  agreed with the user but not built: High/Normal/Low (ties by added order), a "max active
+  downloads" setting (0 = unlimited, the default, so nothing changes until set), a new `QUEUED`
+  state distinct from a user pause, re-evaluated on add/complete/pause/remove/priority change/
+  limit change with a newly added High torrent preempting the lowest-priority running one, and
+  seeding not counting against the limit. Priority would decide which torrents run, not weight
+  bandwidth. Open: levels vs. a numbered queue position (move up/down/top/bottom). Parked
+  because it's not a felt problem yet - pick up if the number of simultaneous torrents starts to
+  hurt.
+
 ## Performance: peer/seed count gap vs qBittorrent
 
 Real user report (2026-09-06): the same torrent shows far fewer peers/seeds in
@@ -337,3 +378,12 @@ then revisit this as a follow-up rather than bundling both into one change.
   the torrent list's full-bleed layout is load-bearing for the docked detail panel
   (`design_docs/0043`), and both are dense multi-column/data views where the guide's own
   "density is respect" principle argues against a narrower framed treatment.
+
+## Retry failed peer addresses after a backoff (2026-09-21)
+
+`TorrentSession.failedAddresses` excludes an address for the rest of the session once a connect
+attempt fails (`design_docs/0017`, `0036`). That is deliberate - it stops time being spent
+re-trying peers that already failed, so the slot goes to a different candidate - and is left
+as is. Possible refinement if the candidate pool ever runs dry on a long-lived torrent: allow a
+retry after a long, growing backoff (e.g. 30 min+), only when no fresh candidates remain.
+Not a commitment; revisit with evidence.

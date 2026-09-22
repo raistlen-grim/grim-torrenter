@@ -4,6 +4,7 @@ import { Observable } from 'rxjs';
 
 import {
   AddTorrentResponse,
+  FilePriority,
   Peer,
   PiecesResponse,
   SeedingLimitOverride,
@@ -30,6 +31,18 @@ export class TorrentService {
 
   files(infoHash: string): Observable<TorrentFile[]> {
     return this.http.get<TorrentFile[]>(`${this.baseUrl}/${infoHash}/files`);
+  }
+
+  /** One priority per file, in the same order files() returns them; the response is the
+   * updated file list. See design_docs/0075. */
+  setFilePriorities(infoHash: string, priorities: FilePriority[]): Observable<TorrentFile[]> {
+    return this.http.put<TorrentFile[]>(`${this.baseUrl}/${infoHash}/files/priorities`, priorities);
+  }
+
+  /** The torrent's complete list of label ids (not names); the response is the updated
+   * torrent. See design_docs/0077. */
+  setLabels(infoHash: string, labelIds: string[]): Observable<Torrent> {
+    return this.http.put<Torrent>(`${this.baseUrl}/${infoHash}/labels`, labelIds);
   }
 
   peers(infoHash: string): Observable<Peer[]> {

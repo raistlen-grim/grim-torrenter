@@ -1,6 +1,7 @@
 package com.grimtorrenter.app;
 
 import com.grimtorrenter.engine.bencode.BDictionary;
+import com.grimtorrenter.engine.bencode.BList;
 import com.grimtorrenter.engine.bencode.BInteger;
 import com.grimtorrenter.engine.bencode.BString;
 import com.grimtorrenter.engine.bencode.BencodeEncoder;
@@ -47,6 +48,14 @@ class TorrentResourceTest {
     void removeAllTorrents() {
         for (TorrentSession session : torrentEngine.listTorrents()) {
             torrentEngine.removeTorrent(session.metadata().infoHash(), true);
+        }
+        // A magnet with an unreachable tracker now stays pending (retrying until its time budget)
+        // rather than failing on the first announce, so it leaks the same way a session would.
+        for (var pending : torrentEngine.listPendingMagnets()) {
+            torrentEngine.removeTorrent(pending.infoHash(), true);
+        }
+        for (com.grimtorrenter.engine.label.Label label : torrentEngine.labels().list()) {
+            torrentEngine.deleteLabel(label.id());
         }
     }
 
@@ -367,6 +376,160 @@ class TorrentResourceTest {
                 .when().post("/api/torrents")
                 .then().statusCode(200)
                 .extract().path("torrent.infoHash");
+    }
+
+    /** Two 8-byte files at 8-byte pieces, so each file is exactly one piece. */
+    private static byte[] twoFileTorrentBytes(String name) {
+        byte[] hashes = new byte[40];
+        System.arraycopy(sha1(new byte[]{1, 2, 3, 4, 5, 6, 7, 8}), 0, hashes, 0, 20);
+        System.arraycopy(sha1(new byte[]{9, 10, 11, 12, 13, 14, 15, 16}), 0, hashes, 20, 20);
+        BDictionary info = new BDictionary(Map.of(
+                BString.of("name"), BString.of(name),
+                BString.of("piece length"), new BInteger(8),
+                BString.of("pieces"), BString.of(hashes),
+                BString.of("files"), new BList(List.of(
+                        new BDictionary(Map.of(BString.of("length"), new BInteger(8),
+                                BString.of("path"), new BList(List.of(BString.of("a.bin"))))),
+                        new BDictionary(Map.of(BString.of("length"), new BInteger(8),
+                                BString.of("path"), new BList(List.of(BString.of("b.bin")))))))));
+        BDictionary top = new BDictionary(Map.of(
+                BString.of("announce"), BString.of("http://127.0.0.1:1/announce"),
+                BString.of("info"), info));
+        return BencodeEncoder.encode(top);
+    }
+
+    /** design_docs/0075 - every file starts at MEDIUM. */
+    @Test
+    void filesReportMediumPriorityForAFreshUpload() {
+        String infoHash = upload(twoFileTorrentBytes("priorities-fresh"));
+
+        given()
+                .when().get("/api/torrents/" + infoHash + "/files")
+                .then().statusCode(200)
+                .body("$", hasSize(2))
+                .body("[0].priority", equalTo("MEDIUM"))
+                .body("[1].priority", equalTo("MEDIUM"));
+    }
+
+    @Test
+    void putFilePrioritiesReturnsTheUpdatedFilesAndGetReflectsThem() {
+        String infoHash = upload(twoFileTorrentBytes("priorities-update"));
+
+        given()
+                .contentType(ContentType.JSON)
+                .body("""
+                        ["HIGH", "SKIP"]""")
+                .when().put("/api/torrents/" + infoHash + "/files/priorities")
+                .then().statusCode(200)
+                .body("$", hasSize(2))
+                .body("[0].priority", equalTo("HIGH"))
+                .body("[1].priority", equalTo("SKIP"))
+                .body("[1].pathSegments[0]", equalTo("b.bin"));
+
+        given()
+                .when().get("/api/torrents/" + infoHash + "/files")
+                .then().statusCode(200)
+                .body("[0].priority", equalTo("HIGH"))
+                .body("[1].priority", equalTo("SKIP"));
+    }
+
+    @Test
+    void putFilePrioritiesRejectsBadInputWithA400AndChangesNothing() {
+        String infoHash = upload(twoFileTorrentBytes("priorities-bad-input"));
+
+        // every file skipped
+        given().contentType(ContentType.JSON).body("[\"SKIP\", \"SKIP\"]")
+                .when().put("/api/torrents/" + infoHash + "/files/priorities")
+                .then().statusCode(400);
+        // wrong length
+        given().contentType(ContentType.JSON).body("[\"HIGH\"]")
+                .when().put("/api/torrents/" + infoHash + "/files/priorities")
+                .then().statusCode(400);
+        // unknown priority name
+        given().contentType(ContentType.JSON).body("[\"URGENT\", \"LOW\"]")
+                .when().put("/api/torrents/" + infoHash + "/files/priorities")
+                .then().statusCode(400);
+
+        given()
+                .when().get("/api/torrents/" + infoHash + "/files")
+                .then().statusCode(200)
+                .body("[0].priority", equalTo("MEDIUM"))
+                .body("[1].priority", equalTo("MEDIUM"));
+    }
+
+    @Test
+    void putFilePrioritiesForAnUnknownTorrentReturns404() {
+        given().contentType(ContentType.JSON).body("[\"LOW\"]")
+                .when().put("/api/torrents/" + "0".repeat(40) + "/files/priorities")
+                .then().statusCode(404);
+    }
+
+    private static String createLabel(String name) {
+        return given()
+                .contentType(ContentType.JSON)
+                .body("{\"name\": \"" + name + "\"}")
+                .when().post("/api/labels")
+                .then().statusCode(200)
+                .extract().path("id");
+    }
+
+    /** design_docs/0077 - a fresh upload has no labels; TorrentView carries ids only. */
+    @Test
+    void aFreshUploadHasNoLabels() {
+        String infoHash = upload(torrentBytes("labels-fresh.bin", new byte[]{1, 2, 3}));
+
+        given()
+                .when().get("/api/torrents/" + infoHash)
+                .then().statusCode(200)
+                .body("labelIds", hasSize(0));
+    }
+
+    @Test
+    void putLabelsAssignsIdsReturnsTheTorrentAndGetReflectsIt() {
+        String infoHash = upload(torrentBytes("labels-assign.bin", new byte[]{1, 2, 3}));
+        String movies = createLabel("Movies");
+        String music = createLabel("Music");
+
+        given()
+                .contentType(ContentType.JSON)
+                .body("[\"" + music + "\", \"" + movies + "\"]")
+                .when().put("/api/torrents/" + infoHash + "/labels")
+                .then().statusCode(200)
+                .body("infoHash", equalTo(infoHash))
+                .body("labelIds", equalTo(List.of(music, movies)));
+
+        given()
+                .when().get("/api/torrents/" + infoHash)
+                .then().body("labelIds", equalTo(List.of(music, movies)));
+    }
+
+    @Test
+    void putLabelsRejectsAnUnknownLabelIdWith400AndAnUnknownTorrentWith404() {
+        String infoHash = upload(torrentBytes("labels-bad.bin", new byte[]{1, 2, 3}));
+
+        given().contentType(ContentType.JSON).body("[\"not-a-label\"]")
+                .when().put("/api/torrents/" + infoHash + "/labels").then().statusCode(400);
+        given().contentType(ContentType.JSON).body("[]")
+                .when().put("/api/torrents/" + "0".repeat(40) + "/labels").then().statusCode(404);
+
+        given().when().get("/api/torrents/" + infoHash).then().body("labelIds", hasSize(0));
+    }
+
+    /** Deleting a label strips it from every torrent that carried it; renaming doesn't touch a
+     * torrent's ids at all. */
+    @Test
+    void deletingALabelRemovesItFromTorrentsAndRenamingDoesNot() {
+        String infoHash = upload(torrentBytes("labels-cascade.bin", new byte[]{1, 2, 3}));
+        String movies = createLabel("Movies");
+        given().contentType(ContentType.JSON).body("[\"" + movies + "\"]")
+                .when().put("/api/torrents/" + infoHash + "/labels").then().statusCode(200);
+
+        given().contentType(ContentType.JSON).body("{\"name\": \"Films\"}")
+                .when().put("/api/labels/" + movies).then().statusCode(200);
+        given().when().get("/api/torrents/" + infoHash).then().body("labelIds", equalTo(List.of(movies)));
+
+        given().when().delete("/api/labels/" + movies).then().statusCode(204);
+        given().when().get("/api/torrents/" + infoHash).then().body("labelIds", hasSize(0));
     }
 
     @Test

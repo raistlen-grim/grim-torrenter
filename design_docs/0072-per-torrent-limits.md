@@ -168,3 +168,7 @@ restart-or-re-add-only scope rather than a bare "restart required."
   considered, rejected in favor of reusing the existing `Integer.MAX_VALUE`-means-unbounded
   convention already established for `pieceVerificationLimiter` - no new constant needed, and
   consistent with how this codebase already expresses "no cap" elsewhere.
+
+**Addendum (2026-09-19): dialog placement fix.** "Torrent limits..." shared the seeding-limits
+dialog's bug of being mounted in a cell that is hidden while the details panel is docked, so it did
+nothing in that state. Moved with the other row dialogs; see [[0054-seeding-limits]]'s addendum.

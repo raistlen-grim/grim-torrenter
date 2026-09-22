@@ -49,7 +49,10 @@ export function trackerStateDisplay(state: TrackerState): StatusDisplay {
  * plain text. TRACKER_UNREACHABLE is 'alarm' like every other reachability problem in this
  * table; TRACKER_RECOVERED is 'active' like COMPLETED/SERVER_STARTED - genuinely good news,
  * not routine. Both fold the specific tracker URL into the message field rather than the
- * label, matching MAGNET_ADD_FAILED's own precedent for per-instance detail. */
+ * label, matching MAGNET_ADD_FAILED's own precedent for per-instance detail.
+ * BLOCKLIST_UPDATED is 'dim' (routine housekeeping - a scheduled refresh doing its job),
+ * BLOCKLIST_FAILED 'alarm' (protection is running on a stale or missing list); both fold the
+ * detail into the message, like the tracker events. design_docs/0078. */
 const EVENT_TYPE_DISPLAY: Record<EventType, StatusDisplay> = {
   ADDED: { icon: 'pi-plus-circle', label: 'Added', tone: 'active' },
   COMPLETED: { icon: 'pi-check-circle', label: 'Completed', tone: 'active' },
@@ -63,6 +66,8 @@ const EVENT_TYPE_DISPLAY: Record<EventType, StatusDisplay> = {
   TRACKER_UNREACHABLE: { icon: 'pi-wifi', label: 'Tracker unreachable', tone: 'alarm' },
   TRACKER_RECOVERED: { icon: 'pi-wifi', label: 'Tracker recovered', tone: 'active' },
   LSD_UNAVAILABLE: { icon: 'pi-wifi', label: 'LSD unavailable', tone: 'alarm' },
+  BLOCKLIST_UPDATED: { icon: 'pi-ban', label: 'Blocklist updated', tone: 'dim' },
+  BLOCKLIST_FAILED: { icon: 'pi-ban', label: 'Blocklist failed', tone: 'alarm' },
 };
 
 export function eventTypeDisplay(type: EventType): StatusDisplay {

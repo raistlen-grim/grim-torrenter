@@ -1,5 +1,6 @@
 package com.grimtorrenter.app;
 
+import com.grimtorrenter.engine.engine.TorrentEngine;
 import com.grimtorrenter.engine.settings.Settings;
 import com.grimtorrenter.engine.settings.SettingsStore;
 import jakarta.inject.Inject;
@@ -28,6 +29,9 @@ public class SettingsResource {
     @Inject
     AuthStore authStore;
 
+    @Inject
+    TorrentEngine torrentEngine;
+
     @GET
     @Produces(MediaType.APPLICATION_JSON)
     public Settings current() {
@@ -53,12 +57,51 @@ public class SettingsResource {
         if (settings.authEnabled() && !authStore.hasPassword()) {
             throw new BadRequestException("Set a password (PUT /api/auth/password) before enabling authEnabled");
         }
+        // An enabled blocklist needs somewhere to load from, and a URL must be http(s) - checked
+        // here at the boundary so Blocklist itself can trust it. Only while enabled, like the
+        // schedule times above: a disabled blocklist's source is kept but never read. See
+        // design_docs/0078.
+        if (settings.blocklistEnabled()) {
+            String source = settings.blocklistSource().strip();
+            if (source.isEmpty()) {
+                throw new BadRequestException("Set a blocklist source (a file path or an http(s) URL) before enabling it");
+            }
+            if (source.contains("://") && !source.regionMatches(true, 0, "http://", 0, 7)
+                    && !source.regionMatches(true, 0, "https://", 0, 8)) {
+                throw new BadRequestException("A blocklist URL must start with http:// or https://");
+            }
+        }
+        // An enabled proxy needs somewhere to go - checked here at the boundary so nothing below
+        // has to cope with a half-filled configuration (ProxyConfig itself treats one as "no
+        // proxy" rather than erroring on every connection). design_docs/0079.
+        if (settings.proxyEnabled()) {
+            if (settings.proxyHost().isBlank()) {
+                throw new BadRequestException("Set a proxy host before enabling the proxy");
+            }
+            if (settings.proxyPort() < 1 || settings.proxyPort() > 65535) {
+                throw new BadRequestException("The proxy port must be between 1 and 65535");
+            }
+        }
         // No eventLogRetentionDays check here, unlike the schedule times above - Settings'
         // own compact constructor already normalizes 0/negative to a safe default (see its
         // Javadoc), so by the time this method sees `settings` there is no invalid value left
         // to reject. See design_docs/0055.
+        Settings before = settingsStore.current();
         settingsStore.update(settings);
+        // A torrent that failed its first announce (most often because of the proxy) is retried on a
+        // backoff; a change to the proxy is the thing most likely to have fixed it, so don't make it
+        // wait. Only proxy fields trigger this - an unrelated save shouldn't poke every tracker.
+        if (proxyChanged(before, settings)) {
+            torrentEngine.retryFailedStarts();
+        }
         return settingsStore.current();
+    }
+
+    private static boolean proxyChanged(Settings before, Settings after) {
+        return before.proxyEnabled() != after.proxyEnabled()
+                || !before.proxyHost().equals(after.proxyHost())
+                || before.proxyPort() != after.proxyPort()
+                || !before.proxyUsername().equals(after.proxyUsername());
     }
 
     /** RateLimitSchedule (grimtorrenter-engine) trusts these are valid "HH:mm" strings

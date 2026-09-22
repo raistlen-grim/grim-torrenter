@@ -11,6 +11,27 @@
       <span class="nav-count tabular-nums">{{ counts()[option.value] }}</span>
     </a>
   }
+  <div class="nav-group-header">
+    <span>Labels</span>
+    <button type="button" class="nav-group-action" title="Manage labels" aria-label="Manage labels" (click)="showManageLabels.set(true)">
+      <i class="pi pi-pencil" aria-hidden="true"></i>
+    </button>
+  </div>
+  @for (label of labels(); track label.id) {
+    <a
+      routerLink="/"
+      class="nav-item"
+      [class.active]="filter.activeLabelIds().includes(label.id)"
+      (click)="selectLabel(label.id)"
+    >
+      <i class="pi pi-tag" aria-hidden="true"></i>
+      <span class="nav-label">{{ label.name }}</span>
+      <span class="nav-count tabular-nums">{{ labelCounts().get(label.id) ?? 0 }}</span>
+    </a>
+  } @empty {
+    <p class="nav-hint">No labels yet</p>
+  }
+  <app-manage-labels-dialog [visible]="showManageLabels()" (visibleChange)="showManageLabels.set($event)" />
   <a routerLink="/services" routerLinkActive="active" class="nav-item below-filters">
     <i class="pi pi-shield" aria-hidden="true"></i>
     <span class="nav-label">Services</span>

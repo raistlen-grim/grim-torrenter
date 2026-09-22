@@ -20,78 +20,59 @@
   cursor: pointer;
 }
 
-/* README's Peers tab content spec: minmax(0,1fr) 54px 62px 62px (Address/Done/Down/Up) - now
- * the full four columns (see design_docs/0067) now that per-peer completion percentage
- * exists. */
-.peer-header {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 54px 62px 62px;
-  align-items: center;
-  gap: 8px;
-  padding: 0 0 4px;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.09em;
-  opacity: 0.5;
-}
-
-.peer-col-right {
-  text-align: right;
-}
-
 .peer-list {
   display: flex;
   flex-direction: column;
 }
 
-/* Two lines per peer, not one - found via real use (2026-09-15): the address text and its
- * badges (choke/direction/source/transport) genuinely need the full row width to stay legible
- * at once (a full IP:port plus several badges doesn't fit next to the Done/Down/Up numbers in
- * this panel's own width, and truncating either the address or the badges loses real
- * information either way - see .peer-address-text/.peer-badges below). .peer-address spans the
- * whole grid width on its own row; .peer-col-done/-down/-up explicitly re-align the stats
- * underneath the header's own Done/Down/Up columns on the row below, rather than an
- * auto-placement default that would otherwise start them back at column 1. */
+/* One line per peer (design_docs/0076): [activity marker] [address] [badges] [speeds], as a
+ * fixed-column grid so the badges and speeds sit at the same x on every row whether or not a
+ * peer is moving data (a flex row let the badges slide left whenever a speed appeared). Only the
+ * address column flexes (1fr, ellipsis; full address in its title). Column widths: badges fit
+ * up to three capsules (in/source/µ); speeds fit one "↓ 101.2 KB/s" line - when a peer is both
+ * downloading and uploading the two lines stack inside that same fixed column rather than
+ * widening it, trading a taller row for a stable layout. */
 .peer-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 54px 62px 62px;
+  grid-template-columns: 8px minmax(0, 1fr) 54px 86px;
   align-items: center;
-  column-gap: 8px;
-  row-gap: 2px;
+  column-gap: var(--space-2);
   padding: 6px 0;
   border-bottom: 1px solid var(--rule);
   font-size: 11.5px;
-}
-
-.peer-col-done {
-  grid-column: 2;
-}
-
-.peer-col-down {
-  grid-column: 3;
-}
-
-.peer-col-up {
-  grid-column: 4;
 }
 
 .peer-row:last-child {
   border-bottom: none;
 }
 
-/* Spans the whole row (grid-column) and is itself a flex row (address text + badges) - the old
- * rule put overflow:hidden/ellipsis on the address text *and* every flag/badge after it as one
- * inline unit, so on a narrow row the choke/direction/source/transport badges (rendered last)
- * were exactly what got clipped first, right when they matter most. Now only
- * .peer-address-text shrinks/truncates; .peer-badges never does, so the badges are always fully
- * visible regardless of how much of the address itself has to give way. Found via real use
- * (2026-09-15) once the transport badge made an already-tight single line noticeably worse. */
-.peer-address {
-  grid-column: 1 / -1;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-width: 0;
+/* Idle peers recede rather than disappear - still connected, just nothing to report. */
+.peer-idle .peer-address-text,
+.peer-idle .peer-badges {
+  opacity: 0.55;
+}
+
+/* Shape carries the state, not just tone (no red/green severity palette in this app's style
+ * guide, design_docs/0032): filled = data moving, hollow ring = waiting on them, faint dot =
+ * idle. */
+.activity-dot {
+  box-sizing: border-box;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.activity-active {
+  background: var(--color-accent-700);
+}
+
+.activity-waiting {
+  border: 1.5px solid var(--color-accent-700);
+}
+
+.activity-idle {
+  background: currentColor;
+  opacity: 0.25;
 }
 
 .peer-address-text {
@@ -100,65 +81,43 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: monospace;
+  font-size: 11px;
 }
 
 .peer-badges {
   display: flex;
   align-items: center;
-  flex: 0 0 auto;
+  gap: 3px;
+}
+
+/* One capsule style for every connection-fact badge: "in" (they connected to us - outgoing, the
+ * common case, gets none), the source letter (T/H/X/L; UNKNOWN gets none), and "µ" for µTP (TCP
+ * gets none). Same hide-the-default convention throughout. See design_docs/0066. */
+.peer-tag {
+  display: inline-block;
+  padding: 0 3px;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.4;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  opacity: 0.55;
+}
+
+.peer-speeds {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  line-height: 1.3;
+}
+
+.peer-speed {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
   white-space: nowrap;
 }
 
-/* Compact choke/interest state, inline rather than the old full-width StatusIndicator
- * badges - the guide's own column grid has no slot for them, but dropping this protocol
- * state entirely would be losing real information rather than restyling (same reasoning as
- * torrent-detail's kept lastError line). Dim by default, full opacity when genuinely
- * unchoked/interested (the "active" state worth noticing). */
-.peer-flag {
-  margin-left: var(--space-2);
-  font-size: 10px;
-  opacity: 0.35;
-}
-
-.peer-flag.active {
-  opacity: 0.85;
-}
-
-/* Single-letter source badge (T/H/X/L) - same compact spirit as .peer-flag, a small dim
- * capsule rather than an icon since there's no obvious icon-per-source set that wouldn't need
- * its own legend. See design_docs/0066. */
-.peer-source {
-  display: inline-block;
-  margin-left: var(--space-2);
-  padding: 0 3px;
-  font-size: 9px;
-  font-weight: 600;
-  line-height: 1.4;
-  border: 1px solid var(--rule);
-  border-radius: 2px;
+.speed-arrow {
   opacity: 0.55;
-}
-
-/* Connection type (µTP) badge - own class rather than reusing .peer-source, same "separately
- * named despite visually identical" precedent .peer-flag/.peer-source already set. Only ever
- * rendered for µTP (TCP, the common case, gets no badge - see peers-tab.ts's own
- * transportTypeLabel()). See design_docs/0066's own addendum, design_docs/0074. */
-.peer-transport {
-  display: inline-block;
-  margin-left: var(--space-2);
-  padding: 0 3px;
-  font-size: 9px;
-  font-weight: 600;
-  line-height: 1.4;
-  border: 1px solid var(--rule);
-  border-radius: 2px;
-  opacity: 0.55;
-}
-
-.peer-rate {
-  text-align: right;
-}
-
-.peer-rate.idle {
-  opacity: 0.35;
 }

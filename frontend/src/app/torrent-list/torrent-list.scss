@@ -138,8 +138,13 @@
   margin-left: -1px;
 }
 
+/* width: auto, not the earlier fixed 210px: the input inside paints wider than that (its own
+ * intrinsic width plus the icon padding), so the host used to be narrower than what it showed
+ * and the overflow spilled over whatever sat next to it - invisible until the filter chips
+ * (design_docs/0077) landed right after it and had their left edge hidden underneath. Sizing the
+ * host to its content keeps the same painted width but makes the layout honest. */
 .search-field {
-  width: 210px;
+  width: auto;
 }
 
 /* Pushes the pause-all/resume-all cluster to the trailing edge, leaving the add controls
@@ -218,6 +223,116 @@ th {
 .sort-header.active {
   color: var(--color-accent-700);
   opacity: 1;
+}
+
+/* Active-filter chips (design_docs/0077) - inline on the toolbar's own row, after the search
+ * field, so picking a filter never adds a row and pushes the list down. flex-basis 0 means the
+ * group takes whatever space is left rather than forcing the toolbar to wrap, and
+ * .filter-chips-list clips (never wraps) if there are more chips than fit - Clear stays outside
+ * the clipped part so it's always reachable. min-width is the escape hatch: in a window so narrow
+ * that even that doesn't fit, the group wraps to its own line like any other toolbar item.
+ * Accent-tinted border and text, never a filled chip (style guide: selection is an edge/wash,
+ * not a fill). */
+.filter-chips {
+  display: flex;
+  flex: 1 1 0;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 7rem;
+  /* On top of the toolbar's own gap - the chips read as their own group, not part of the field. */
+  margin-left: var(--space-3);
+  font-size: 12px;
+}
+
+.filter-chips-list {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.filter-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 40%, transparent);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+  color: var(--color-accent-700);
+}
+
+.filter-chip-icon {
+  font-size: 10px;
+}
+
+.filter-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 3px;
+  border: none;
+  background: none;
+  color: inherit;
+  font-size: 9px;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity var(--motion-fast);
+}
+
+.filter-chip-remove:hover,
+.filter-chip-remove:focus-visible {
+  opacity: 1;
+}
+
+.match-mode {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: var(--space-2);
+}
+
+.match-mode-caption {
+  margin-right: 2px;
+  opacity: 0.55;
+}
+
+.match-mode-option {
+  padding: 1px 6px;
+  border: 1px solid var(--color-divider);
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  opacity: 0.65;
+  transition: opacity var(--motion-fast);
+}
+
+.match-mode-option:hover,
+.match-mode-option:focus-visible {
+  opacity: 1;
+}
+
+.match-mode-option.active {
+  border-color: var(--color-accent-700);
+  color: var(--color-accent-700);
+  font-weight: 600;
+  opacity: 1;
+}
+
+.filter-chips-clear {
+  flex: none;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--color-accent-700);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
 }
 
 /* Full-width strip below the toolbar, shown whenever the add field is dirty

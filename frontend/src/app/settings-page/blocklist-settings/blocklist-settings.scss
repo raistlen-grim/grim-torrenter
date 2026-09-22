@@ -1,0 +1,21 @@
+/* A bordered native-looking text field, wide enough for a URL. Scoped (not global): pInputText is
+ * a directive on this component's own <input>, so unlike a PrimeNG component's internal input
+ * it is reachable from here. */
+.source-input {
+  width: 22rem;
+  max-width: 100%;
+}
+
+.status-heading {
+  font-weight: 600;
+  font-size: 0.875rem;
+}
+
+.status-line {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+}
+
+.status-detail {
+  opacity: 0.6;
+}

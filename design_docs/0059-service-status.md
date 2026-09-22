@@ -202,3 +202,9 @@ resource, no cleanup path needed.
 - **Including the watch folder in v1** — rejected per the user's own scoping; its failure mode
   (directory create/scan IO errors) is shaped differently from a one-time bind failure and
   stays log-only for now.
+
+**Addendum (2026-09-20): a reason on a disabled service.** `GET /api/system/services` entries gained
+an optional `reason`, set only when a SOCKS5 proxy turned the service off ([[0079-socks5-proxy]]:
+with a proxy active and "block anything that can't use the proxy" on, DHT, LSD and the inbound peer
+server are never started). The Services page shows it beside the DISABLED state so the difference
+between "you turned this off" and "the proxy did" is visible. Null for every other state.

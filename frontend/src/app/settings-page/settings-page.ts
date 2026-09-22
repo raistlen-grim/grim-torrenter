@@ -14,6 +14,12 @@ import {
   appearanceSettingsPatch,
 } from './appearance-settings/appearance-settings';
 import {
+  BlocklistSettings,
+  BlocklistSettingsForm,
+  blocklistSettingsPatch,
+  buildBlocklistSettingsForm,
+} from './blocklist-settings/blocklist-settings';
+import {
   EventLogSettings,
   EventLogSettingsForm,
   buildEventLogSettingsForm,
@@ -31,6 +37,12 @@ import {
   buildNetworkSettingsForm,
   networkSettingsPatch,
 } from './network-settings/network-settings';
+import {
+  ProxySettings,
+  ProxySettingsForm,
+  buildProxySettingsForm,
+  proxySettingsPatch,
+} from './proxy-settings/proxy-settings';
 import {
   RateLimitSettings,
   RateLimitSettingsForm,
@@ -59,6 +71,8 @@ import {
 type SettingsFormGroup = FormGroup<{
   appearance: AppearanceSettingsForm;
   network: NetworkSettingsForm;
+  blocklist: BlocklistSettingsForm;
+  proxy: ProxySettingsForm;
   rateLimiting: RateLimitSettingsForm;
   seeding: SeedingSettingsForm;
   eventLog: EventLogSettingsForm;
@@ -70,6 +84,8 @@ type SettingsFormGroup = FormGroup<{
 type SettingsGroupKey =
   | 'appearance'
   | 'network'
+  | 'blocklist'
+  | 'proxy'
   | 'rateLimiting'
   | 'seeding'
   | 'eventLog'
@@ -103,6 +119,18 @@ const SETTINGS_GROUPS: { key: SettingsGroupKey; label: string; icon: string; hin
     label: 'Network',
     icon: 'pi-wifi',
     hint: 'Peer discovery and protocol behavior.',
+  },
+  {
+    key: 'blocklist',
+    label: 'Blocklist',
+    icon: 'pi-ban',
+    hint: 'Refuse connections to and from a list of IP ranges.',
+  },
+  {
+    key: 'proxy',
+    label: 'Proxy',
+    icon: 'pi-shield',
+    hint: 'Send outbound traffic through a SOCKS5 proxy.',
   },
   {
     key: 'rateLimiting',
@@ -154,10 +182,12 @@ const SETTINGS_GROUPS: { key: SettingsGroupKey; label: string; icon: string; hin
   selector: 'app-settings-page',
   imports: [
     AppearanceSettings,
+    BlocklistSettings,
     ButtonModule,
     EventLogSettings,
     MagnetFetchSettings,
     NetworkSettings,
+    ProxySettings,
     RateLimitSettings,
     SecuritySettings,
     SeedingSettings,
@@ -198,6 +228,8 @@ export class SettingsPage {
           new FormGroup({
             appearance: buildAppearanceSettingsForm(settings),
             network: buildNetworkSettingsForm(settings),
+            blocklist: buildBlocklistSettingsForm(settings),
+            proxy: buildProxySettingsForm(settings),
             rateLimiting: buildRateLimitSettingsForm(settings),
             seeding: buildSeedingSettingsForm(settings),
             eventLog: buildEventLogSettingsForm(settings),
@@ -220,6 +252,8 @@ export class SettingsPage {
       ...this.baseline,
       ...appearanceSettingsPatch(value.appearance),
       ...networkSettingsPatch(value.network),
+      ...blocklistSettingsPatch(value.blocklist),
+      ...proxySettingsPatch(value.proxy),
       ...rateLimitSettingsPatch(value.rateLimiting),
       ...seedingSettingsPatch(value.seeding),
       ...eventLogSettingsPatch(value.eventLog),

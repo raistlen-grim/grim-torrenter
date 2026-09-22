@@ -8,6 +8,8 @@ import com.grimtorrenter.engine.bencode.BencodeDecoder;
 import com.grimtorrenter.engine.bencode.BencodeEncoder;
 import com.grimtorrenter.engine.metainfo.InfoHash;
 import com.grimtorrenter.engine.mse.EncryptionMode;
+import com.grimtorrenter.engine.proxy.ProxyProvider;
+import com.grimtorrenter.engine.proxy.Socks5;
 import com.grimtorrenter.engine.mse.MseHandshake;
 import com.grimtorrenter.engine.mse.MseOutboundResult;
 import com.grimtorrenter.engine.peerwire.Bitfield;
@@ -87,6 +89,19 @@ public final class PeerConnection implements AutoCloseable {
     private final Set<Request> pendingRequests = ConcurrentHashMap.newKeySet();
     private final AtomicLong downloadedBytes = new AtomicLong();
     private final AtomicLong uploadedBytes = new AtomicLong();
+    /** Wall-clock millis of the most recent block moved in either direction; 0 = never. Feeds
+     * activity() only. See design_docs/0076. */
+    private volatile long lastTransferMillis;
+
+    private static final long RATE_WINDOW_MILLIS = 1_000;
+    private volatile double downloadRateBytesPerSec;
+    private long rateWindowStartMillis;
+    private long rateWindowBytes;
+
+    /** How recently a block must have moved for activity() to call this connection ACTIVE -
+     * comfortably longer than the 3s detail-view poll, since blocks arrive in bursts (choke
+     * rounds, rate limiting) and a shorter window would flicker. */
+    public static final long ACTIVITY_WINDOW_MILLIS = 10_000;
 
     /** The peer's extended handshake, decoded - empty until/unless it arrives. Bundled into
      * one record (rather than two separate volatile fields) so a reader never sees the
@@ -187,31 +202,51 @@ public final class PeerConnection implements AutoCloseable {
                                           RateLimiters rateLimiters,
                                           EncryptionMode encryptionMode,
                                           PeerSource source) throws IOException {
+        return connect(address, infoHash, ourPeerId, listener, extensionsToAdvertise, rateLimiters, encryptionMode,
+                source, ProxyProvider.NONE);
+    }
+
+    /** proxy is read once per connection attempt: when it names a proxy, every socket this opens
+     * (including the plaintext retry after a failed MSE attempt) is a SOCKS5 tunnel to the peer,
+     * and a proxy that can't be reached fails the connection - it never falls back to a direct
+     * one. See design_docs/0079. */
+    public static PeerConnection connect(PeerAddress address, InfoHash infoHash, PeerId ourPeerId,
+                                          PeerConnectionListener listener,
+                                          Map<String, Integer> extensionsToAdvertise,
+                                          RateLimiters rateLimiters,
+                                          EncryptionMode encryptionMode,
+                                          PeerSource source,
+                                          ProxyProvider proxy) throws IOException {
         if (encryptionMode == EncryptionMode.DISABLED) {
             return connectPlaintext(address, infoHash, ourPeerId, listener, extensionsToAdvertise, rateLimiters,
-                    source);
+                    source, proxy);
         }
         try {
             return connectEncrypted(address, infoHash, ourPeerId, listener, extensionsToAdvertise, rateLimiters,
-                    encryptionMode == EncryptionMode.REQUIRED, source);
+                    encryptionMode == EncryptionMode.REQUIRED, source, proxy);
+        } catch (TransportUnreachableException e) {
+            // The TCP connect itself failed (timeout, refused, proxy down) - a plaintext retry
+            // would just hit the same wall and double the time a dead peer holds a connection slot.
+            throw e.original();
         } catch (IOException e) {
             if (encryptionMode == EncryptionMode.REQUIRED) {
                 throw e;
             }
             return connectPlaintext(address, infoHash, ourPeerId, listener, extensionsToAdvertise, rateLimiters,
-                    source);
+                    source, proxy);
         }
     }
 
     private static PeerConnection connectPlaintext(PeerAddress address, InfoHash infoHash, PeerId ourPeerId,
                                                      PeerConnectionListener listener,
                                                      Map<String, Integer> extensionsToAdvertise,
-                                                     RateLimiters rateLimiters, PeerSource source) throws IOException {
-        Socket socket = new Socket();
+                                                     RateLimiters rateLimiters, PeerSource source,
+                                                     ProxyProvider proxy) throws IOException {
+        Socket socket = Socks5.connect(proxy, new InetSocketAddress(address.address(), address.port()),
+                CONNECT_TIMEOUT_MS);
         InputStream in;
         OutputStream out;
         try {
-            socket.connect(new InetSocketAddress(address.address(), address.port()), CONNECT_TIMEOUT_MS);
             in = socket.getInputStream();
             out = socket.getOutputStream();
         } catch (IOException e) {
@@ -222,6 +257,21 @@ public final class PeerConnection implements AutoCloseable {
                 listener, extensionsToAdvertise, rateLimiters, source);
     }
 
+    /** connectEncrypted() couldn't even establish the transport - distinguishes that from an MSE
+     * negotiation failure, the only case connect()'s plaintext fallback can actually help. */
+    private static final class TransportUnreachableException extends IOException {
+        private final IOException original;
+
+        TransportUnreachableException(IOException original) {
+            super(original);
+            this.original = original;
+        }
+
+        IOException original() {
+            return original;
+        }
+    }
+
     /** MSE negotiation happens before the ordinary BT handshake, over the same socket -
      * everything past negotiation (handshake, read loop, extended handshake) is identical to
      * connectPlaintext(), just against MseHandshake's resulting stream pair instead of the
@@ -230,11 +280,17 @@ public final class PeerConnection implements AutoCloseable {
                                                      PeerConnectionListener listener,
                                                      Map<String, Integer> extensionsToAdvertise,
                                                      RateLimiters rateLimiters,
-                                                     boolean requireEncryption, PeerSource source) throws IOException {
-        Socket socket = new Socket();
+                                                     boolean requireEncryption, PeerSource source,
+                                                     ProxyProvider proxy) throws IOException {
+        Socket socket;
+        try {
+            socket = Socks5.connect(proxy, new InetSocketAddress(address.address(), address.port()),
+                    CONNECT_TIMEOUT_MS);
+        } catch (IOException e) {
+            throw new TransportUnreachableException(e);
+        }
         MseOutboundResult negotiated;
         try {
-            socket.connect(new InetSocketAddress(address.address(), address.port()), CONNECT_TIMEOUT_MS);
             socket.setSoTimeout(HANDSHAKE_TIMEOUT_MS);
             negotiated = MseHandshake.negotiateOutbound(
                     socket.getInputStream(), socket.getOutputStream(), infoHash, requireEncryption, MSE_RANDOM);
@@ -401,7 +457,13 @@ public final class PeerConnection implements AutoCloseable {
 
     private void applyIncoming(PeerMessage message) {
         switch (message) {
-            case Choke ignored -> peerChoking = true;
+            case Choke ignored -> {
+                peerChoking = true;
+                // BEP 3: a choke discards every request the peer hadn't answered yet. Left in
+                // pendingRequests they'd count against the pipeline forever after the next
+                // unchoke and the peer would never be asked for anything again.
+                pendingRequests.clear();
+            }
             case Unchoke ignored -> peerChoking = false;
             case Interested ignored -> peerInterested = true;
             case NotInterested ignored -> peerInterested = false;
@@ -422,7 +484,9 @@ public final class PeerConnection implements AutoCloseable {
             }
             case Piece p -> {
                 downloadedBytes.addAndGet(p.block().length);
+                lastTransferMillis = System.currentTimeMillis();
                 pendingRequests.removeIf(r -> r.index() == p.index() && r.begin() == p.begin());
+                recordDownloadForRate(p.block().length);
                 // Blocks this connection's own read loop, not the caller of applyIncoming -
                 // throttles how fast we go back to reading further wire data from this
                 // peer, which is what actually slows the incoming byte rate down (TCP flow
@@ -570,6 +634,7 @@ public final class PeerConnection implements AutoCloseable {
         rateLimiters.upload().acquire(block.length);
         send(new Piece(index, begin, block));
         uploadedBytes.addAndGet(block.length);
+        lastTransferMillis = System.currentTimeMillis();
     }
 
     public PeerAddress remoteAddress() {
@@ -623,6 +688,29 @@ public final class PeerConnection implements AutoCloseable {
         send(new Extended(extendedMessageId, payload));
     }
 
+    /** Smoothed download rate from this peer, bytes/sec - 0 until a full sampling window has
+     * elapsed. Sized against by TorrentSession's adaptive request pipeline. Written only from
+     * this connection's own read loop (single writer), read from anywhere. */
+    public double downloadRateBytesPerSec() {
+        return downloadRateBytesPerSec;
+    }
+
+    private void recordDownloadForRate(int bytes) {
+        long now = System.currentTimeMillis();
+        if (rateWindowStartMillis == 0) {
+            rateWindowStartMillis = now;
+        }
+        rateWindowBytes += bytes;
+        long elapsed = now - rateWindowStartMillis;
+        if (elapsed >= RATE_WINDOW_MILLIS) {
+            double sample = rateWindowBytes * 1000.0 / elapsed;
+            downloadRateBytesPerSec = downloadRateBytesPerSec == 0
+                    ? sample : (downloadRateBytesPerSec + sample) / 2;
+            rateWindowStartMillis = now;
+            rateWindowBytes = 0;
+        }
+    }
+
     public int pendingRequestCount() {
         return pendingRequests.size();
     }
@@ -638,6 +726,20 @@ public final class PeerConnection implements AutoCloseable {
 
     public long uploadedBytes() {
         return uploadedBytes.get();
+    }
+
+    public PeerActivity activity() {
+        return activity(System.currentTimeMillis());
+    }
+
+    /** nowMillis is a parameter (rather than read inside) purely so a test can assert the
+     * window boundary deterministically. See design_docs/0076. */
+    public PeerActivity activity(long nowMillis) {
+        long last = lastTransferMillis;
+        if (last != 0 && nowMillis - last <= ACTIVITY_WINDOW_MILLIS) {
+            return PeerActivity.ACTIVE;
+        }
+        return amInterested() ? PeerActivity.WAITING : PeerActivity.IDLE;
     }
 
     public boolean isClosed() {

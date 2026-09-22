@@ -1,0 +1,181 @@
+<div [formGroup]="form()">
+  <div class="settings-row">
+    <div class="settings-row-label">
+      <label for="proxyEnabled">Enabled</label>
+      <p class="settings-row-description">
+        Send peer connections, tracker announces (HTTP and UDP) and the blocklist download through a
+        SOCKS5 proxy. New connections use it straight away; existing ones stay direct until they
+        reconnect.
+      </p>
+      @if (formState().incomplete) {
+        <p class="settings-row-error" role="alert">Enter a host and a port (1-65535) before this can be saved.</p>
+      }
+    </div>
+    <div class="settings-row-control">
+      <p-toggleswitch inputId="proxyEnabled" formControlName="enabled" />
+    </div>
+  </div>
+
+  <div class="settings-row">
+    <div class="settings-row-label">
+      <label for="proxyHost">Host</label>
+      <p class="settings-row-description">The proxy's hostname or IP address.</p>
+    </div>
+    <div class="settings-row-control">
+      <input
+        pInputText
+        id="proxyHost"
+        type="text"
+        class="host-input"
+        formControlName="host"
+        placeholder="proxy.example.com"
+        autocomplete="off"
+        spellcheck="false"
+      />
+    </div>
+  </div>
+
+  <div class="settings-row">
+    <div class="settings-row-label">
+      <label for="proxyPort">Port</label>
+    </div>
+    <div class="settings-row-control">
+      <p-inputnumber
+        inputId="proxyPort"
+        formControlName="port"
+        [min]="1"
+        [max]="65535"
+        [useGrouping]="false"
+        [showButtons]="false"
+        inputStyleClass="settings-number-input"
+      />
+    </div>
+  </div>
+
+  <div class="settings-row">
+    <div class="settings-row-label">
+      <label for="proxyUsername">Username</label>
+      <p class="settings-row-description">Leave empty if the proxy needs no login.</p>
+    </div>
+    <div class="settings-row-control">
+      <input
+        pInputText
+        id="proxyUsername"
+        type="text"
+        class="host-input"
+        formControlName="username"
+        autocomplete="off"
+        spellcheck="false"
+      />
+    </div>
+  </div>
+
+  <div class="settings-row">
+    <div class="settings-row-label">
+      <label for="proxyPassword">Password</label>
+      <p class="settings-row-description">
+        Kept in its own file on the server and never shown again - saved immediately, separately
+        from the Save button below.
+        @if (status()?.hasPassword) {
+          <strong>A password is set.</strong>
+        } @else {
+          No password is set.
+        }
+      </p>
+      @if (passwordError()) {
+        <p class="settings-row-error" role="alert">{{ passwordError() }}</p>
+      }
+    </div>
+    <div class="settings-row-control password-controls">
+      <input
+        pInputText
+        id="proxyPassword"
+        type="password"
+        class="host-input"
+        [formControl]="password"
+        autocomplete="new-password"
+        [attr.placeholder]="status()?.hasPassword ? 'New password' : 'Password'"
+      />
+      <p-button
+        label="Save password"
+        size="small"
+        [disabled]="password.value === '' || savingPassword()"
+        [loading]="savingPassword()"
+        (onClick)="savePassword()"
+      />
+      @if (status()?.hasPassword) {
+        <p-button
+          label="Remove"
+          severity="secondary"
+          size="small"
+          [disabled]="savingPassword()"
+          (onClick)="removePassword()"
+        />
+      }
+    </div>
+  </div>
+
+  <div class="settings-row">
+    <div class="settings-row-label">
+      <label for="proxyBlockUnsupported">Block anything that can't use the proxy</label>
+      <p class="settings-row-description">
+        A SOCKS5 proxy here can't carry DHT, µTP or local peer discovery (all UDP), or incoming
+        connections. With this on, those are switched off while a proxy is enabled, so nothing
+        bypasses it - you get peers from trackers and peer exchange only. Takes effect the next
+        time the app starts.
+      </p>
+      @if (formState().enabled && !formState().blockUnsupported) {
+        <p class="settings-row-error" role="alert">
+          Off: DHT, µTP, local peer discovery and incoming connections will keep using your real
+          address, even with the proxy on.
+        </p>
+      }
+    </div>
+    <div class="settings-row-control">
+      <p-toggleswitch inputId="proxyBlockUnsupported" formControlName="blockUnsupported" />
+    </div>
+  </div>
+
+  <div class="settings-row">
+    <div class="settings-row-label">
+      <span class="status-heading">Status</span>
+      @if (status(); as current) {
+        @if (current.restartRequired) {
+          <p class="settings-row-error" role="alert">
+            Restart the app for the block setting to take effect. Until then, DHT, µTP, local peer
+            discovery and incoming connections
+            @if (current.blockingNow) {
+              stay switched off.
+            } @else {
+              are still running and using your real address.
+            }
+          </p>
+        } @else if (current.active && current.blockingNow) {
+          <p class="status-line">Proxy active. DHT, µTP, local peer discovery and incoming connections are off.</p>
+        } @else if (current.active) {
+          <p class="status-line">Proxy active (DHT and the rest are not blocked).</p>
+        } @else {
+          <p class="status-line">No proxy in use.</p>
+        }
+      }
+      @if (testResult(); as result) {
+        <p class="status-line" [class.test-failed]="!result.reachable" aria-live="polite">
+          {{ result.message }}
+        </p>
+      }
+      @if (formState().dirty) {
+        <p class="settings-row-description">Test checks what's saved - save your changes first.</p>
+      }
+    </div>
+    <div class="settings-row-control">
+      <p-button
+        label="Test"
+        severity="secondary"
+        size="small"
+        [disabled]="testing()"
+        [loading]="testing()"
+        (onClick)="test()"
+      />
+    </div>
+  </div>
+</div>

@@ -6,6 +6,7 @@ import { ContextMenu, ContextMenuModule } from 'primeng/contextmenu';
 import { finalize } from 'rxjs';
 
 import { TorrentWithRate } from '../../models/torrent.model';
+import { LabelService } from '../../services/label.service';
 import { TorrentEventsService } from '../../services/torrent-events.service';
 import { TorrentService } from '../../services/torrent.service';
 import { copyToClipboard } from '../../shared/clipboard';
@@ -16,6 +17,7 @@ import { ActiveContextMenuRegistry } from '../../shared/active-context-menu-regi
 import { RateTrend } from '../../shared/rate-trend/rate-trend';
 import { torrentStateDisplay } from '../../shared/status-display';
 import { SeedingLimitsDialog } from './seeding-limits-dialog/seeding-limits-dialog';
+import { TorrentLabelsDialog } from './torrent-labels-dialog/torrent-labels-dialog';
 import { TorrentLimitsDialog } from './torrent-limits-dialog/torrent-limits-dialog';
 
 /**
@@ -37,6 +39,10 @@ import { TorrentLimitsDialog } from './torrent-limits-dialog/torrent-limits-dial
  * `<a routerLink>` this replaced; `(click)` on the actions wrapper stops propagation so
  * clicking a row action doesn't also navigate.
  */
+/** More than this many labels collapse into a "+N" chip so a heavily-labelled torrent can't
+ * crowd its own name out of the row. See design_docs/0077. */
+const MAX_VISIBLE_LABEL_CHIPS = 2;
+
 @Component({
   selector: 'tr[app-torrent-row]',
   imports: [
@@ -47,6 +53,7 @@ import { TorrentLimitsDialog } from './torrent-limits-dialog/torrent-limits-dial
     FormatRatePipe,
     RateTrend,
     SeedingLimitsDialog,
+    TorrentLabelsDialog,
     TorrentLimitsDialog,
   ],
   templateUrl: './torrent-row.html',
@@ -68,6 +75,7 @@ export class TorrentRow {
   private readonly messageService = inject(MessageService);
   private readonly activeContextMenus = inject(ActiveContextMenuRegistry);
   private readonly router = inject(Router);
+  private readonly labelService = inject(LabelService);
 
   readonly torrent = input.required<TorrentWithRate>();
 
@@ -100,6 +108,22 @@ export class TorrentRow {
 
   /** Same self-contained-per-row pattern as showSeedingLimitsDialog above. See design_docs/0072. */
   readonly showTorrentLimitsDialog = signal(false);
+
+  /** Same self-contained-per-row pattern again. See design_docs/0077. */
+  readonly showTorrentLabelsDialog = signal(false);
+
+  /** Display names of this torrent's labels, resolved from the ids it carries (a rename shows
+   * up here without the torrent changing). Ids with no matching label - deleted moments ago,
+   * before the next snapshot caught up - simply don't render. Shown in compact mode (details
+   * panel docked) too - checked against a real monitor, there's room, and that's exactly when
+   * you're looking at one torrent's details. */
+  private readonly labelNames = computed(() => {
+    const names = this.labelService.namesById();
+    return this.torrent().labelIds.flatMap((id) => names.get(id) ?? []);
+  });
+  readonly visibleLabelNames = computed(() => this.labelNames().slice(0, MAX_VISIBLE_LABEL_CHIPS));
+  readonly hiddenLabelCount = computed(() => Math.max(0, this.labelNames().length - MAX_VISIBLE_LABEL_CHIPS));
+  readonly hiddenLabelNames = computed(() => this.labelNames().slice(MAX_VISIBLE_LABEL_CHIPS).join(', '));
 
   readonly infoHash = computed(() => this.torrent().infoHash);
   readonly name = computed(() => this.torrent().name);
@@ -179,6 +203,12 @@ export class TorrentRow {
         icon: 'pi pi-sliders-h',
         disabled: this.isFetchingMetadata(),
         command: () => this.showTorrentLimitsDialog.set(true),
+      },
+      {
+        label: 'Labels…',
+        icon: 'pi pi-tag',
+        disabled: this.isFetchingMetadata(),
+        command: () => this.showTorrentLabelsDialog.set(true),
       },
       { separator: true },
       { label: 'Remove', icon: 'pi pi-trash', disabled, command: () => this.onRemove() },

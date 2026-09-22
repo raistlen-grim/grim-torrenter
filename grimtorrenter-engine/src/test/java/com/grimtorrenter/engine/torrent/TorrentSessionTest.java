@@ -31,6 +31,8 @@ import com.grimtorrenter.engine.peerwire.Request;
 import com.grimtorrenter.engine.peerwire.Unchoke;
 import com.grimtorrenter.engine.pex.PexCodec;
 import com.grimtorrenter.engine.pex.PexMessage;
+import com.grimtorrenter.engine.piece.FilePriorities;
+import com.grimtorrenter.engine.piece.FilePriority;
 import com.grimtorrenter.engine.piece.PieceState;
 import com.grimtorrenter.engine.ratelimit.RateLimiters;
 import com.grimtorrenter.engine.settings.InMemorySettingsStore;
@@ -82,6 +84,8 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class TorrentSessionTest {
@@ -1857,6 +1861,349 @@ class TorrentSessionTest {
             verificationLimiter.release();
             assertTrue(listener.seedingLatch.await(5, TimeUnit.SECONDS));
             assertEquals(TorrentState.SEEDING, session.state());
+        } finally {
+            session.stop();
+        }
+    }
+
+    /** Uses straddlingBoundaryMultiFileMetadata's layout (a.bin [0,10), b.bin [10,20), 8-byte
+     * pieces): piece 0 = a only, piece 1 = a's last 2 bytes + b's first 6, piece 2 = b only.
+     * Skipping b therefore leaves pieces 0 and 1 wanted (piece 1 is shared with wanted a) and
+     * piece 2 unwanted. On disk: a.bin fully correct, b.bin correct only for the 6 bytes piece 1
+     * needs, its last 4 bytes (all of piece 2) left zero - so a restore verifies exactly pieces
+     * 0 and 1. See design_docs/0075. */
+    private static TorrentMetadata writeContentExceptPieceTwo(Path downloadDirectory, byte[] content)
+            throws IOException {
+        Path dir = downloadDirectory.resolve("multi");
+        Files.createDirectories(dir);
+        Files.write(dir.resolve("a.bin"), Arrays.copyOfRange(content, 0, 10));
+        byte[] partialB = new byte[10];
+        System.arraycopy(content, 10, partialB, 0, 6);
+        Files.write(dir.resolve("b.bin"), partialB);
+        return straddlingBoundaryMultiFileMetadata(content);
+    }
+
+    private static TorrentSession restoreWithPriorities(TorrentMetadata metadata, FakeTrackerClient tracker,
+                                                         Path downloadDirectory, RecordingListener listener,
+                                                         FilePriorities priorities) throws IOException {
+        return TorrentSession.restoreAsync(metadata, tracker, downloadDirectory, fakeRemotePeerId(), 6881,
+                listener, null, RateLimiters.unlimited(), FileHandlePool.unbounded(),
+                new Semaphore(Integer.MAX_VALUE), () -> EncryptionMode.DISABLED, SeedingLimitOverride.INHERIT,
+                Instant.now(), () -> 300L, false, true, TorrentSession.PersistedLifetimeStats.NONE,
+                TorrentLimitOverride.INHERIT, 30, false, () -> 2, priorities);
+    }
+
+    @Test
+    void aTorrentWhoseWantedFilesAreCompleteSeedsWithoutTheSkippedFileAndReportsProgressAgainstWhatIsWanted(
+            @TempDir Path tempDir) throws Exception {
+        byte[] content = fill(20, 3);
+        TorrentMetadata metadata = writeContentExceptPieceTwo(tempDir, content);
+        FakeTrackerClient tracker = new FakeTrackerClient();
+        RecordingListener listener = new RecordingListener();
+
+        TorrentSession session = restoreWithPriorities(metadata, tracker, tempDir, listener,
+                new FilePriorities(List.of(FilePriority.MEDIUM, FilePriority.SKIP)));
+        try {
+            assertTrue(listener.seedingLatch.await(5, TimeUnit.SECONDS));
+            assertEquals(TorrentState.SEEDING, session.state());
+            assertEquals(2, session.completedPieceCount(), "piece 2 (only b's tail) was never on disk");
+            assertTrue(session.wasCompleteOnRestore());
+            assertEquals(1.0, session.progress(), 0.0001);
+            assertEquals(0, session.bytesRemaining());
+            assertEquals(List.of(FilePriority.MEDIUM, FilePriority.SKIP),
+                    session.files().stream().map(TorrentSession.FileProgress::priority).toList());
+        } finally {
+            session.stop();
+        }
+    }
+
+    @Test
+    void unskippingAFileOnASeedingTorrentDropsBackToDownloadingAndReskippingItSeedsAgain(
+            @TempDir Path tempDir) throws Exception {
+        byte[] content = fill(20, 3);
+        TorrentMetadata metadata = writeContentExceptPieceTwo(tempDir, content);
+        FakeTrackerClient tracker = new FakeTrackerClient();
+        RecordingListener listener = new RecordingListener();
+        TorrentSession session = restoreWithPriorities(metadata, tracker, tempDir, listener,
+                new FilePriorities(List.of(FilePriority.MEDIUM, FilePriority.SKIP)));
+        try {
+            awaitState(session, TorrentState.SEEDING);
+
+            session.setFilePriorities(FilePriorities.allMedium(2));
+
+            assertEquals(TorrentState.DOWNLOADING, session.state());
+            assertEquals(4, session.bytesRemaining(), "piece 2 (4 bytes) is wanted again and still missing");
+            assertTrue(session.progress() < 1.0);
+
+            session.setFilePriorities(new FilePriorities(List.of(FilePriority.MEDIUM, FilePriority.SKIP)));
+
+            assertEquals(TorrentState.SEEDING, session.state());
+            assertEquals(1.0, session.progress(), 0.0001);
+            assertEquals(List.of(TorrentState.SEEDING, TorrentState.DOWNLOADING, TorrentState.SEEDING),
+                    listener.stateChanges.subList(listener.stateChanges.indexOf(TorrentState.SEEDING),
+                            listener.stateChanges.size()));
+        } finally {
+            session.stop();
+        }
+    }
+
+    @Test
+    void aTorrentWithNoSkippedFilesStillWaitsForEveryPieceBeforeSeeding(@TempDir Path tempDir) throws Exception {
+        byte[] content = fill(20, 3);
+        TorrentMetadata metadata = writeContentExceptPieceTwo(tempDir, content);
+        TorrentSession session = restoreWithPriorities(metadata, new FakeTrackerClient(), tempDir,
+                new RecordingListener(), FilePriorities.allMedium(2));
+        try {
+            awaitState(session, TorrentState.DOWNLOADING);
+
+            assertEquals(4, session.bytesRemaining());
+            assertFalse(session.progress() >= 1.0);
+        } finally {
+            session.stop();
+        }
+    }
+
+    @Test
+    void setFilePrioritiesRejectsAWrongCountOrEverythingSkippedAndChangesNothing(@TempDir Path tempDir)
+            throws Exception {
+        byte[] content = fill(20, 3);
+        TorrentMetadata metadata = writeContentExceptPieceTwo(tempDir, content);
+        TorrentSession session = restoreWithPriorities(metadata, new FakeTrackerClient(), tempDir,
+                new RecordingListener(), FilePriorities.allMedium(2));
+        try {
+            awaitState(session, TorrentState.DOWNLOADING);
+
+            assertThrows(IllegalArgumentException.class,
+                    () -> session.setFilePriorities(FilePriorities.allMedium(3)));
+            assertThrows(IllegalArgumentException.class, () -> session.setFilePriorities(
+                    new FilePriorities(List.of(FilePriority.SKIP, FilePriority.SKIP))));
+
+            assertEquals(FilePriorities.allMedium(2), session.filePriorities());
+            assertEquals(TorrentState.DOWNLOADING, session.state());
+        } finally {
+            session.stop();
+        }
+    }
+
+    /** A configurable stand-in for the engine's blocklist (design_docs/0078): blocks everything or
+     * nothing, and counts how many refusals were recorded. */
+    private static final class TestIpFilter implements com.grimtorrenter.engine.blocklist.IpFilter {
+        volatile boolean blockAll;
+        final AtomicInteger recorded = new AtomicInteger();
+
+        @Override
+        public boolean isBlocked(InetAddress address) {
+            return blockAll;
+        }
+
+        @Override
+        public void recordBlocked() {
+            recorded.incrementAndGet();
+        }
+    }
+
+    private PeerAddress startLoopbackPeerServer(int acceptTimeoutMillis) throws IOException {
+        serverSocket = new ServerSocket(0, 50, InetAddress.getLoopbackAddress());
+        serverSocket.setSoTimeout(acceptTimeoutMillis);
+        return new PeerAddress(InetAddress.getLoopbackAddress(), serverSocket.getLocalPort());
+    }
+
+    /** The control for the test below: with nothing blocked, a known peer address really is
+     * connected to - so the blocked case's silence means something. */
+    @Test
+    void anUnblockedKnownPeerIsConnectedTo(@TempDir Path tempDir) throws Exception {
+        PeerAddress peer = startLoopbackPeerServer(3000);
+        TorrentSession session = TorrentSession.create(singlePieceMetadata(fill(20, 1)), new FakeTrackerClient(),
+                tempDir, fakeRemotePeerId(), 6881, new RecordingListener(), null);
+        session.setIpFilter(new TestIpFilter());
+        session.start();
+        try {
+            session.addKnownPeers(List.of(peer), PeerSource.LSD);
+
+            serverSocket.accept().close();
+        } finally {
+            session.stop();
+        }
+    }
+
+    @Test
+    void aBlockedKnownPeerAddressIsNeverEvenAttempted(@TempDir Path tempDir) throws Exception {
+        PeerAddress peer = startLoopbackPeerServer(1000);
+        TestIpFilter filter = new TestIpFilter();
+        filter.blockAll = true;
+        TorrentSession session = TorrentSession.create(singlePieceMetadata(fill(20, 1)), new FakeTrackerClient(),
+                tempDir, fakeRemotePeerId(), 6881, new RecordingListener(), null);
+        session.setIpFilter(filter);
+        session.start();
+        try {
+            session.addKnownPeers(List.of(peer), PeerSource.LSD);
+
+            assertThrows(java.net.SocketTimeoutException.class, () -> serverSocket.accept());
+            assertEquals(1, filter.recorded.get());
+            assertTrue(session.peers().isEmpty());
+        } finally {
+            session.stop();
+        }
+    }
+
+    /** A reload that newly blocks an address we're already connected to must take effect on that
+     * live connection, not just on future ones. */
+    @Test
+    void applyingAChangedFilterClosesAnAlreadyEstablishedConnection(@TempDir Path tempDir) throws Exception {
+        PeerAddress peer = startLoopbackPeerServer(5000);
+        TorrentMetadata metadata = singlePieceMetadata(fill(20, 1));
+        Thread fakePeer = new Thread(() -> {
+            try (Socket socket = serverSocket.accept()) {
+                PeerWireCodec.readHandshake(socket.getInputStream());
+                PeerWireCodec.writeHandshake(socket.getOutputStream(),
+                        Handshake.of(metadata.infoHash(), PeerId.of(fill(20, 101))));
+                Thread.sleep(4000);
+            } catch (Exception ignored) {
+                // the connection being closed under it is exactly what this test provokes
+            }
+        });
+        fakePeer.start();
+        TestIpFilter filter = new TestIpFilter();
+        TorrentSession session = TorrentSession.create(metadata, new FakeTrackerClient(), tempDir,
+                fakeRemotePeerId(), 6881, new RecordingListener(), null);
+        session.setIpFilter(filter);
+        session.start();
+        try {
+            session.addKnownPeers(List.of(peer), PeerSource.LSD);
+            assertEquals(1, awaitOnePeer(session).size());
+
+            filter.blockAll = true;
+            session.applyIpFilterChange();
+
+            long deadline = System.currentTimeMillis() + 5000;
+            while (!session.peers().isEmpty() && System.currentTimeMillis() < deadline) {
+                Thread.sleep(20);
+            }
+            assertTrue(session.peers().isEmpty());
+            assertEquals(1, filter.recorded.get());
+        } finally {
+            session.stop();
+        }
+        fakePeer.join(2000);
+    }
+
+    /** An inbound TCP connection from a blocked address is closed on the spot (the universal net
+     * behind PeerServer's own earlier check, which µTP has no equivalent of). */
+    @Test
+    void aBlockedInboundConnectionIsClosedInsteadOfAdopted(@TempDir Path tempDir) throws Exception {
+        TorrentMetadata metadata = singlePieceMetadata(fill(20, 1));
+        TestIpFilter filter = new TestIpFilter();
+        filter.blockAll = true;
+        TorrentSession session = TorrentSession.create(metadata, new FakeTrackerClient(), tempDir,
+                fakeRemotePeerId(), 6881, new RecordingListener(), null);
+        session.setIpFilter(filter);
+        session.start();
+        try (ServerSocket listener = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+             Socket client = new Socket(InetAddress.getLoopbackAddress(), listener.getLocalPort());
+             Socket accepted = listener.accept()) {
+            session.acceptIncomingConnection(accepted, accepted.getInputStream(), accepted.getOutputStream(),
+                    Handshake.of(metadata.infoHash(), PeerId.of(fill(20, 101))));
+
+            assertTrue(accepted.isClosed());
+            assertEquals(1, filter.recorded.get());
+            assertTrue(session.peers().isEmpty());
+        } finally {
+            session.stop();
+        }
+    }
+
+    /** design_docs/0036's 2026-09-20 addendum: a first announce that fails with no DHT to fall back
+     * on used to leave the torrent in ERROR forever. It now retries in the background and recovers
+     * on its own once the tracker (or, in practice, a proxy) is fixed - and the stale error is
+     * cleared. */
+    @Test
+    void aFailedFirstAnnounceIsRetriedInTheBackgroundAndRecoversWithoutAnyoneRestarting(@TempDir Path tempDir)
+            throws Exception {
+        FakeTrackerClient tracker = new FakeTrackerClient();
+        tracker.failure = new RuntimeException("tracker down");
+        TorrentSession session = TorrentSession.create(singlePieceMetadata(fill(20, 1)), tracker, tempDir,
+                fakeRemotePeerId(), 6881, new RecordingListener(), null);
+        session.setStartRetryInitialMillisForTesting(50);
+        try {
+            session.start();
+            assertEquals(TorrentState.ERROR, session.state());
+            assertNotNull(session.lastError());
+
+            tracker.failure = null;
+
+            awaitState(session, TorrentState.DOWNLOADING);
+            assertNull(session.lastError(), "the stale error must not linger once it has recovered");
+        } finally {
+            session.stop();
+        }
+    }
+
+    @Test
+    void theRetriesKeepGoingWhileItStaysBrokenAndStopWhenTheTorrentIsPaused(@TempDir Path tempDir)
+            throws Exception {
+        FakeTrackerClient tracker = new FakeTrackerClient();
+        tracker.failure = new RuntimeException("tracker down");
+        TorrentSession session = TorrentSession.create(singlePieceMetadata(fill(20, 1)), tracker, tempDir,
+                fakeRemotePeerId(), 6881, new RecordingListener(), null);
+        session.setStartRetryInitialMillisForTesting(20);
+        session.start();
+
+        long deadline = System.currentTimeMillis() + 5000;
+        while (tracker.requests.size() < 3 && System.currentTimeMillis() < deadline) {
+            Thread.sleep(10);
+        }
+        assertTrue(tracker.requests.size() >= 3, "it should have retried more than once");
+        assertEquals(TorrentState.ERROR, session.state());
+
+        session.stop();
+        int afterStop = tracker.requests.size();
+        Thread.sleep(300);
+
+        assertEquals(TorrentState.STOPPED, session.state());
+        assertEquals(afterStop, tracker.requests.size(), "no announce may happen after the torrent was paused");
+    }
+
+    /** design_docs/0036's 2026-09-20 addendum: changing the proxy settings (or password) wakes the
+     * retry immediately instead of letting the backoff run out. The initial delay here is a full
+     * minute - the test only passes if the wake-up really cut it short. */
+    @Test
+    void retryStartNowCutsTheBackoffShortAndRecoversRightAway(@TempDir Path tempDir) throws Exception {
+        FakeTrackerClient tracker = new FakeTrackerClient();
+        tracker.failure = new RuntimeException("proxy rejected the credentials");
+        TorrentSession session = TorrentSession.create(singlePieceMetadata(fill(20, 1)), tracker, tempDir,
+                fakeRemotePeerId(), 6881, new RecordingListener(), null);
+        session.setStartRetryInitialMillisForTesting(60_000);
+        try {
+            session.start();
+            assertEquals(TorrentState.ERROR, session.state());
+            tracker.failure = null;
+            int announcesBefore = tracker.requests.size();
+
+            session.retryStartNow();
+
+            awaitState(session, TorrentState.DOWNLOADING);
+            assertTrue(tracker.requests.size() > announcesBefore);
+            assertNull(session.lastError());
+        } finally {
+            session.stop();
+        }
+    }
+
+    @Test
+    void retryStartNowIsANoOpUnlessTheTorrentIsInTheRetryableErrorState(@TempDir Path tempDir) throws Exception {
+        FakeTrackerClient tracker = new FakeTrackerClient();
+        TorrentSession session = TorrentSession.create(singlePieceMetadata(fill(20, 1)), tracker, tempDir,
+                fakeRemotePeerId(), 6881, new RecordingListener(), null);
+        try {
+            session.retryStartNow(); // STOPPED - nothing to do
+            session.start();
+            int announces = tracker.requests.size();
+
+            session.retryStartNow(); // DOWNLOADING - nothing to do
+
+            Thread.sleep(100);
+            assertEquals(TorrentState.DOWNLOADING, session.state());
+            assertEquals(announces, tracker.requests.size());
         } finally {
             session.stop();
         }

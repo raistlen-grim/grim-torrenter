@@ -2,8 +2,8 @@ package com.grimtorrenter.engine.tracker;
 
 /**
  * Notified by TrackedTrackerClient when a single tracker's reachability actually changes state -
- * not on every announce() call, and not on the first failure alone (see TrackedTrackerClient's
- * own consecutive-failure debouncing). Deliberately independent of EventStore/LibraryEvent
+ * not on every announce() call, and not on a brief failure or recovery (see TrackedTrackerClient's
+ * own time-window debouncing). Deliberately independent of EventStore/LibraryEvent
  * (grimtorrenter-app-side concepts) so grimtorrenter-engine stays free of that dependency;
  * TorrentEngine adapts these callbacks into library events. See design_docs/0055's own
  * TRACKER_UNREACHABLE/TRACKER_RECOVERED addendum.

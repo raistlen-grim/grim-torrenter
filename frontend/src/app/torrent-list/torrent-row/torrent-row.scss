@@ -155,6 +155,31 @@ td:not(.state-icon-cell) {
   white-space: nowrap;
 }
 
+/* Label chips (design_docs/0077) sit after the name/extension inside the same fixed-height
+ * .name-inner flex box, so they can't change the row's height; flex: none plus a per-chip
+ * max-width means it's the name stem (the only shrinkable flex item here) that gives way when
+ * space runs out, never the chips. Same small-capsule treatment as the peers tab's badges. */
+.label-chips {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  margin-left: var(--space-3);
+}
+
+.label-chip {
+  max-width: 5.5rem;
+  padding: 0 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  line-height: 1.5;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  opacity: 0.75;
+}
+
 /* white-space: nowrap throughout - these are short, single-value cells (a size, a
  * percentage, a rate) that should never wrap even if a column ends up a hair narrower than
  * its content; PrimeNG's default td doesn't set this itself, and the fixed column widths in
@@ -194,10 +219,19 @@ td:not(.state-icon-cell) {
   opacity: 0.6;
 }
 
+/* A backend error can be long (a tracker URL, a proxy message) and the State column is narrow:
+ * wrap even unbroken URLs, keep it to two lines so an errored row doesn't balloon, and put the
+ * whole text in the element's title (see the template) for anyone who wants it. */
 .error-detail {
   margin-top: var(--space-1);
   font-size: 0.8rem;
   color: var(--alarm);
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
 }
 
 .actions-cell {

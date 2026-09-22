@@ -1,11 +1,14 @@
 package com.grimtorrenter.engine.torrent;
 
+import com.grimtorrenter.engine.blocklist.IpFilter;
+import com.grimtorrenter.engine.proxy.ProxyProvider;
 import com.grimtorrenter.engine.dht.DhtNode;
 import com.grimtorrenter.engine.metainfo.TorrentFile;
 import com.grimtorrenter.engine.metainfo.TorrentMetadata;
 import com.grimtorrenter.engine.mse.EncryptionMode;
 import com.grimtorrenter.engine.peer.PeerConnection;
 import com.grimtorrenter.engine.peer.PeerConnectionListener;
+import com.grimtorrenter.engine.peer.PeerActivity;
 import com.grimtorrenter.engine.peer.PeerSource;
 import com.grimtorrenter.engine.peer.PeerTransportType;
 import com.grimtorrenter.engine.peerwire.Bitfield;
@@ -24,6 +27,8 @@ import com.grimtorrenter.engine.peerwire.Request;
 import com.grimtorrenter.engine.peerwire.Unchoke;
 import com.grimtorrenter.engine.pex.PexCodec;
 import com.grimtorrenter.engine.pex.PexMessage;
+import com.grimtorrenter.engine.piece.FilePriorities;
+import com.grimtorrenter.engine.piece.FilePriority;
 import com.grimtorrenter.engine.piece.PieceManager;
 import com.grimtorrenter.engine.piece.PieceState;
 import com.grimtorrenter.engine.ratelimit.RateLimiters;
@@ -83,7 +88,20 @@ public final class TorrentSession implements AutoCloseable {
      * change what a given session is constructed with. See connectionSlots's own Javadoc for
      * why this is resolved once at construction rather than being live like a RateLimiter. */
     private static final int DEFAULT_MAX_CONNECTIONS = 30;
-    private static final int PIPELINE_DEPTH = 5;
+    /** Per-connection request pipeline bounds - the actual depth is sized from that peer's own
+     * recent download rate (pipelineDepthFor()), so a fast peer isn't capped at MIN blocks per
+     * round trip. MAX stays well under what common clients accept queued from one peer.
+     * See design_docs/0080. */
+    private static final int MIN_PIPELINE_DEPTH = 5;
+    private static final int MAX_PIPELINE_DEPTH = 128;
+    private static final double PIPELINE_HORIZON_SECONDS = 2.0;
+    /** How long a peer may sit on a requested block before another peer is allowed to be asked
+     * for it too. */
+    private static final long IN_FLIGHT_BLOCK_TIMEOUT_MILLIS = 30_000;
+    /** Endgame (design_docs/0080): once every still-missing block is already in flight, idle
+     * peers may also be asked for blocks other peers hold, up to this many holders per block. */
+    private static final int MAX_ENDGAME_HOLDERS_PER_BLOCK = 3;
+    private final InFlightBlocks inFlightBlocks = new InFlightBlocks(IN_FLIGHT_BLOCK_TIMEOUT_MILLIS);
     private static final long KEEPALIVE_INTERVAL_SECONDS = 60;
     private static final long CHOKING_INTERVAL_SECONDS = 10;
     private static final int MAX_UNCHOKED_PEERS = 4;
@@ -339,6 +357,43 @@ public final class TorrentSession implements AutoCloseable {
      * design_docs/0039. */
     private volatile boolean dhtBackstopActive;
 
+    /** This torrent's label ids (design_docs/0077) - ids, never names, so a label rename touches
+     * nothing here. Purely descriptive (labels change no engine behavior), which is why it's a
+     * post-construction setter rather than threaded through create()/restoreAsync() like file
+     * priorities are (design_docs/0075). */
+    private volatile List<String> labelIds = List.of();
+
+    /** The engine-wide IP blocklist (design_docs/0078), or IpFilter.NONE until one is set. A
+     * post-construction setter rather than a factory parameter: nothing needs the filter before a
+     * peer address is known, and peers are only known after a network round trip, long after
+     * TorrentEngine has set this. */
+    private volatile IpFilter ipFilter = IpFilter.NONE;
+
+    /** Where outbound TCP peer connections go (design_docs/0079): ProxyProvider.NONE (direct)
+     * until TorrentEngine sets the engine's live one. Read fresh on every connection attempt, so a
+     * settings change applies to the next connection. Same post-construction-setter reasoning as
+     * ipFilter above. */
+    private volatile ProxyProvider proxyProvider = ProxyProvider.NONE;
+
+    /** True only while the session sits in ERROR because its very first announce failed and no
+     * other peer-discovery path (DHT) could cover for it - a condition that can clear on its own
+     * (a tracker comes back, a proxy is fixed or switched off), unlike an I/O failure. start() may
+     * resume from ERROR only while this is set, and a background retry (scheduleStartRetry()) keeps
+     * trying with backoff. Cleared by stop(), by a successful start, and by fail(). See
+     * design_docs/0036's 2026-09-20 addendum. */
+    private volatile boolean startFailedRetryable;
+    private volatile boolean startRetryActive;
+    /** Released by retryStartNow() to cut the retry thread's backoff short. */
+    private final java.util.concurrent.Semaphore startRetryWake = new java.util.concurrent.Semaphore(0);
+    private volatile long startRetryInitialMillis = 30_000;
+    private static final long START_RETRY_MAX_MILLIS = 900_000;
+
+    /** Package-private, for tests only - waiting out the real 30s first retry would make the test
+     * suite crawl. */
+    void setStartRetryInitialMillisForTesting(long millis) {
+        this.startRetryInitialMillis = millis;
+    }
+
     private TorrentSession(TorrentMetadata metadata, TrackerClient trackerClient, TorrentStorage storage,
                             PieceManager pieceManager, PeerId ourPeerId, int ourListenPort,
                             TorrentSessionListener listener, DhtNode dhtNode, RateLimiters rateLimiters,
@@ -566,8 +621,34 @@ public final class TorrentSession implements AutoCloseable {
                                          int maxConnections,
                                          boolean utpEnabled,
                                          Supplier<Integer> utpConnectTimeoutSeconds) throws IOException {
+        return create(metadata, trackerClient, downloadDirectory, ourPeerId, ourListenPort, listener, dhtNode,
+                rateLimiters, fileHandlePool, pieceVerificationLimiter, encryptionMode, seedingLimitOverride,
+                addedAt, dhtReannounceIntervalSeconds, lsdActive, persistedLifetimeStats, torrentLimitOverride,
+                maxConnections, utpEnabled, utpConnectTimeoutSeconds,
+                FilePriorities.allMedium(metadata.files().size()));
+    }
+
+    /** filePriorities is the value TorrentEngine already read back from this torrent's own marker
+     * file (design_docs/0075) - handed to PieceManager at construction rather than set afterwards,
+     * so nothing can observe an all-MEDIUM window on a torrent that isn't. */
+    public static TorrentSession create(TorrentMetadata metadata, TrackerClient trackerClient,
+                                         Path downloadDirectory, PeerId ourPeerId, int ourListenPort,
+                                         TorrentSessionListener listener, DhtNode dhtNode,
+                                         RateLimiters rateLimiters, FileHandlePool fileHandlePool,
+                                         Semaphore pieceVerificationLimiter,
+                                         Supplier<EncryptionMode> encryptionMode,
+                                         SeedingLimitOverride seedingLimitOverride,
+                                         Instant addedAt,
+                                         Supplier<Long> dhtReannounceIntervalSeconds,
+                                         boolean lsdActive,
+                                         PersistedLifetimeStats persistedLifetimeStats,
+                                         TorrentLimitOverride torrentLimitOverride,
+                                         int maxConnections,
+                                         boolean utpEnabled,
+                                         Supplier<Integer> utpConnectTimeoutSeconds,
+                                         FilePriorities filePriorities) throws IOException {
         TorrentStorage storage = TorrentStorage.create(metadata, downloadDirectory, fileHandlePool);
-        PieceManager pieceManager = new PieceManager(metadata);
+        PieceManager pieceManager = new PieceManager(metadata, filePriorities);
         return new TorrentSession(metadata, trackerClient, storage, pieceManager, ourPeerId, ourListenPort,
                 listener, dhtNode, rateLimiters, pieceVerificationLimiter, encryptionMode, seedingLimitOverride,
                 TorrentState.STOPPED, addedAt, dhtReannounceIntervalSeconds, lsdActive, persistedLifetimeStats,
@@ -783,8 +864,35 @@ public final class TorrentSession implements AutoCloseable {
                                                int maxConnections,
                                                boolean utpEnabled,
                                                Supplier<Integer> utpConnectTimeoutSeconds) throws IOException {
+        return restoreAsync(metadata, trackerClient, downloadDirectory, ourPeerId, ourListenPort, listener,
+                dhtNode, rateLimiters, fileHandlePool, pieceVerificationLimiter, encryptionMode,
+                seedingLimitOverride, addedAt, dhtReannounceIntervalSeconds, lsdActive, autoStart,
+                persistedLifetimeStats, torrentLimitOverride, maxConnections, utpEnabled,
+                utpConnectTimeoutSeconds, FilePriorities.allMedium(metadata.files().size()));
+    }
+
+    /** See the create() overload taking filePriorities for why this is a constructor-time
+     * argument, not a setter - restoreAsync()'s background verification starts immediately and
+     * wasCompleteOnRestore reads the wanted set. design_docs/0075. */
+    public static TorrentSession restoreAsync(TorrentMetadata metadata, TrackerClient trackerClient,
+                                               Path downloadDirectory, PeerId ourPeerId, int ourListenPort,
+                                               TorrentSessionListener listener, DhtNode dhtNode,
+                                               RateLimiters rateLimiters, FileHandlePool fileHandlePool,
+                                               Semaphore pieceVerificationLimiter,
+                                               Supplier<EncryptionMode> encryptionMode,
+                                               SeedingLimitOverride seedingLimitOverride,
+                                               Instant addedAt,
+                                               Supplier<Long> dhtReannounceIntervalSeconds,
+                                               boolean lsdActive,
+                                               boolean autoStart,
+                                               PersistedLifetimeStats persistedLifetimeStats,
+                                               TorrentLimitOverride torrentLimitOverride,
+                                               int maxConnections,
+                                               boolean utpEnabled,
+                                               Supplier<Integer> utpConnectTimeoutSeconds,
+                                               FilePriorities filePriorities) throws IOException {
         TorrentStorage storage = TorrentStorage.create(metadata, downloadDirectory, fileHandlePool);
-        PieceManager pieceManager = new PieceManager(metadata);
+        PieceManager pieceManager = new PieceManager(metadata, filePriorities);
         TorrentSession session = new TorrentSession(metadata, trackerClient, storage, pieceManager,
                 ourPeerId, ourListenPort, listener, dhtNode, rateLimiters, pieceVerificationLimiter,
                 encryptionMode, seedingLimitOverride, TorrentState.VERIFYING, addedAt,
@@ -835,7 +943,7 @@ public final class TorrentSession implements AutoCloseable {
             // Recorded before setState()/start() ever run, regardless of autoStart - a
             // torrent restored but not yet auto-started can still be resumed manually later,
             // and checkForCompletion() needs this flag set correctly whenever that happens.
-            wasCompleteOnRestore = pieceManager.isAllComplete();
+            wasCompleteOnRestore = pieceManager.isWantedComplete();
             setState(TorrentState.STOPPED);
         }
         if (autoStart) {
@@ -856,9 +964,10 @@ public final class TorrentSession implements AutoCloseable {
      * job for every non-private torrent regardless of tracker kind, via the periodic
      * discoverPeersViaDht() task below. */
     public synchronized void start() {
-        if (state != TorrentState.STOPPED) {
+        if (state != TorrentState.STOPPED && !(state == TorrentState.ERROR && startFailedRetryable)) {
             return;
         }
+        startFailedRetryable = false;
         TrackerResponse response;
         try {
             response = trackerClient.announce(new TrackerRequest(metadata.infoHash(), ourPeerId, ourListenPort,
@@ -909,9 +1018,12 @@ public final class TorrentSession implements AutoCloseable {
     private void startViaDhtBackstop(RuntimeException trackerFailure) {
         if (!dhtEligible()) {
             dhtBackstopActive = false;
-            LOG.log(System.Logger.Level.WARNING, "Initial tracker announce failed for " + metadata.infoHash(), trackerFailure);
+            LOG.log(System.Logger.Level.WARNING, "Initial tracker announce failed for " + metadata.infoHash()
+                    + ": " + trackerFailure.getMessage());
             lastError = trackerFailure;
+            startFailedRetryable = true;
             setState(TorrentState.ERROR);
+            scheduleStartRetry();
             return;
         }
         List<PeerAddress> peers;
@@ -920,18 +1032,77 @@ public final class TorrentSession implements AutoCloseable {
         } catch (RuntimeException dhtFailure) {
             dhtBackstopActive = false;
             LOG.log(System.Logger.Level.WARNING, "Initial tracker announce failed for " + metadata.infoHash()
-                    + ", and DHT fallback also failed", trackerFailure);
+                    + ", and DHT fallback also failed: " + trackerFailure.getMessage());
             lastError = trackerFailure;
+            startFailedRetryable = true;
             setState(TorrentState.ERROR);
+            scheduleStartRetry();
             return;
         }
         dhtBackstopActive = true;
         LOG.log(System.Logger.Level.INFO, "Initial tracker announce failed for " + metadata.infoHash()
-                + " - falling back to DHT, found " + peers.size() + " peer(s)", trackerFailure);
+                + " - falling back to DHT, found " + peers.size() + " peer(s): " + trackerFailure.getMessage());
         enterDownloading(peers, DHT_BACKSTOP_REANNOUNCE_INTERVAL_SECONDS, PeerSource.DHT);
     }
 
+    /**
+     * Retries a failed first announce in the background, with backoff (30s doubling to 15 minutes),
+     * for as long as the session stays in its retryable ERROR state. Without this a torrent whose
+     * only way to find peers failed once - most visibly with a SOCKS5 proxy, where the block
+     * switch removes DHT as a fallback - sat in ERROR forever, even for a fully downloaded seeder,
+     * until someone paused and resumed it by hand. The live proxy/tracker settings are re-read on
+     * every attempt, so fixing or disabling the proxy is picked up without a restart. One thread at
+     * a time (startRetryActive); it exits as soon as the session leaves that state - recovered,
+     * paused, removed or failed for another reason. See design_docs/0036's 2026-09-20 addendum.
+     */
+    private void scheduleStartRetry() {
+        if (startRetryActive) {
+            return;
+        }
+        startRetryActive = true;
+        Thread.ofVirtual().name("start-retry-" + metadata.infoHash()).start(() -> {
+            long delayMillis = startRetryInitialMillis;
+            try {
+                while (true) {
+                    // Sleeps out the backoff, or wakes early if retryStartNow() releases the
+                    // semaphore. An early wake also restarts the backoff from its initial delay:
+                    // something the operator just changed is the reason for it, so a failure right
+                    // after that deserves a quick second look, not the long wait it had built up.
+                    boolean woken = startRetryWake.tryAcquire(delayMillis, java.util.concurrent.TimeUnit.MILLISECONDS);
+                    startRetryWake.drainPermits();
+                    if (state != TorrentState.ERROR || !startFailedRetryable) {
+                        return;
+                    }
+                    start();
+                    if (state != TorrentState.ERROR || !startFailedRetryable) {
+                        return;
+                    }
+                    delayMillis = woken ? startRetryInitialMillis : Math.min(delayMillis * 2, START_RETRY_MAX_MILLIS);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } finally {
+                startRetryActive = false;
+            }
+        });
+    }
+
+    /**
+     * Cuts the background retry's wait short and tries the announce again right now - called when
+     * something that could have caused the failure has just changed (the proxy settings or its
+     * password). A no-op unless this session is in the retryable ERROR state; returns immediately
+     * (the attempt itself runs on the retry thread). See scheduleStartRetry().
+     */
+    public void retryStartNow() {
+        if (state == TorrentState.ERROR && startFailedRetryable) {
+            startRetryWake.release();
+        }
+    }
+
     private void enterDownloading(List<PeerAddress> peers, long reannounceIntervalSeconds, PeerSource source) {
+        // A start that gets this far has recovered from whatever error a previous attempt left -
+        // without this the row would keep showing that stale message under a healthy state.
+        lastError = null;
         recordKnownPeers(peers, source);
         setState(TorrentState.DOWNLOADING);
 
@@ -974,6 +1145,7 @@ public final class TorrentSession implements AutoCloseable {
         if (state == TorrentState.STOPPED) {
             return;
         }
+        startFailedRetryable = false;
         try {
             trackerClient.announce(new TrackerRequest(metadata.infoHash(), ourPeerId, ourListenPort,
                     bytesUploaded(), bytesDownloaded(), bytesRemaining(), TrackerEvent.STOPPED, 0));
@@ -997,6 +1169,7 @@ public final class TorrentSession implements AutoCloseable {
      * rather than going through stop()/close() because stop() would re-announce STOPPED and
      * overwrite the ERROR state this method just set. */
     private synchronized void fail(Throwable cause) {
+        startFailedRetryable = false;
         if (state == TorrentState.ERROR || state == TorrentState.STOPPED) {
             return;
         }
@@ -1234,6 +1407,7 @@ public final class TorrentSession implements AutoCloseable {
         List<PeerAddress> candidates = knownAddresses.keySet().stream()
                 .filter(address -> !failedAddresses.contains(address))
                 .filter(address -> !inFlightAddresses.contains(address))
+                .filter(address -> !ipFilter.isBlocked(address.address()))
                 .filter(address -> connections.stream().noneMatch(c -> c.remoteAddress().equals(address)))
                 .limit(maxConnections)
                 .toList();
@@ -1281,7 +1455,7 @@ public final class TorrentSession implements AutoCloseable {
             // connection-layer problem (e.g. every attempt failing) without this. DEBUG, not WARNING -
             // still the expected common case, just now observable when needed.
             LOG.log(System.Logger.Level.DEBUG, "Connection attempt to " + address + " for "
-                    + metadata.infoHash() + " failed: " + e, e);
+                    + metadata.infoHash() + " failed: " + e);
             failedAddresses.add(address);
             // Deliberately NOT inFlightAddresses.remove(address) here (unlike the success path
             // above) - see design_docs/0017's own dated addendum for the real duplicate-attempt
@@ -1310,11 +1484,11 @@ public final class TorrentSession implements AutoCloseable {
                 return connectViaUtp(address, source);
             } catch (IOException | RuntimeException e) {
                 LOG.log(System.Logger.Level.DEBUG, "uTP connect to " + address + " for "
-                        + metadata.infoHash() + " failed, falling back to TCP: " + e, e);
+                        + metadata.infoHash() + " failed, falling back to TCP: " + e);
             }
         }
         return PeerConnection.connect(address, metadata.infoHash(), ourPeerId, new PeerListener(),
-                extensionsToAdvertise(), rateLimiters, encryptionMode.get(), source);
+                extensionsToAdvertise(), rateLimiters, encryptionMode.get(), source, proxyProvider);
     }
 
     /** No MSE over µTP, matching design_docs/0074's slice 3 inbound precedent - µTP already
@@ -1360,6 +1534,10 @@ public final class TorrentSession implements AutoCloseable {
             socket.close();
             return;
         }
+        if (blocked(socket.getInetAddress())) {
+            socket.close();
+            return;
+        }
         // connectionSlots, not a connections.size() check - inbound and outbound connections
         // share the same maxConnections budget, and only the semaphore accounts for outbound
         // attempts still in flight (see connectionSlots's own Javadoc). A size check here
@@ -1389,6 +1567,10 @@ public final class TorrentSession implements AutoCloseable {
      * as a method reference from a different package. */
     public void acceptIncomingUtpConnection(UtpSocket utpSocket, Handshake remoteHandshake) throws IOException {
         if (state != TorrentState.DOWNLOADING && state != TorrentState.SEEDING) {
+            utpSocket.close();
+            return;
+        }
+        if (blocked(utpSocket.remoteAddress().getAddress())) {
             utpSocket.close();
             return;
         }
@@ -1426,6 +1608,9 @@ public final class TorrentSession implements AutoCloseable {
      * design_docs/0066. */
     private void recordKnownPeers(Collection<PeerAddress> addresses, PeerSource source) {
         for (PeerAddress address : addresses) {
+            if (blocked(address.address())) {
+                continue;
+            }
             knownAddresses.putIfAbsent(address, source);
         }
     }
@@ -1458,8 +1643,7 @@ public final class TorrentSession implements AutoCloseable {
             case Have ignored -> onAvailabilityChanged(connection);
             case Bitfield ignored -> onAvailabilityChanged(connection);
             case Piece piece -> onPieceBlockReceived(connection, piece);
-            case Choke ignored -> {
-            }
+            case Choke ignored -> inFlightBlocks.releaseAll(connection);
             // Re-evaluate immediately on interest change (in addition to the periodic tick)
             // so a peer isn't left waiting up to CHOKING_INTERVAL_SECONDS for a free slot.
             case Interested ignored -> updateChoking();
@@ -1509,51 +1693,107 @@ public final class TorrentSession implements AutoCloseable {
     }
 
     /**
-     * Does not coordinate in-flight requests across different peers - see
-     * design_docs/0016's note on PieceManager - but must avoid re-asking
-     * THIS SAME connection for a block it already has outstanding: since
-     * PieceManager only knows "received," not "requested," repeatedly
-     * selecting the same not-yet-received block would otherwise loop
-     * forever whenever a peer's available piece has fewer un-requested
-     * blocks than PIPELINE_DEPTH (trivially true for a single-block
-     * piece). selectUnrequestedBlock cross-checks candidates against this
-     * connection's own pending requests to prevent that.
+     * Fills this connection's request pipeline (sized from its own recent download rate) with
+     * blocks no other peer currently has outstanding - see InFlightBlocks and
+     * design_docs/0080, which superseded design_docs/0016's "no cross-peer coordination".
      */
     private void requestMore(PeerConnection connection) {
         if (connection.peerChoking()) {
             return;
         }
-        while (connection.pendingRequestCount() < PIPELINE_DEPTH) {
-            OptionalInt pieceIndex = pieceManager.selectNextPiece(connection::peerHasPiece);
+        int depth = pipelineDepthFor(connection);
+        int misses = 0;
+        while (connection.pendingRequestCount() < depth && misses < 3) {
+            long now = System.currentTimeMillis();
+            // The predicate skips pieces whose every missing block is already in flight on some
+            // peer, so this peer moves on to another piece instead of idling behind the others.
+            OptionalInt pieceIndex = pieceManager.selectNextPiece(
+                    piece -> connection.peerHasPiece(piece) && hasRequestableBlock(piece, connection, now));
             if (pieceIndex.isEmpty()) {
+                if (inEndgame() && requestDuplicateBlock(connection, now)) {
+                    continue;
+                }
                 break;
             }
-            OptionalInt blockIndex = selectUnrequestedBlock(pieceIndex.getAsInt(), connection);
-            if (blockIndex.isEmpty()) {
-                // Every missing block of the best available piece is already pending on this
-                // connection - nothing new to ask for right now.
-                break;
+            if (!requestOneBlock(pieceIndex.getAsInt(), connection, now)) {
+                // Lost the claim to another peer between the check and the claim - re-select.
+                misses++;
             }
-            int begin = pieceManager.blockOffsetWithinPiece(pieceIndex.getAsInt(), blockIndex.getAsInt());
-            int length = pieceManager.blockLength(pieceIndex.getAsInt(), blockIndex.getAsInt());
-            connection.sendRequest(pieceIndex.getAsInt(), begin, length);
         }
     }
 
-    private OptionalInt selectUnrequestedBlock(int pieceIndex, PeerConnection connection) {
-        Set<Request> pending = connection.pendingRequestsSnapshot();
+    private static int pipelineDepthFor(PeerConnection connection) {
+        int byRate = (int) Math.ceil(
+                connection.downloadRateBytesPerSec() * PIPELINE_HORIZON_SECONDS / PieceManager.BLOCK_SIZE);
+        return Math.max(MIN_PIPELINE_DEPTH, Math.min(MAX_PIPELINE_DEPTH, byRate));
+    }
+
+    private boolean hasRequestableBlock(int pieceIndex, PeerConnection connection, long now) {
+        int blockCount = pieceManager.blockCount(pieceIndex);
+        for (int block = 0; block < blockCount; block++) {
+            if (!pieceManager.isBlockReceived(pieceIndex, block)
+                    && inFlightBlocks.isFreeFor(
+                            pieceIndex, pieceManager.blockOffsetWithinPiece(pieceIndex, block), connection, now)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Every still-missing wanted block is already in flight somewhere - nothing left to hand out
+     * exclusively, so the tail would otherwise wait on the slowest holder. The count is
+     * approximate (expired claims still count as in flight), which only errs toward waiting. */
+    private boolean inEndgame() {
+        return pieceManager.missingWantedBlocksAtMost(inFlightBlocks.size());
+    }
+
+    private boolean requestDuplicateBlock(PeerConnection connection, long now) {
+        OptionalInt pieceIndex = pieceManager.selectNextPiece(piece -> connection.peerHasPiece(piece)
+                && hasDuplicableBlock(piece, connection));
+        if (pieceIndex.isEmpty()) {
+            return false;
+        }
+        int piece = pieceIndex.getAsInt();
+        int blockCount = pieceManager.blockCount(piece);
+        for (int block = 0; block < blockCount; block++) {
+            if (pieceManager.isBlockReceived(piece, block)) {
+                continue;
+            }
+            int begin = pieceManager.blockOffsetWithinPiece(piece, block);
+            if (inFlightBlocks.tryClaimDuplicate(piece, begin, connection, now, MAX_ENDGAME_HOLDERS_PER_BLOCK)) {
+                connection.sendRequest(piece, begin, pieceManager.blockLength(piece, block));
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean hasDuplicableBlock(int pieceIndex, PeerConnection connection) {
+        int blockCount = pieceManager.blockCount(pieceIndex);
+        for (int block = 0; block < blockCount; block++) {
+            if (!pieceManager.isBlockReceived(pieceIndex, block)
+                    && inFlightBlocks.canDuplicate(pieceIndex,
+                            pieceManager.blockOffsetWithinPiece(pieceIndex, block), connection,
+                            MAX_ENDGAME_HOLDERS_PER_BLOCK)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean requestOneBlock(int pieceIndex, PeerConnection connection, long now) {
         int blockCount = pieceManager.blockCount(pieceIndex);
         for (int block = 0; block < blockCount; block++) {
             if (pieceManager.isBlockReceived(pieceIndex, block)) {
                 continue;
             }
             int begin = pieceManager.blockOffsetWithinPiece(pieceIndex, block);
-            int length = pieceManager.blockLength(pieceIndex, block);
-            if (!pending.contains(new Request(pieceIndex, begin, length))) {
-                return OptionalInt.of(block);
+            if (inFlightBlocks.tryClaim(pieceIndex, begin, connection, now)) {
+                connection.sendRequest(pieceIndex, begin, pieceManager.blockLength(pieceIndex, block));
+                return true;
             }
         }
-        return OptionalInt.empty();
+        return false;
     }
 
     /**
@@ -1606,6 +1846,19 @@ public final class TorrentSession implements AutoCloseable {
     }
 
     private void onPieceBlockReceived(PeerConnection connection, Piece piece) {
+        // Cancel the same block on every other peer that was also asked for it (endgame
+        // duplicates, or a taken-over claim) - their replies would only be thrown away.
+        for (Object holder : inFlightBlocks.release(piece.index(), piece.begin())) {
+            if (holder != connection) {
+                ((PeerConnection) holder).sendCancel(piece.index(), piece.begin(), piece.block().length);
+            }
+        }
+        if (pieceManager.isBlockReceived(piece.index(), piece.begin() / PieceManager.BLOCK_SIZE)) {
+            // Duplicate of a block another peer already delivered (e.g. after a timed-out claim
+            // was taken over) - nothing to write.
+            requestMore(connection);
+            return;
+        }
         try {
             storage.write(pieceManager.pieceOffset(piece.index()) + piece.begin(), piece.block());
         } catch (IOException e) {
@@ -1652,7 +1905,7 @@ public final class TorrentSession implements AutoCloseable {
     private void checkForCompletion() {
         boolean justCompleted;
         synchronized (this) {
-            justCompleted = state == TorrentState.DOWNLOADING && pieceManager.isAllComplete();
+            justCompleted = state == TorrentState.DOWNLOADING && pieceManager.isWantedComplete();
             if (justCompleted) {
                 // Stamped *before* setState() flips the (volatile) state field, both still
                 // inside this same synchronized block - not just "as soon as possible after."
@@ -1798,7 +2051,9 @@ public final class TorrentSession implements AutoCloseable {
             double relevance,
             /** Orthogonal to source/incoming above - which transport this connection actually
              * uses. See design_docs/0066's own addendum. */
-            PeerTransportType transportType
+            PeerTransportType transportType,
+            /** At-a-glance health summary - see PeerActivity. design_docs/0076. */
+            PeerActivity activity
     ) {
     }
 
@@ -1806,7 +2061,7 @@ public final class TorrentSession implements AutoCloseable {
         int totalPieces = pieceManager.pieceCount();
         int needed = 0;
         for (int i = 0; i < totalPieces; i++) {
-            if (!pieceManager.isComplete(i)) {
+            if (pieceManager.isStillNeeded(i)) {
                 needed++;
             }
         }
@@ -1818,7 +2073,7 @@ public final class TorrentSession implements AutoCloseable {
                     for (int i = 0; i < totalPieces; i++) {
                         if (c.peerHasPiece(i)) {
                             has++;
-                            if (!pieceManager.isComplete(i)) {
+                            if (pieceManager.isStillNeeded(i)) {
                                 relevant++;
                             }
                         }
@@ -1827,7 +2082,8 @@ public final class TorrentSession implements AutoCloseable {
                     double relevance = stillNeeded == 0 ? 0 : (double) relevant / stillNeeded;
                     return new PeerSnapshot(c.remoteAddress(), c.remotePeerId(), c.amChoking(), c.amInterested(),
                             c.peerChoking(), c.peerInterested(), c.downloadedBytes(), c.uploadedBytes(),
-                            c.incoming(), c.source(), percentAvailable, relevance, c.transportType());
+                            c.incoming(), c.source(), percentAvailable, relevance, c.transportType(),
+                            c.activity());
                 })
                 .toList();
     }
@@ -1846,7 +2102,8 @@ public final class TorrentSession implements AutoCloseable {
      * verified-only basis as bytesDownloaded()/progress()), not block-granular - matches
      * pieceStates()'s own granularity, and a byte count that jumps in piece-sized steps
      * rather than continuously is fine for a per-file progress display. */
-    public record FileProgress(List<String> pathSegments, long length, long bytesDownloaded) {
+    public record FileProgress(List<String> pathSegments, long length, long bytesDownloaded,
+                                  FilePriority priority) {
     }
 
     /** Files are laid out contiguously in the torrent's overall byte stream (standard
@@ -1856,10 +2113,13 @@ public final class TorrentSession implements AutoCloseable {
     public List<FileProgress> files() {
         List<TorrentFile> files = metadata.files();
         List<FileProgress> progress = new ArrayList<>(files.size());
+        FilePriorities priorities = pieceManager.filePriorities();
         long fileStart = 0;
-        for (TorrentFile file : files) {
+        for (int f = 0; f < files.size(); f++) {
+            TorrentFile file = files.get(f);
             long fileEnd = fileStart + file.length();
-            progress.add(new FileProgress(file.pathSegments(), file.length(), downloadedInRange(fileStart, fileEnd)));
+            progress.add(new FileProgress(file.pathSegments(), file.length(),
+                    downloadedInRange(fileStart, fileEnd), priorities.get(f)));
             fileStart = fileEnd;
         }
         return progress;
@@ -1966,8 +2226,9 @@ public final class TorrentSession implements AutoCloseable {
         return total;
     }
 
+    /** Wanted bytes not yet verified - a skipped file's bytes never count. See design_docs/0075. */
     public long bytesRemaining() {
-        return metadata.totalLength() - bytesDownloaded();
+        return pieceManager.wantedBytes() - pieceManager.wantedBytesCompleted();
     }
 
     /** accumulatedUploaded alone only reflects peers that have already disconnected -
@@ -1982,8 +2243,85 @@ public final class TorrentSession implements AutoCloseable {
         return total;
     }
 
+    /** Fraction of the *wanted* set that's verified - a torrent with a skipped file reads 100%
+     * once everything else is done. See design_docs/0075. */
     public double progress() {
-        return metadata.totalLength() == 0 ? 1.0 : (double) bytesDownloaded() / metadata.totalLength();
+        long wanted = pieceManager.wantedBytes();
+        return wanted == 0 ? 1.0 : (double) pieceManager.wantedBytesCompleted() / wanted;
+    }
+
+    public void setProxyProvider(ProxyProvider provider) {
+        this.proxyProvider = provider;
+    }
+
+    public void setIpFilter(IpFilter filter) {
+        this.ipFilter = filter;
+    }
+
+    /** True (and counted) when the blocklist refuses this address. */
+    private boolean blocked(java.net.InetAddress address) {
+        IpFilter filter = ipFilter;
+        if (filter.isBlocked(address)) {
+            filter.recordBlocked();
+            return true;
+        }
+        return false;
+    }
+
+    /** Called after the blocklist changes (design_docs/0078): forgets already-known addresses that
+     * are now blocked and closes established connections to them, so a reload takes effect on
+     * peers we already have, not just future ones. Each closed connection releases its own slot
+     * through the normal disconnect path. */
+    public void applyIpFilterChange() {
+        IpFilter filter = ipFilter;
+        knownAddresses.keySet().removeIf(address -> filter.isBlocked(address.address()));
+        for (PeerConnection connection : connections) {
+            if (filter.isBlocked(connection.remoteAddress().address())) {
+                filter.recordBlocked();
+                connection.close();
+            }
+        }
+    }
+
+    public List<String> labelIds() {
+        return labelIds;
+    }
+
+    public void setLabelIds(List<String> ids) {
+        this.labelIds = List.copyOf(ids);
+    }
+
+    public FilePriorities filePriorities() {
+        return pieceManager.filePriorities();
+    }
+
+    /**
+     * Applies new per-file priorities live (design_docs/0075). Throws IllegalArgumentException if
+     * the count doesn't match the torrent's file count or nothing would be wanted. A completed
+     * (SEEDING) torrent that now has unfinished wanted pieces drops back to DOWNLOADING; a
+     * DOWNLOADING torrent whose wanted set is now already complete finishes immediately.
+     */
+    public void setFilePriorities(FilePriorities newPriorities) {
+        if (newPriorities.priorities().size() != metadata.files().size()) {
+            throw new IllegalArgumentException("Expected " + metadata.files().size()
+                    + " priorities, got " + newPriorities.priorities().size());
+        }
+        pieceManager.setFilePriorities(newPriorities);
+        synchronized (this) {
+            if (state == TorrentState.SEEDING && !pieceManager.isWantedComplete()) {
+                setState(TorrentState.DOWNLOADING);
+            }
+        }
+        if (state != TorrentState.DOWNLOADING && state != TorrentState.SEEDING) {
+            return;
+        }
+        checkForCompletion();
+        for (PeerConnection connection : connections) {
+            updateInterest(connection);
+            if (!connection.peerChoking() && connection.amInterested()) {
+                requestMore(connection);
+            }
+        }
     }
 
     private final class PeerListener implements PeerConnectionListener {
@@ -1996,7 +2334,13 @@ public final class TorrentSession implements AutoCloseable {
         public void onDisconnected(PeerConnection connection, Throwable cause) {
             accumulatedUploaded.addAndGet(connection.uploadedBytes());
             accumulatedReceived.addAndGet(connection.downloadedBytes());
+            // Message only, no trace - a normal churn event, but without this there's no way to
+            // tell a peer that left from one that dropped us over something we sent.
+            LOG.log(System.Logger.Level.DEBUG, "Peer " + connection.remoteAddress() + " disconnected from "
+                    + metadata.infoHash() + " after receiving " + connection.downloadedBytes() + " bytes: "
+                    + (cause == null ? "closed locally" : cause));
             connections.remove(connection);
+            inFlightBlocks.releaseAll(connection);
             // Releases this connection's own connectionSlots permit, held since attemptConnect()/
             // acceptIncomingConnection() first succeeded - then backfills the slot it just freed.
             // Deliberately not added to failedAddresses: this peer was reachable and connected

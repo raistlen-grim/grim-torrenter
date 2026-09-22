@@ -234,7 +234,19 @@ public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
                         int lsdAnnounceIntervalSeconds,
                         int maxConnectionsPerTorrent,
                         boolean utpEnabled,
-                        int utpConnectTimeoutSeconds) {
+                        int utpConnectTimeoutSeconds,
+                        boolean blocklistEnabled,
+                        String blocklistSource,
+                        Integer blocklistRefreshHours,
+                        boolean proxyEnabled,
+                        String proxyHost,
+                        int proxyPort,
+                        String proxyUsername,
+                        Boolean proxyBlockUnsupported) {
+
+    /** design_docs/0078 - weekly, a common cadence for public lists (most publish daily at
+     * most, and re-downloading more often just costs the publisher bandwidth). */
+    private static final int DEFAULT_BLOCKLIST_REFRESH_HOURS = 168;
 
     /** design_docs/0072 - the global default a per-torrent TorrentLimitOverride inherits from
      * unless it sets its own. Unlike the rate-limit fields above, a per-torrent connection-count
@@ -346,6 +358,107 @@ public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
         if (utpConnectTimeoutSeconds <= 0) {
             utpConnectTimeoutSeconds = DEFAULT_UTP_CONNECT_TIMEOUT_SECONDS;
         }
+        // design_docs/0078. A boxed Integer so an absent field (a settings.json from before this
+        // existed) can be told apart from an explicit 0, which means "never refresh
+        // automatically" - unlike every other interval on this record, where 0 is degenerate. A
+        // negative value has no meaning and takes the default too.
+        if (blocklistRefreshHours == null || blocklistRefreshHours < 0) {
+            blocklistRefreshHours = DEFAULT_BLOCKLIST_REFRESH_HOURS;
+        }
+        if (blocklistSource == null) {
+            blocklistSource = "";
+        }
+        // design_docs/0079. Boxed so an absent field (a settings.json from before proxy support)
+        // can be told apart from an explicit false: the safe default is to turn off everything a
+        // proxy can't carry, and only someone who deliberately switched that off gets false.
+        if (proxyBlockUnsupported == null) {
+            proxyBlockUnsupported = true;
+        }
+        if (proxyHost == null) {
+            proxyHost = "";
+        }
+        if (proxyUsername == null) {
+            proxyUsername = "";
+        }
+    }
+
+    /** Same as the canonical constructor above but without the five proxy fields - for every
+     * caller that predates design_docs/0079 (the blocklist-era constructor below and, through it,
+     * every older one), defaulting to no proxy. Same "add a sibling overload, touch zero existing
+     * call sites" pattern used for every prior field addition to this record. */
+    public Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
+                     long uploadRateLimitBytesPerSec, long downloadRateLimitBytesPerSec,
+                     boolean rateLimitScheduleEnabled, String rateLimitScheduleStart, String rateLimitScheduleEnd,
+                     long scheduledUploadRateLimitBytesPerSec, long scheduledDownloadRateLimitBytesPerSec,
+                     EncryptionMode encryptionMode, long rateLimitBurstSeconds,
+                     boolean seedRatioLimitEnabled, double seedRatioLimit,
+                     boolean seedTimeLimitEnabled, long seedTimeLimitMinutes,
+                     int eventLogRetentionDays,
+                     boolean watchFolderEnabled, int watchFolderRetentionDays,
+                     ThemePreference theme,
+                     int magnetFetchTimeBudgetSeconds, int magnetFetchCandidatesPerRound,
+                     int magnetFetchConcurrencyLimit,
+                     int dhtReannounceIntervalSeconds,
+                     int dhtRefreshIntervalSeconds,
+                     int watchFolderPollIntervalSeconds,
+                     boolean authEnabled,
+                     int authTokenTtlDays,
+                     Boolean lsdEnabled,
+                     int lsdAnnounceIntervalSeconds,
+                     int maxConnectionsPerTorrent,
+                     boolean utpEnabled,
+                     int utpConnectTimeoutSeconds,
+                     boolean blocklistEnabled,
+                     String blocklistSource,
+                     Integer blocklistRefreshHours) {
+        this(dhtEnabled, acceptIncomingConnections, uploadRateLimitBytesPerSec, downloadRateLimitBytesPerSec,
+                rateLimitScheduleEnabled, rateLimitScheduleStart, rateLimitScheduleEnd,
+                scheduledUploadRateLimitBytesPerSec, scheduledDownloadRateLimitBytesPerSec, encryptionMode,
+                rateLimitBurstSeconds, seedRatioLimitEnabled, seedRatioLimit, seedTimeLimitEnabled,
+                seedTimeLimitMinutes, eventLogRetentionDays, watchFolderEnabled, watchFolderRetentionDays, theme,
+                magnetFetchTimeBudgetSeconds, magnetFetchCandidatesPerRound, magnetFetchConcurrencyLimit,
+                dhtReannounceIntervalSeconds, dhtRefreshIntervalSeconds, watchFolderPollIntervalSeconds, authEnabled,
+                authTokenTtlDays, lsdEnabled, lsdAnnounceIntervalSeconds, maxConnectionsPerTorrent, utpEnabled,
+                utpConnectTimeoutSeconds, blocklistEnabled, blocklistSource, blocklistRefreshHours,
+                false, "", 0, "", null);
+    }
+
+    /** Same as the canonical constructor above but without the three blocklist fields - for every
+     * caller that predates design_docs/0078 (every secondary constructor below, plus any direct
+     * thirty-seven-arg caller), defaulting to disabled with no source. Same "add a sibling
+     * overload, touch zero existing call sites" pattern used for every prior field addition to
+     * this record. */
+    public Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
+                     long uploadRateLimitBytesPerSec, long downloadRateLimitBytesPerSec,
+                     boolean rateLimitScheduleEnabled, String rateLimitScheduleStart, String rateLimitScheduleEnd,
+                     long scheduledUploadRateLimitBytesPerSec, long scheduledDownloadRateLimitBytesPerSec,
+                     EncryptionMode encryptionMode, long rateLimitBurstSeconds,
+                     boolean seedRatioLimitEnabled, double seedRatioLimit,
+                     boolean seedTimeLimitEnabled, long seedTimeLimitMinutes,
+                     int eventLogRetentionDays,
+                     boolean watchFolderEnabled, int watchFolderRetentionDays,
+                     ThemePreference theme,
+                     int magnetFetchTimeBudgetSeconds, int magnetFetchCandidatesPerRound,
+                     int magnetFetchConcurrencyLimit,
+                     int dhtReannounceIntervalSeconds,
+                     int dhtRefreshIntervalSeconds,
+                     int watchFolderPollIntervalSeconds,
+                     boolean authEnabled,
+                     int authTokenTtlDays,
+                     Boolean lsdEnabled,
+                     int lsdAnnounceIntervalSeconds,
+                     int maxConnectionsPerTorrent,
+                     boolean utpEnabled,
+                     int utpConnectTimeoutSeconds) {
+        this(dhtEnabled, acceptIncomingConnections, uploadRateLimitBytesPerSec, downloadRateLimitBytesPerSec,
+                rateLimitScheduleEnabled, rateLimitScheduleStart, rateLimitScheduleEnd,
+                scheduledUploadRateLimitBytesPerSec, scheduledDownloadRateLimitBytesPerSec, encryptionMode,
+                rateLimitBurstSeconds, seedRatioLimitEnabled, seedRatioLimit, seedTimeLimitEnabled,
+                seedTimeLimitMinutes, eventLogRetentionDays, watchFolderEnabled, watchFolderRetentionDays, theme,
+                magnetFetchTimeBudgetSeconds, magnetFetchCandidatesPerRound, magnetFetchConcurrencyLimit,
+                dhtReannounceIntervalSeconds, dhtRefreshIntervalSeconds, watchFolderPollIntervalSeconds, authEnabled,
+                authTokenTtlDays, lsdEnabled, lsdAnnounceIntervalSeconds, maxConnectionsPerTorrent, utpEnabled,
+                utpConnectTimeoutSeconds, false, "", null);
     }
 
     /** Same as the canonical constructor above but without utpConnectTimeoutSeconds - for every
@@ -778,6 +891,37 @@ public record Settings(boolean dhtEnabled, boolean acceptIncomingConnections,
                 rateLimitScheduleEnabled, rateLimitScheduleStart, rateLimitScheduleEnd,
                 scheduledUploadRateLimitBytesPerSec, scheduledDownloadRateLimitBytesPerSec, encryptionMode,
                 rateLimitBurstSeconds, false, DEFAULT_SEED_RATIO_LIMIT, false, DEFAULT_SEED_TIME_LIMIT_MINUTES);
+    }
+
+    /** A copy with the three blocklist fields replaced (design_docs/0078) - for callers (mainly
+     * tests) that want "these settings, but with the blocklist configured" without spelling out
+     * every other field. */
+    public Settings withBlocklist(boolean enabled, String source, int refreshHours) {
+        return new Settings(dhtEnabled, acceptIncomingConnections, uploadRateLimitBytesPerSec,
+                downloadRateLimitBytesPerSec, rateLimitScheduleEnabled, rateLimitScheduleStart, rateLimitScheduleEnd,
+                scheduledUploadRateLimitBytesPerSec, scheduledDownloadRateLimitBytesPerSec, encryptionMode,
+                rateLimitBurstSeconds, seedRatioLimitEnabled, seedRatioLimit, seedTimeLimitEnabled,
+                seedTimeLimitMinutes, eventLogRetentionDays, watchFolderEnabled, watchFolderRetentionDays, theme,
+                magnetFetchTimeBudgetSeconds, magnetFetchCandidatesPerRound, magnetFetchConcurrencyLimit,
+                dhtReannounceIntervalSeconds, dhtRefreshIntervalSeconds, watchFolderPollIntervalSeconds, authEnabled,
+                authTokenTtlDays, lsdEnabled, lsdAnnounceIntervalSeconds, maxConnectionsPerTorrent, utpEnabled,
+                utpConnectTimeoutSeconds, enabled, source, refreshHours,
+                proxyEnabled, proxyHost, proxyPort, proxyUsername, proxyBlockUnsupported);
+    }
+
+    /** A copy with the proxy fields replaced (design_docs/0079) - same purpose as
+     * withBlocklist() above. */
+    public Settings withProxy(boolean enabled, String host, int port, String username, boolean blockUnsupported) {
+        return new Settings(dhtEnabled, acceptIncomingConnections, uploadRateLimitBytesPerSec,
+                downloadRateLimitBytesPerSec, rateLimitScheduleEnabled, rateLimitScheduleStart, rateLimitScheduleEnd,
+                scheduledUploadRateLimitBytesPerSec, scheduledDownloadRateLimitBytesPerSec, encryptionMode,
+                rateLimitBurstSeconds, seedRatioLimitEnabled, seedRatioLimit, seedTimeLimitEnabled,
+                seedTimeLimitMinutes, eventLogRetentionDays, watchFolderEnabled, watchFolderRetentionDays, theme,
+                magnetFetchTimeBudgetSeconds, magnetFetchCandidatesPerRound, magnetFetchConcurrencyLimit,
+                dhtReannounceIntervalSeconds, dhtRefreshIntervalSeconds, watchFolderPollIntervalSeconds, authEnabled,
+                authTokenTtlDays, lsdEnabled, lsdAnnounceIntervalSeconds, maxConnectionsPerTorrent, utpEnabled,
+                utpConnectTimeoutSeconds, blocklistEnabled, blocklistSource, blocklistRefreshHours,
+                enabled, host, port, username, blockUnsupported);
     }
 
     /** Both rate limits (base and scheduled) default to unlimited (0) - opting into a cap is

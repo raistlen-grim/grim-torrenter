@@ -73,7 +73,7 @@ public final class MultiTrackerClient implements TrackerClient {
 
         Set<PeerAddress> peers = new LinkedHashSet<>();
         long minInterval = Long.MAX_VALUE;
-        TrackerException lastFailure = null;
+        List<Throwable> failures = new java.util.ArrayList<>();
         boolean anySucceeded = false;
         for (Future<TrackerResponse> future : futures) {
             try {
@@ -82,8 +82,7 @@ public final class MultiTrackerClient implements TrackerClient {
                 peers.addAll(response.peers());
                 minInterval = Math.min(minInterval, response.interval());
             } catch (ExecutionException e) {
-                lastFailure = e.getCause() instanceof TrackerException te
-                        ? te : new TrackerException("Tracker announce failed", e.getCause());
+                failures.add(e.getCause());
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 throw new TrackerException("Interrupted while announcing to trackers", e);
@@ -91,9 +90,29 @@ public final class MultiTrackerClient implements TrackerClient {
         }
 
         if (!anySucceeded) {
-            throw lastFailure != null ? lastFailure : new TrackerException("No trackers configured");
+            throw failures.isEmpty()
+                    ? new TrackerException("No trackers configured")
+                    : new TrackerException(summarizeFailures(failures), failures.get(failures.size() - 1));
         }
         return new TrackerResponse(minInterval, null, 0, 0, List.copyOf(peers), null, null);
+    }
+
+    /** One line naming how many trackers failed and why, grouped by root cause ("8x
+     * UnknownHostException: Try again; 2x HttpTimeoutException: ...") - a magnet add with
+     * ~20 trackers, ~10 of them dead, would otherwise need a page of stack traces to read.
+     * The last failure is still attached as the cause for anyone who does want the trace. */
+    private static String summarizeFailures(List<Throwable> failures) {
+        java.util.Map<String, Integer> counts = new java.util.LinkedHashMap<>();
+        for (Throwable failure : failures) {
+            Throwable root = failure;
+            while (root.getCause() != null && root.getCause() != root) {
+                root = root.getCause();
+            }
+            counts.merge(root.getClass().getSimpleName() + ": " + root.getMessage(), 1, Integer::sum);
+        }
+        return "All " + failures.size() + " trackers failed - "
+                + counts.entrySet().stream().map(e -> e.getValue() + "x " + e.getKey())
+                        .collect(java.util.stream.Collectors.joining("; "));
     }
 
     /** Aggregates every wrapped tracker's own status - announce() above now actually reaches

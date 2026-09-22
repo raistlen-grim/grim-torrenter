@@ -5,6 +5,11 @@ import org.junit.jupiter.api.Test;
 
 import java.net.InetAddress;
 import java.net.UnknownHostException;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -141,83 +146,171 @@ class TrackedTrackerClientTest {
         };
     }
 
-    /** See design_docs/0055's own TRACKER_UNREACHABLE addendum: a single failed announce cycle
-     * is tolerated (a tracker can fail one reannounce and recover the next) - only two
-     * consecutive failures with no intervening success are reported. */
-    @Test
-    void doesNotReportUnreachableAfterOnlyOneFailure() {
-        List<Notification> notifications = new ArrayList<>();
-        TrackerException failure = new TrackerException("simulated failure");
-        TrackedTrackerClient client = new TrackedTrackerClient(
-                "http://tracker.example/announce", 0, request -> {
-                    throw failure;
-                }, recordingListener(notifications));
+    /** Mutable clock so a test can cross STABLE_WINDOW without sleeping. */
+    private static final class TestClock extends Clock {
+        private Instant now = Instant.parse("2026-09-21T00:00:00Z");
 
-        assertThrows(TrackerException.class, () -> client.announce(fakeRequest()));
+        void advance(Duration d) {
+            now = now.plus(d);
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return this;
+        }
+
+        @Override
+        public Instant instant() {
+            return now;
+        }
+    }
+
+    private static final Duration JUST_OVER = TrackedTrackerClient.STABLE_WINDOW.plusSeconds(1);
+    private static final TrackerResponse SUCCESS = new TrackerResponse(1800, null, 12, 3, List.of(), null, null);
+
+    /** A togglable delegate: fails while failing[0] is true, succeeds otherwise. */
+    private static TrackerClient togglable(boolean[] failing) {
+        return request -> {
+            if (failing[0]) {
+                throw new TrackerException("simulated failure");
+            }
+            return SUCCESS;
+        };
+    }
+
+    /** See design_docs/0055's 2026-09-21 revision: failures inside STABLE_WINDOW - however many
+     * - are tolerated. */
+    @Test
+    void doesNotReportUnreachableWhileFailuresAreInsideTheStableWindow() {
+        List<Notification> notifications = new ArrayList<>();
+        TestClock clock = new TestClock();
+        boolean[] failing = {true};
+        TrackedTrackerClient client = new TrackedTrackerClient("http://tracker.example/announce", 0,
+                togglable(failing), recordingListener(notifications), clock);
+
+        for (int i = 0; i < 5; i++) {
+            assertThrows(TrackerException.class, () -> client.announce(fakeRequest()));
+            clock.advance(Duration.ofMinutes(5));
+        }
 
         assertTrue(notifications.isEmpty());
     }
 
     @Test
-    void reportsUnreachableOnlyAfterTwoConsecutiveFailures() {
+    void reportsUnreachableOnceFailuresSpanTheStableWindow() {
         List<Notification> notifications = new ArrayList<>();
-        TrackerException failure = new TrackerException("simulated failure");
-        TrackedTrackerClient client = new TrackedTrackerClient(
-                "http://tracker.example/announce", 0, request -> {
-                    throw failure;
-                }, recordingListener(notifications));
+        TestClock clock = new TestClock();
+        boolean[] failing = {true};
+        TrackedTrackerClient client = new TrackedTrackerClient("http://tracker.example/announce", 0,
+                togglable(failing), recordingListener(notifications), clock);
 
         assertThrows(TrackerException.class, () -> client.announce(fakeRequest()));
+        clock.advance(JUST_OVER);
         assertThrows(TrackerException.class, () -> client.announce(fakeRequest()));
 
-        assertEquals(1, notifications.size());
-        assertEquals(new Notification("unreachable", "http://tracker.example/announce", "simulated failure"),
-                notifications.get(0));
+        assertEquals(List.of(new Notification("unreachable", "http://tracker.example/announce",
+                "simulated failure")), notifications);
 
-        // A third consecutive failure doesn't re-report - already reported, stays reported.
+        // Already reported - further failures don't re-report.
+        clock.advance(JUST_OVER);
         assertThrows(TrackerException.class, () -> client.announce(fakeRequest()));
         assertEquals(1, notifications.size());
     }
 
+    /** The flapping case that motivated the revision: fail/fail/succeed repeated forever must
+     * never report anything, since no failure streak ever spans the window. */
     @Test
-    void reportsRecoveredOnTheFirstSuccessAfterUnreachableWasReported() {
+    void aFlappingTrackerReportsNothing() {
         List<Notification> notifications = new ArrayList<>();
-        TrackerResponse success = new TrackerResponse(1800, null, 12, 3, List.of(), null, null);
-        boolean[] shouldFail = {true};
-        TrackedTrackerClient client = new TrackedTrackerClient("http://tracker.example/announce", 0, request -> {
-            if (shouldFail[0]) {
-                throw new TrackerException("simulated failure");
-            }
-            return success;
-        }, recordingListener(notifications));
+        TestClock clock = new TestClock();
+        boolean[] failing = {true};
+        TrackedTrackerClient client = new TrackedTrackerClient("http://tracker.example/announce", 0,
+                togglable(failing), recordingListener(notifications), clock);
 
+        for (int cycle = 0; cycle < 20; cycle++) {
+            failing[0] = true;
+            assertThrows(TrackerException.class, () -> client.announce(fakeRequest()));
+            clock.advance(Duration.ofMinutes(10));
+            assertThrows(TrackerException.class, () -> client.announce(fakeRequest()));
+            clock.advance(Duration.ofMinutes(10));
+            failing[0] = false;
+            client.announce(fakeRequest());
+            clock.advance(Duration.ofMinutes(10));
+        }
+
+        assertTrue(notifications.isEmpty());
+    }
+
+    @Test
+    void reportsRecoveredOnlyAfterSuccessesSpanTheStableWindow() {
+        List<Notification> notifications = new ArrayList<>();
+        TestClock clock = new TestClock();
+        boolean[] failing = {true};
+        TrackedTrackerClient client = new TrackedTrackerClient("http://tracker.example/announce", 0,
+                togglable(failing), recordingListener(notifications), clock);
         assertThrows(TrackerException.class, () -> client.announce(fakeRequest()));
+        clock.advance(JUST_OVER);
         assertThrows(TrackerException.class, () -> client.announce(fakeRequest()));
         assertEquals(1, notifications.size());
 
-        shouldFail[0] = false;
+        failing[0] = false;
+        client.announce(fakeRequest());
+        assertEquals(1, notifications.size());
+
+        clock.advance(JUST_OVER);
         client.announce(fakeRequest());
 
         assertEquals(2, notifications.size());
         assertEquals(new Notification("recovered", "http://tracker.example/announce", null), notifications.get(1));
     }
 
-    /** A success after only one failure (unreachable never reported) has nothing to "recover"
-     * from in the user's eyes, and shouldn't fire a spurious RECOVERED event. */
+    /** A failure mid-recovery restarts the success streak - no RECOVERED for a tracker that's
+     * still flapping. */
+    @Test
+    void aFailureDuringRecoveryRestartsTheStableWindow() {
+        List<Notification> notifications = new ArrayList<>();
+        TestClock clock = new TestClock();
+        boolean[] failing = {true};
+        TrackedTrackerClient client = new TrackedTrackerClient("http://tracker.example/announce", 0,
+                togglable(failing), recordingListener(notifications), clock);
+        assertThrows(TrackerException.class, () -> client.announce(fakeRequest()));
+        clock.advance(JUST_OVER);
+        assertThrows(TrackerException.class, () -> client.announce(fakeRequest()));
+
+        failing[0] = false;
+        client.announce(fakeRequest());
+        clock.advance(Duration.ofMinutes(20));
+        failing[0] = true;
+        assertThrows(TrackerException.class, () -> client.announce(fakeRequest()));
+        failing[0] = false;
+        clock.advance(Duration.ofMinutes(20));
+        client.announce(fakeRequest());
+        clock.advance(Duration.ofMinutes(20));
+        client.announce(fakeRequest());
+
+        // The success streak restarted after the failure and has only run 20 minutes - no
+        // recovery yet, even though 60 minutes have passed since the first success.
+        assertEquals(1, notifications.size());
+    }
+
+    /** Never reported unreachable, so there's nothing to "recover" from. */
     @Test
     void doesNotReportRecoveredWhenUnreachableWasNeverReported() {
         List<Notification> notifications = new ArrayList<>();
-        TrackerResponse success = new TrackerResponse(1800, null, 12, 3, List.of(), null, null);
-        boolean[] shouldFail = {true};
-        TrackedTrackerClient client = new TrackedTrackerClient("http://tracker.example/announce", 0, request -> {
-            if (shouldFail[0]) {
-                throw new TrackerException("simulated failure");
-            }
-            return success;
-        }, recordingListener(notifications));
+        TestClock clock = new TestClock();
+        boolean[] failing = {true};
+        TrackedTrackerClient client = new TrackedTrackerClient("http://tracker.example/announce", 0,
+                togglable(failing), recordingListener(notifications), clock);
 
         assertThrows(TrackerException.class, () -> client.announce(fakeRequest()));
-        shouldFail[0] = false;
+        failing[0] = false;
+        client.announce(fakeRequest());
+        clock.advance(JUST_OVER);
         client.announce(fakeRequest());
 
         assertTrue(notifications.isEmpty());

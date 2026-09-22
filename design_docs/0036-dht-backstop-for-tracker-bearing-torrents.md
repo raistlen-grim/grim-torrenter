@@ -384,3 +384,29 @@ to get the DHT-discovered peer connected. New cases:
   within a bounded wait.
 
 `MetainfoParserTest` gained `parsesPrivateFlag` and `isPrivateDefaultsToFalseWhenAbsent`.
+
+**Addendum (2026-09-20): a failed first announce with no fallback now retries on its own.** Found
+via the SOCKS5 proxy ([[0079-socks5-proxy]]): with the proxy's block switch on, DHT is off, so the
+backstop above doesn't exist, and a proxy that rejected its credentials left *every* torrent in
+`ERROR` - and, because `ERROR` here was terminal (`start()` only resumed from `STOPPED`, and no
+scheduler had been created to retry), they stayed there even after the proxy was switched off, even
+fully downloaded seeders, until someone paused and resumed each one by hand. Now, when the first
+announce fails and there is no DHT to fall back on, the session records the error, sits in `ERROR`,
+and retries in the background - 30 seconds, doubling to 15 minutes - re-reading the live tracker/
+proxy settings each time, so fixing or disabling the proxy is picked up without a restart. This is
+scoped to exactly that condition (`startFailedRetryable`): an I/O failure (`fail()`) is still
+terminal, `stop()` cancels the retries, one retry thread per session runs at a time, and
+`enterDownloading()` now clears `lastError` so a recovered torrent doesn't keep showing its old
+error. The same change shortens `HttpTrackerClient` error messages to the tracker URL (they used to
+include the whole announce query, info hash and all).
+
+**Follow-up (2026-09-20): a settings change wakes the retry immediately.** Waiting out the backoff
+(up to 15 minutes) after the operator has just fixed the cause defeats the point of being able to fix
+it. `TorrentSession.retryStartNow()` releases a semaphore the retry thread is waiting on, cutting the
+sleep short (and restarting the backoff from its initial delay, since something just changed);
+`TorrentEngine.retryFailedStarts()` calls it on every session, a no-op for any not in the retryable
+`ERROR` state. It is called when the proxy settings that matter (enabled, host, port, username) change
+via `PUT /api/settings`, and when the proxy password is set or cleared - deliberately *not* on every
+settings save, so an unrelated change doesn't poke every tracker. A manual "retry now" action for a
+tracker that is simply down remains possible later; nothing about this depends on it.
+

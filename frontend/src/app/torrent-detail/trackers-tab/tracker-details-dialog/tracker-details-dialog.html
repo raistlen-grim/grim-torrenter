@@ -62,4 +62,42 @@
       </tbody>
     </table>
   </section>
+
+  <section class="details-section">
+    <h3>Peers</h3>
+    @if (sortedPeers().length === 0) {
+      <p class="empty-message">No connected peers.</p>
+    } @else {
+      <div class="table-scroll">
+        <table class="details-table">
+          <thead>
+            <tr>
+              <th>Status</th>
+              <th>Address</th>
+              <th>Done</th>
+              <th>Relevance</th>
+              <th>Downloaded</th>
+              <th>Uploaded</th>
+              <th>Source</th>
+              <th>Connection</th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (peer of sortedPeers(); track peer.address + ':' + peer.port) {
+              <tr>
+                <td [title]="activityDetail(peer)">{{ activityLabel(peer.activity) }}</td>
+                <td class="peer-address">{{ peer.address }}:{{ peer.port }}</td>
+                <td class="tabular-nums">{{ percent(peer.percentAvailable) }}</td>
+                <td class="tabular-nums">{{ percent(peer.relevance) }}</td>
+                <td class="tabular-nums">{{ peer.downloadedBytes | formatBytes }}</td>
+                <td class="tabular-nums">{{ peer.uploadedBytes | formatBytes }}</td>
+                <td>{{ sourceLabel(peer.source) }}</td>
+                <td>{{ peer.incoming ? 'Incoming' : 'Outgoing' }} · {{ peer.transportType === 'UTP' ? 'µTP' : 'TCP' }}</td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+    }
+  </section>
 </p-dialog>

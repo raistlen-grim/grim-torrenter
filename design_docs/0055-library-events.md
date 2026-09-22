@@ -3,7 +3,8 @@
 **Status:** Accepted - built for a first event set (ADDED/COMPLETED/ERROR/REMOVED/
 SEEDING_LIMIT_REACHED); see "Deferred from this pass" below for what's intentionally not
 wired up yet. `SERVER_STARTED` added 2026-08-26 - see its own section below.
-`TRACKER_UNREACHABLE`/`TRACKER_RECOVERED` added 2026-09-06 - see their own addendum below.
+`TRACKER_UNREACHABLE`/`TRACKER_RECOVERED` added 2026-09-06 - see their own addendum below
+(debounce and scope revised 2026-09-21 - see "Revision" inside it).
 `MAGNET_RESOLVED` (also 2026-09-06) resolved into reusing `ADDED` with a source-driven message
 rather than a new `EventType` - see its own addendum below; both originally-deferred items are
 now closed.
@@ -283,6 +284,58 @@ noise, not signal.
   concurrent access introduced); the listener callback runs synchronously on that same thread,
   same as the rest of `record()`'s call chain.
 
+### Revision (2026-09-21): time-window debounce, one event pair per tracker URL
+
+**Problem.** A long-running instance's feed filled with `TRACKER_UNREACHABLE`/`TRACKER_RECOVERED`
+pairs. Two causes, both from the original design: (1) the debounce counted announce *cycles* (2
+failures to report, 1 success to recover), so a tracker alternating fail/fail/succeed produced a
+pair every third cycle - the "one pair per genuine outage" bound above only held for real
+outages; (2) events were per torrent x tracker, so N torrents on one flaky tracker logged N
+pairs. Neither is information a person managing a library can use, and the feed is meant to be
+curated ([[0055-library-events]]'s own Decision section).
+
+**Fix 1 - elapsed-time debounce** (`TrackedTrackerClient`). `TRACKER_UNREACHABLE` now requires
+announces to have failed continuously for `STABLE_WINDOW` (30 minutes; still at least 2
+failures) with no intervening success. `TRACKER_RECOVERED` requires announces to have then
+succeeded continuously for `STABLE_WINDOW`. A single opposite result restarts the relevant
+streak, so a flapping tracker reports nothing at all. The recovery side is no longer
+"asymmetric on purpose" as originally written: delaying good news is the cost of not
+reporting a tracker that's merely between failures. A `Clock` is injectable (package-private
+constructor) so tests cross the window without sleeping.
+
+**Fix 2 - collapse across torrents** (`TrackerReachability`, new, `tracker` package). Each
+torrent's `TrackedTrackerClient` still decides its own view; `TorrentEngine`'s listener adapter
+then asks a shared engine-wide `TrackerReachability` whether this report is newsworthy: only the
+first torrent to report a URL unreachable records `TRACKER_UNREACHABLE`, and the first torrent
+to see it stably recovered records `TRACKER_RECOVERED` and clears every torrent's vote. Both
+events are now engine-wide - `infoHash`/`torrentName` null, tracker URL in the message - so a
+dead tracker is one event pair, not one per torrent. This follows the same nullable-`infoHash`
+precedent as `SERVER_STARTED`/`BLOCKLIST_*`; the Events page already renders those.
+
+**Trade-offs accepted.** The events no longer say *which* torrents were affected (the per-
+torrent Trackers tab in [[0031-torrent-detail-endpoints]] still shows each torrent's own
+tracker status). A tracker error specific to one torrent (e.g. "unregistered torrent") on a
+tracker that's fine for others still reports as unreachable if it persists 30 minutes, and
+clears if any other reporting torrent sees the tracker working - acceptable, since the message
+carries the tracker's own error text. In-memory state resets on restart; an outage spanning a
+restart is re-reported after another 30 minutes of failures.
+
+**Stability.** `TrackerReachability` is bounded by live torrents x their trackers: `forget()`
+runs from `removeTorrent()`, dropping a removed torrent's votes silently (no event - we no
+longer know the tracker's state), and recovery clears a URL's entry entirely, so a paused
+torrent's stale vote can't hold a tracker "down" or grow the map. Lock-free: every mutation is
+a per-key `ConcurrentHashMap.compute`, called from whichever session thread announces -
+consistent with [[0007-concurrency-model]]. Event volume is now bounded by real outages: at
+most one pair per URL per 30-minute window each way.
+
+**Tests.** `TrackedTrackerClientTest` (rewritten with an injected clock): failures inside the
+window report nothing; failures spanning it report once; a fail/fail/succeed flapper over 20
+cycles reports nothing; recovery needs a success streak spanning the window; a failure mid-
+recovery restarts it; recovery never fires without a prior report. `TrackerReachabilityTest`
+(new): first-reporter-only, recovery clears all votes, `forget()` semantics. `TorrentEngineTest`
+adapter test now proves two torrents sharing a tracker yield exactly one event of each type with
+null `infoHash`/`torrentName`.
+
 ## `MAGNET_RESOLVED` (added 2026-09-06)
 
 Picked up alongside the tracker-events addendum above, closing the other half of the pair this
@@ -365,3 +418,9 @@ event-log write path; no new storage, concurrency, or growth behavior.
   zero-production-dependency stance is a standing constraint elsewhere in this codebase
   (marker files instead of JSON, [[0054-seeding-limits]]) that a new event-only DB would break
   precedent with for no corresponding benefit.
+
+**Addendum (2026-09-20): two engine-wide event types.** `BLOCKLIST_UPDATED` (a list finished
+loading - the message gives the range count and source) and `BLOCKLIST_FAILED` (a load failed - the
+message gives the reason; only recorded when the reason differs from the last one, so a
+persistently unreachable URL doesn't fill the log). Both have null `infoHash`/`torrentName`, like
+`SERVER_STARTED`. See [[0078-ip-blocklist]].

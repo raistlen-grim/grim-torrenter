@@ -12,6 +12,8 @@ import com.grimtorrenter.engine.events.EventStore;
 import com.grimtorrenter.engine.events.EventType;
 import com.grimtorrenter.engine.events.InMemoryEventStore;
 import com.grimtorrenter.engine.events.LibraryEvent;
+import com.grimtorrenter.engine.blocklist.Blocklist;
+import com.grimtorrenter.engine.label.LabelRegistry;
 import com.grimtorrenter.engine.lsd.LsdService;
 import com.grimtorrenter.engine.magnet.MagnetLink;
 import com.grimtorrenter.engine.metadata.MetadataFetcher;
@@ -22,6 +24,8 @@ import com.grimtorrenter.engine.metainfo.TorrentMetadata;
 import com.grimtorrenter.engine.mse.EncryptionMode;
 import com.grimtorrenter.engine.peer.IncomingConnectionHandler;
 import com.grimtorrenter.engine.peer.PeerServer;
+import com.grimtorrenter.engine.proxy.ProxyConfig;
+import com.grimtorrenter.engine.proxy.Socks5;
 import com.grimtorrenter.engine.peer.PeerSource;
 import com.grimtorrenter.engine.peer.UtpIncomingConnectionHandler;
 import com.grimtorrenter.engine.peer.UtpPeerAcceptor;
@@ -32,6 +36,8 @@ import com.grimtorrenter.engine.settings.SettingsStore;
 import com.grimtorrenter.engine.storage.FileHandlePool;
 import com.grimtorrenter.engine.torrent.SeedingLimitOverride;
 import com.grimtorrenter.engine.torrent.SeedingLimits;
+import com.grimtorrenter.engine.piece.FilePriorities;
+import com.grimtorrenter.engine.piece.FilePriority;
 import com.grimtorrenter.engine.torrent.TorrentLimitOverride;
 import com.grimtorrenter.engine.torrent.TorrentLimits;
 import com.grimtorrenter.engine.torrent.TorrentSession;
@@ -43,6 +49,7 @@ import com.grimtorrenter.engine.tracker.NoOpTrackerClient;
 import com.grimtorrenter.engine.tracker.PeerAddress;
 import com.grimtorrenter.engine.tracker.PeerId;
 import com.grimtorrenter.engine.tracker.TrackedTrackerClient;
+import com.grimtorrenter.engine.tracker.TrackerReachability;
 import com.grimtorrenter.engine.tracker.TrackerClient;
 import com.grimtorrenter.engine.tracker.TrackerEvent;
 import com.grimtorrenter.engine.tracker.TrackerRequest;
@@ -156,6 +163,16 @@ public final class TorrentEngine {
      * removeTorrent(infoHash, false) (keep files) - same "torrent-config-scoped preference
      * stays with the record" reasoning. See design_docs/0072/0065. */
     private static final String TORRENT_LIMIT_OVERRIDE_MARKER_FILENAME = ".grimtorrenter-torrent-limit-override";
+    /** Sparse "index=PRIORITY" lines for every file not at MEDIUM - absent file/line, an unknown
+     * priority name, or an out-of-range index all mean MEDIUM. See design_docs/0075. */
+    private static final String FILE_PRIORITIES_MARKER_FILENAME = ".grimtorrenter-file-priorities";
+    /** One label id per line - see design_docs/0077. The engine-wide label list itself lives in
+     * configDirectory (LabelRegistry.FILENAME). */
+    private static final String LABEL_IDS_MARKER_FILENAME = ".grimtorrenter-label-ids";
+    /** Per-torrent cap, so a marker can't grow without bound. See design_docs/0077. */
+    public static final int MAX_LABELS_PER_TORRENT = 20;
+    private static final long BLOCKLIST_CHECK_INTERVAL_SECONDS = 60;
+    private static final int PROXY_TEST_TIMEOUT_MS = 10_000;
 
     /** Lifetime uploaded bytes, cumulative active time, and completed-on timestamp - the three
      * metrics design_docs/0054 explicitly deferred persisting ("neither ratio nor seed time
@@ -210,6 +227,17 @@ public final class TorrentEngine {
      * user actually browses. See design_docs/0028's own 2026-08-30 addendum and
      * design_docs/0065. */
     private final Path configDirectory;
+    private final LabelRegistry labelRegistry;
+    private final Blocklist blocklist;
+    /** The live SOCKS5 proxy configuration (design_docs/0079) - every outbound TCP connection, HTTP
+     * and UDP tracker announce, and the blocklist download reads it fresh, so a change to the
+     * proxy settings applies to the very next one. */
+    private final ProxyConfig proxyConfig;
+    /** Whether the proxy's "block anything that can't use it" switch was on when this engine
+     * started. DHT, µTP, LSD and the inbound peer server are each created once at construction, so
+     * turning that switch on (or a proxy on with it) only stops them from the next start - this
+     * remembers what *this* run actually did, so proxyStatus() can say a restart is still needed. */
+    private final boolean proxyBlocksUnsupportedAtStart;
     private final PeerId ourPeerId;
     private final int ourListenPort;
     private final TorrentSessionListener listener;
@@ -309,6 +337,7 @@ public final class TorrentEngine {
      * lower-arity constructors default to a private, unpersisted InMemoryEventStore so every
      * pre-existing caller/test is unaffected. */
     private final EventStore eventStore;
+    private final TrackerReachability trackerReachability = new TrackerReachability();
     /** Deploy-time config, same category as baseDownloadDirectory - see design_docs/0056.
      * Never read (and never even created on disk) unless Settings.watchFolderEnabled is true,
      * checked fresh on every scanWatchFolder() tick. */
@@ -508,6 +537,16 @@ public final class TorrentEngine {
                   List<NetworkInterface> lsdInterfacesForTesting) {
         this.baseDownloadDirectory = baseDownloadDirectory;
         this.configDirectory = configDirectory;
+        this.labelRegistry = new LabelRegistry(configDirectory);
+        // design_docs/0079: with a proxy active and "block anything that can't use it" on (the
+        // default once a proxy is enabled), the things a SOCKS5 proxy can't carry are never
+        // started at all - DHT, µTP, LSD (all UDP) and the inbound peer server. Decided once here,
+        // like their own enable flags: restart-required.
+        this.proxyConfig = new ProxyConfig(configDirectory, settingsStore);
+        this.proxyBlocksUnsupportedAtStart = ProxyConfig.blocksUnsupported(settingsStore.current());
+        boolean dhtRequested = enableDht && !proxyBlocksUnsupportedAtStart;
+        boolean incomingRequested = acceptIncomingConnections && !proxyBlocksUnsupportedAtStart;
+        boolean lsdRequested = enableLsd && !proxyBlocksUnsupportedAtStart;
         this.ourListenPort = ourListenPort;
         // Wrapped so a session's first activation can trigger an immediate LSD announce - see
         // announceOnLsdActivation()'s own Javadoc for why this needs to be the listener every
@@ -525,24 +564,24 @@ public final class TorrentEngine {
         // as before this slice existed. Read once here, restart-required like acceptIncomingConnections
         // itself.
         Consumer<UtpSocket> onUtpConnectionAccepted =
-                (acceptIncomingConnections && settingsStore.current().utpEnabled())
+                (incomingRequested && settingsStore.current().utpEnabled())
                         ? new UtpPeerAcceptor(this::findIncomingUtpConnectionHandler)::accept
                         : UtpSocket::close;
-        this.dhtNode = enableDht
+        this.dhtNode = dhtRequested
                 ? createDhtNode(configDirectory, ourListenPort, eventStore, onUtpConnectionAccepted)
                 : null;
-        this.dhtBindFailed = enableDht && this.dhtNode == null;
+        this.dhtBindFailed = dhtRequested && this.dhtNode == null;
         this.encryptionMode = () -> settingsStore.current().encryptionMode();
         this.dhtReannounceIntervalSeconds =
                 () -> (long) settingsStore.current().dhtReannounceIntervalSeconds();
         this.utpConnectTimeoutSeconds = () -> settingsStore.current().utpConnectTimeoutSeconds();
         this.dhtRefreshIntervalSeconds = settingsStore.current().dhtRefreshIntervalSeconds();
         this.watchFolderScanIntervalSeconds = settingsStore.current().watchFolderPollIntervalSeconds();
-        this.peerServer = acceptIncomingConnections ? createPeerServer(ourListenPort, eventStore) : null;
-        this.peerServerBindFailed = acceptIncomingConnections && this.peerServer == null;
+        this.peerServer = incomingRequested ? createPeerServer(ourListenPort, eventStore) : null;
+        this.peerServerBindFailed = incomingRequested && this.peerServer == null;
         this.lsdAnnounceIntervalSeconds = settingsStore.current().lsdAnnounceIntervalSeconds();
-        this.lsdService = enableLsd ? createLsdService(ourListenPort, eventStore, lsdInterfacesForTesting) : null;
-        this.lsdBindFailed = enableLsd && this.lsdService == null;
+        this.lsdService = lsdRequested ? createLsdService(ourListenPort, eventStore, lsdInterfacesForTesting) : null;
+        this.lsdBindFailed = lsdRequested && this.lsdService == null;
         this.rateLimiters = RateLimiters.from(settingsStore);
         this.fileHandlePool = fileHandlePool;
         this.pieceVerificationLimiter = new Semaphore(maxConcurrentPieceVerifications);
@@ -550,6 +589,18 @@ public final class TorrentEngine {
         this.settingsStore = settingsStore;
         this.eventStore = eventStore;
         this.watchDirectory = watchDirectory;
+        // The engine-wide IP blocklist (design_docs/0078): constructed here, after settingsStore/
+        // eventStore are assigned, and handed to PeerServer now and to every TorrentSession as it
+        // is created/restored. refreshIfNeeded() is cheap when nothing changed - it only ever
+        // starts a reload on its own virtual thread - so a one-minute tick also picks up a
+        // settings change (a new source, enabling it) without any change-notification plumbing.
+        this.blocklist = new Blocklist(configDirectory, settingsStore, eventStore, this::applyBlocklistChange,
+                this.proxyConfig);
+        if (this.peerServer != null) {
+            this.peerServer.setIpFilter(this.blocklist);
+        }
+        this.maintenanceScheduler.scheduleWithFixedDelay(this.blocklist::refreshIfNeeded,
+                1, BLOCKLIST_CHECK_INTERVAL_SECONDS, TimeUnit.SECONDS);
         this.maintenanceScheduler.scheduleWithFixedDelay(this::checkSeedingLimits,
                 SEEDING_LIMIT_CHECK_INTERVAL_SECONDS, SEEDING_LIMIT_CHECK_INTERVAL_SECONDS, TimeUnit.SECONDS);
         this.maintenanceScheduler.scheduleWithFixedDelay(this::flushLifetimeStats,
@@ -1126,7 +1177,11 @@ public final class TorrentEngine {
     /** name is a stable identifier ("dht"/"peerServer"), matched by name against a frontend
      * display map - same closed-set-mapped-by-key shape EventType's own frontend map already
      * uses. See design_docs/0059. */
-    public record ServiceStatus(String name, ServiceState state) {
+    public record ServiceStatus(String name, ServiceState state, String reason) {
+        /** No reason - the common case. */
+        public ServiceStatus(String name, ServiceState state) {
+            this(name, state, null);
+        }
     }
 
     /** The peer server only binds once, at construction - no retry - so its FAILED/DISABLED
@@ -1138,9 +1193,19 @@ public final class TorrentEngine {
      * DEGRADED-state addendum. */
     public List<ServiceStatus> serviceStatuses() {
         return List.of(
-                new ServiceStatus("dht", dhtServiceState()),
-                new ServiceStatus("peerServer", serviceState(peerServer != null, peerServerBindFailed)),
-                new ServiceStatus("lsd", serviceState(lsdService != null, lsdBindFailed)));
+                withProxyReason("dht", dhtServiceState()),
+                withProxyReason("peerServer", serviceState(peerServer != null, peerServerBindFailed)),
+                withProxyReason("lsd", serviceState(lsdService != null, lsdBindFailed)));
+    }
+
+    /** A DISABLED service on a run that started with the proxy's block switch on carries the
+     * reason, so the Services page can say why instead of just "disabled". design_docs/0079. */
+    private ServiceStatus withProxyReason(String name, ServiceState state) {
+        if (state == ServiceState.DISABLED && proxyBlocksUnsupportedAtStart) {
+            return new ServiceStatus(name, state,
+                    "Turned off because a proxy is active - a SOCKS5 proxy can't carry it");
+        }
+        return new ServiceStatus(name, state);
     }
 
     private ServiceState dhtServiceState() {
@@ -1213,6 +1278,9 @@ public final class TorrentEngine {
                 // design_docs/0072.
                 TorrentLimitOverride torrentLimitOverride = readTorrentLimitOverrideMarker(configTorrentDirectory);
                 int effectiveMaxConnections = TorrentLimits.effectiveMaxConnections(settingsStore.current(), torrentLimitOverride);
+                // Same reused-path reasoning again, for per-file priorities - see design_docs/0075.
+                FilePriorities filePriorities =
+                        readFilePrioritiesMarker(configTorrentDirectory, metadata.files().size());
                 // RateLimiters.forTorrent() needs a live-readable override before the
                 // TorrentSession it belongs to exists yet - resolved with this AtomicReference
                 // rather than any restructuring inside TorrentSession itself. Safe: no peer
@@ -1239,15 +1307,18 @@ public final class TorrentEngine {
                                 ourPeerId, ourListenPort, listener, dhtNode, perTorrentRateLimiters, fileHandlePool,
                                 pieceVerificationLimiter, encryptionMode, seedingLimitOverride, addedAt,
                                 dhtReannounceIntervalSeconds, lsdService != null, true, persistedLifetimeStats,
-                                torrentLimitOverride, effectiveMaxConnections, settingsStore.current().utpEnabled(),
-                                utpConnectTimeoutSeconds)
+                                torrentLimitOverride, effectiveMaxConnections, effectiveUtpEnabled(),
+                                utpConnectTimeoutSeconds, filePriorities)
                         : TorrentSession.create(metadata, trackerClient, torrentDirectory, ourPeerId,
                                 ourListenPort, listener, dhtNode, perTorrentRateLimiters, fileHandlePool,
                                 pieceVerificationLimiter, encryptionMode, seedingLimitOverride, addedAt,
                                 dhtReannounceIntervalSeconds, lsdService != null, persistedLifetimeStats,
-                                torrentLimitOverride, effectiveMaxConnections, settingsStore.current().utpEnabled(),
-                                utpConnectTimeoutSeconds);
+                                torrentLimitOverride, effectiveMaxConnections, effectiveUtpEnabled(),
+                                utpConnectTimeoutSeconds, filePriorities);
                 sessionRef.set(created);
+                created.setLabelIds(readLabelIdsMarker(configTorrentDirectory));
+                created.setIpFilter(blocklist);
+                created.setProxyProvider(proxyConfig);
                 directories.put(infoHash, contentPathFor(metadata, torrentDirectory));
                 if (!resolution.preExisting()) {
                     created.start();
@@ -1386,17 +1457,26 @@ public final class TorrentEngine {
         TrackerClient trackerClient = createTrackerClient(List.of(trackerUrls));
         Instant deadline = Instant.now().plusSeconds(settings.magnetFetchTimeBudgetSeconds());
         Set<PeerAddress> alreadyTried = new HashSet<>();
+        boolean everAnnounced = false;
         do {
-            TrackerResponse response;
+            List<PeerAddress> candidates;
             try {
-                response = trackerClient.announce(new TrackerRequest(magnet.infoHash(), ourPeerId, ourListenPort,
-                        0, 0, Long.MAX_VALUE, TrackerEvent.STARTED, settings.magnetFetchCandidatesPerRound()));
+                candidates = trackerClient.announce(new TrackerRequest(magnet.infoHash(), ourPeerId, ourListenPort,
+                        0, 0, Long.MAX_VALUE, TrackerEvent.STARTED, settings.magnetFetchCandidatesPerRound())).peers();
+                everAnnounced = true;
             } catch (RuntimeException e) {
-                LOG.log(System.Logger.Level.WARNING, "Could not announce for magnet " + magnet.infoHash(), e);
-                recordMagnetAddFailed(magnet, "Could not announce to any tracker", source);
-                return;
+                // A failed announce (commonly a transient DNS/network blip - e.g. EAI_AGAIN inside a
+                // container) is treated like an empty round rather than a permanent failure: fall
+                // back to DHT if it's running, and otherwise let the empty-round delay below pace a
+                // retry, all bounded by the same time budget. See design_docs/0028's addendum.
+                // Message only, no stack trace - MultiTrackerClient already condenses per-tracker
+                // failures into one line, and a trace per retry round buries it.
+                LOG.log(System.Logger.Level.WARNING, "Could not announce for magnet " + magnet.infoHash()
+                        + (dhtNode != null ? ", trying DHT" : ", will retry") + ": " + e.getMessage());
+                candidates = dhtNode != null ? dhtPeersOrEmpty(magnet) : List.of();
             }
-            List<PeerAddress> fresh = response.peers().stream()
+            List<PeerAddress> fresh = candidates.stream()
+                    .filter(address -> !blocklist.isBlocked(address.address()))
                     .filter(address -> !alreadyTried.contains(address))
                     .limit(settings.magnetFetchCandidatesPerRound())
                     .toList();
@@ -1419,7 +1499,18 @@ public final class TorrentEngine {
         }
         LOG.log(System.Logger.Level.WARNING, "Could not fetch metadata for magnet " + magnet.infoHash()
                 + " from any of " + alreadyTried.size() + " peer(s) tried");
-        recordMagnetAddFailed(magnet, "No peer had the metadata (tried " + alreadyTried.size() + ")", source);
+        recordMagnetAddFailed(magnet, everAnnounced || !alreadyTried.isEmpty()
+                ? "No peer had the metadata (tried " + alreadyTried.size() + ")"
+                : "Could not announce to any tracker", source);
+    }
+
+    private List<PeerAddress> dhtPeersOrEmpty(MagnetLink magnet) {
+        try {
+            return dhtNode.findPeers(magnet.infoHash(), ourListenPort, false, DHT_QUERY_TIMEOUT);
+        } catch (RuntimeException e) {
+            LOG.log(System.Logger.Level.WARNING, "DHT peer lookup failed for magnet " + magnet.infoHash(), e);
+            return List.of();
+        }
     }
 
     private void fetchMagnetMetadataViaDhtThenAdd(MagnetLink magnet, String source) {
@@ -1437,6 +1528,7 @@ public final class TorrentEngine {
                 return;
             }
             List<PeerAddress> fresh = peers.stream()
+                    .filter(address -> !blocklist.isBlocked(address.address()))
                     .filter(address -> !alreadyTried.contains(address))
                     .limit(settings.magnetFetchCandidatesPerRound())
                     .toList();
@@ -1518,7 +1610,7 @@ public final class TorrentEngine {
             throw new IOException("Interrupted while waiting for a metadata-fetch slot", e);
         }
         try {
-            return MetadataFetcher.fetch(address, magnet.infoHash(), ourPeerId, encryptionMode.get());
+            return MetadataFetcher.fetch(address, magnet.infoHash(), ourPeerId, encryptionMode.get(), proxyConfig);
         } catch (IOException | RuntimeException e) {
             LOG.log(System.Logger.Level.DEBUG,
                     "Metadata fetch from " + address + " failed for magnet " + magnet.infoHash(), e);
@@ -1604,6 +1696,7 @@ public final class TorrentEngine {
                     readLifetimeStatsMarker(configTorrentDirectory);
             TorrentLimitOverride torrentLimitOverride = readTorrentLimitOverrideMarker(configTorrentDirectory);
             int effectiveMaxConnections = TorrentLimits.effectiveMaxConnections(settingsStore.current(), torrentLimitOverride);
+            FilePriorities filePriorities = readFilePrioritiesMarker(configTorrentDirectory, metadata.files().size());
             Path torrentDirectory = readDownloadPathMarker(configTorrentDirectory);
             if (torrentDirectory == null) {
                 LOG.log(System.Logger.Level.WARNING,
@@ -1620,8 +1713,11 @@ public final class TorrentEngine {
                     perTorrentRateLimiters, fileHandlePool, pieceVerificationLimiter, encryptionMode,
                     seedingLimitOverride, addedAt, dhtReannounceIntervalSeconds, lsdService != null, running,
                     persistedLifetimeStats, torrentLimitOverride, effectiveMaxConnections,
-                    settingsStore.current().utpEnabled(), utpConnectTimeoutSeconds);
+                    effectiveUtpEnabled(), utpConnectTimeoutSeconds, filePriorities);
             sessionRef.set(session);
+            session.setLabelIds(readLabelIdsMarker(configTorrentDirectory));
+            session.setIpFilter(blocklist);
+            session.setProxyProvider(proxyConfig);
             sessions.put(metadata.infoHash(), session);
             directories.put(metadata.infoHash(), contentPathFor(metadata, torrentDirectory));
         } catch (IOException | RuntimeException e) {
@@ -1678,6 +1774,7 @@ public final class TorrentEngine {
             return;
         }
         TorrentSession session = sessions.remove(infoHash);
+        trackerReachability.forget(infoHash.hex());
         if (session != null) {
             session.close();
             eventStore.record(new LibraryEvent(
@@ -1777,6 +1874,135 @@ public final class TorrentEngine {
             writeTorrentLimitOverrideMarker(configTorrentDirectory(infoHash), override);
             session.setTorrentLimits(override);
         }
+    }
+
+    /** Marker written first, then applied live - a failed write throws before the in-memory
+     * change, same ordering as setTorrentLimits above. Throws IllegalArgumentException for a
+     * wrong-length array or one with nothing wanted (the REST layer maps that to a 400); a
+     * no-op for an unknown torrent, same convention as the two setters above. Returns whether
+     * the torrent existed. See design_docs/0075. */
+    public boolean setFilePriorities(InfoHash infoHash, FilePriorities priorities) {
+        TorrentSession session = sessions.get(infoHash);
+        if (session == null) {
+            return false;
+        }
+        if (priorities.priorities().size() != session.metadata().files().size()) {
+            throw new IllegalArgumentException("Expected " + session.metadata().files().size()
+                    + " priorities, got " + priorities.priorities().size());
+        }
+        if (!priorities.anyWanted()) {
+            throw new IllegalArgumentException("At least one file must be wanted");
+        }
+        writeFilePrioritiesMarker(configTorrentDirectory(infoHash), priorities);
+        session.setFilePriorities(priorities);
+        return true;
+    }
+
+    /** Asks every torrent sitting in the retryable ERROR state (a failed first announce with no
+     * fallback - design_docs/0036's 2026-09-20 addendum) to retry right now instead of waiting out
+     * its backoff. Called when the proxy settings or password change, since that is the usual
+     * reason such a torrent failed and the usual thing that fixes it. Cheap and non-blocking: each
+     * attempt runs on the session's own retry thread. */
+    public void retryFailedStarts() {
+        for (TorrentSession session : sessions.values()) {
+            session.retryStartNow();
+        }
+    }
+
+    public ProxyConfig proxyConfig() {
+        return proxyConfig;
+    }
+
+    /** µTP is UDP, which a SOCKS5 proxy can't carry here - off for this whole run whenever the
+     * proxy's block switch was on at startup, regardless of the utpEnabled setting. */
+    private boolean effectiveUtpEnabled() {
+        return settingsStore.current().utpEnabled() && !proxyBlocksUnsupportedAtStart;
+    }
+
+    /** What the Proxy settings group shows. active is the live setting; blocksUnsupported is
+     * whether this run actually turned DHT/µTP/LSD/incoming off; restartRequired is true when the
+     * live settings would block them but this run didn't (or the reverse) - until then those
+     * still use the real address. See design_docs/0079. */
+    public record ProxyStatus(boolean active, String host, int port, boolean hasPassword,
+                              boolean blockUnsupported, boolean blockingNow, boolean restartRequired) {
+    }
+
+    public ProxyStatus proxyStatus() {
+        Settings settings = settingsStore.current();
+        boolean blockingConfigured = ProxyConfig.blocksUnsupported(settings);
+        return new ProxyStatus(ProxyConfig.isActive(settings), settings.proxyHost(), settings.proxyPort(),
+                proxyConfig.hasPassword(), settings.proxyBlockUnsupported(), proxyBlocksUnsupportedAtStart,
+                blockingConfigured != proxyBlocksUnsupportedAtStart);
+    }
+
+    /** Checks the currently saved proxy (host/port/username plus the stored password) end to end -
+     * reachable, credentials accepted, UDP relayed - without changing anything. Runs on the
+     * caller's thread and blocks for up to a couple of connect timeouts. */
+    public Socks5.TestResult testProxy() {
+        return proxyConfig.current()
+                .map(proxy -> Socks5.test(proxy, PROXY_TEST_TIMEOUT_MS))
+                .orElseGet(() -> new Socks5.TestResult(false, false, "No proxy is configured"));
+    }
+
+    public Blocklist blocklist() {
+        return blocklist;
+    }
+
+    /** Runs on the blocklist's own loading thread whenever the enforced list changes: every
+     * session forgets known addresses and closes connections that are now blocked. O(sessions x
+     * (known addresses + connections)) once per reload - bounded, and reloads are rare. See
+     * design_docs/0078. */
+    private void applyBlocklistChange() {
+        for (TorrentSession session : sessions.values()) {
+            session.applyIpFilterChange();
+        }
+    }
+
+    /** The engine-wide managed label list (design_docs/0077). Mutate it only through
+     * deleteLabel() below for a delete (which must also strip the id from every torrent);
+     * create/rename are safe to call directly on the registry. */
+    public LabelRegistry labels() {
+        return labelRegistry;
+    }
+
+    /** Replaces a torrent's labels with ids (deduplicated, order kept). Throws
+     * IllegalArgumentException for an unknown label id or more than MAX_LABELS_PER_TORRENT;
+     * marker written before the in-memory change, same ordering as setTorrentLimits. Returns
+     * whether the torrent existed. See design_docs/0077. */
+    public boolean setTorrentLabels(InfoHash infoHash, List<String> ids) {
+        TorrentSession session = sessions.get(infoHash);
+        if (session == null) {
+            return false;
+        }
+        List<String> distinct = ids.stream().distinct().toList();
+        if (distinct.size() > MAX_LABELS_PER_TORRENT) {
+            throw new IllegalArgumentException("At most " + MAX_LABELS_PER_TORRENT + " labels per torrent");
+        }
+        for (String id : distinct) {
+            if (!labelRegistry.exists(id)) {
+                throw new IllegalArgumentException("Unknown label: " + id);
+            }
+        }
+        writeLabelIdsMarker(configTorrentDirectory(infoHash), distinct);
+        session.setLabelIds(distinct);
+        return true;
+    }
+
+    /** Deletes a label and strips its id from every loaded torrent (rewriting each marker).
+     * Markers of torrents not currently loaded may keep the dead id; readLabelIdsMarker()
+     * drops it on read. Returns whether the label existed. See design_docs/0077. */
+    public boolean deleteLabel(String id) {
+        if (!labelRegistry.delete(id)) {
+            return false;
+        }
+        for (TorrentSession session : sessions.values()) {
+            if (session.labelIds().contains(id)) {
+                List<String> remaining = session.labelIds().stream().filter(other -> !other.equals(id)).toList();
+                writeLabelIdsMarker(configTorrentDirectory(session.metadata().infoHash()), remaining);
+                session.setLabelIds(remaining);
+            }
+        }
+        return true;
     }
 
     public Collection<TorrentSession> listTorrents() {
@@ -2072,6 +2298,82 @@ public final class TorrentEngine {
         return new SeedingLimitOverride(ratioLimit, timeLimitMinutes);
     }
 
+    private static void writeFilePrioritiesMarker(Path directory, FilePriorities priorities) {
+        StringBuilder lines = new StringBuilder();
+        for (int i = 0; i < priorities.priorities().size(); i++) {
+            FilePriority priority = priorities.get(i);
+            if (priority != FilePriority.MEDIUM) {
+                lines.append(i).append('=').append(priority.name()).append('\n');
+            }
+        }
+        try {
+            Files.writeString(directory.resolve(FILE_PRIORITIES_MARKER_FILENAME), lines.toString());
+        } catch (IOException e) {
+            throw new TorrentEngineException(
+                    "Could not persist file priorities to " + directory + ": " + e.getMessage());
+        }
+    }
+
+    /** Tolerant on every axis - a hand-edited or truncated marker degrades to MEDIUM for
+     * whatever it can't make sense of rather than failing the restore. Also falls back to
+     * all-MEDIUM if the marker would leave nothing wanted (the same invariant
+     * setFilePriorities() enforces), since a torrent with every file skipped would "complete"
+     * instantly. See design_docs/0075. */
+    private static void writeLabelIdsMarker(Path directory, List<String> ids) {
+        try {
+            Files.writeString(directory.resolve(LABEL_IDS_MARKER_FILENAME),
+                    ids.isEmpty() ? "" : String.join("\n", ids) + "\n");
+        } catch (IOException e) {
+            throw new TorrentEngineException(
+                    "Could not persist labels to " + directory + ": " + e.getMessage());
+        }
+    }
+
+    /** Ids no longer in the registry (deleted while this torrent wasn't loaded) are dropped, a
+     * missing/unreadable marker is no labels, and the result is capped at
+     * MAX_LABELS_PER_TORRENT - so a stale or hand-edited marker can never surface a dead label
+     * or grow without bound. Never throws. */
+    private List<String> readLabelIdsMarker(Path directory) {
+        Path marker = directory.resolve(LABEL_IDS_MARKER_FILENAME);
+        if (!Files.exists(marker)) {
+            return List.of();
+        }
+        try {
+            return Files.readAllLines(marker).stream()
+                    .map(String::strip)
+                    .filter(id -> !id.isEmpty() && labelRegistry.exists(id))
+                    .distinct()
+                    .limit(MAX_LABELS_PER_TORRENT)
+                    .toList();
+        } catch (IOException e) {
+            return List.of();
+        }
+    }
+
+    private static FilePriorities readFilePrioritiesMarker(Path directory, int fileCount) throws IOException {
+        Path marker = directory.resolve(FILE_PRIORITIES_MARKER_FILENAME);
+        FilePriority[] priorities = new FilePriority[fileCount];
+        java.util.Arrays.fill(priorities, FilePriority.MEDIUM);
+        if (Files.exists(marker)) {
+            for (String line : Files.readAllLines(marker)) {
+                String[] parts = line.split("=", 2);
+                if (parts.length != 2) {
+                    continue;
+                }
+                try {
+                    int index = Integer.parseInt(parts[0].trim());
+                    if (index >= 0 && index < fileCount) {
+                        priorities[index] = FilePriority.valueOf(parts[1].trim());
+                    }
+                } catch (IllegalArgumentException ignored) {
+                    // unparseable index or unknown priority name - leave that file at MEDIUM
+                }
+            }
+        }
+        FilePriorities result = new FilePriorities(java.util.Arrays.asList(priorities));
+        return result.anyWanted() ? result : FilePriorities.allMedium(fileCount);
+    }
+
     private static TorrentLimitOverride readTorrentLimitOverrideMarker(Path directory) throws IOException {
         Path marker = directory.resolve(TORRENT_LIMIT_OVERRIDE_MARKER_FILENAME);
         if (!Files.exists(marker)) {
@@ -2201,7 +2503,7 @@ public final class TorrentEngine {
     }
 
     /** Wires up TRACKER_UNREACHABLE/TRACKER_RECOVERED reporting (design_docs/0055's own
-     * addendum) - only for a torrent's own persistent tracker client (addTorrent()/
+     * addendum; engine-wide per tracker URL, not per torrent, since 2026-09-21) - only for a torrent's own persistent tracker client (addTorrent()/
      * restoreOne()). The listener-less overload below is for the throwaway tracker client used
      * to probe trackers during magnet metadata resolution, which isn't a tracked torrent yet
      * and shouldn't generate library events off its own retry churn. */
@@ -2215,28 +2517,31 @@ public final class TorrentEngine {
      * sanitizeDirectoryName above. */
     TrackerStatusListener trackerStatusListenerFor(TorrentMetadata metadata) {
         String infoHash = metadata.infoHash().hex();
-        String name = metadata.name();
         return new TrackerStatusListener() {
             @Override
             public void onTrackerUnreachable(String url, String lastError) {
-                String message = "Tracker unreachable: " + url
-                        + (lastError != null ? " (" + lastError + ")" : "");
-                eventStore.record(new LibraryEvent(Instant.now(), EventType.TRACKER_UNREACHABLE, infoHash, name, message));
+                if (trackerReachability.markUnreachable(url, infoHash)) {
+                    String message = "Tracker unreachable: " + url
+                            + (lastError != null ? " (" + lastError + ")" : "");
+                    eventStore.record(new LibraryEvent(Instant.now(), EventType.TRACKER_UNREACHABLE, null, null, message));
+                }
             }
 
             @Override
             public void onTrackerRecovered(String url) {
-                eventStore.record(new LibraryEvent(
-                        Instant.now(), EventType.TRACKER_RECOVERED, infoHash, name, "Tracker recovered: " + url));
+                if (trackerReachability.markRecovered(url)) {
+                    eventStore.record(new LibraryEvent(
+                            Instant.now(), EventType.TRACKER_RECOVERED, null, null, "Tracker recovered: " + url));
+                }
             }
         };
     }
 
-    private static TrackerClient createTrackerClient(List<List<String>> tierUrls) {
+    private TrackerClient createTrackerClient(List<List<String>> tierUrls) {
         return createTrackerClient(tierUrls, null);
     }
 
-    private static TrackerClient createTrackerClient(List<List<String>> tierUrls, TrackerStatusListener listener) {
+    private TrackerClient createTrackerClient(List<List<String>> tierUrls, TrackerStatusListener listener) {
         if (tierUrls.isEmpty()) {
             return new NoOpTrackerClient();
         }
@@ -2252,8 +2557,13 @@ public final class TorrentEngine {
         return new MultiTrackerClient(tiers);
     }
 
-    private static TrackerClient createSingleTrackerClient(String url) {
-        return url.startsWith("udp://") ? new UdpTrackerClient(url) : new HttpTrackerClient(url);
+    /** Both tracker kinds are handed the live proxy config, so they tunnel through the SOCKS5
+     * proxy whenever one is active - HTTP(S) via a CONNECT tunnel, UDP via the proxy's UDP relay.
+     * See design_docs/0079. */
+    private TrackerClient createSingleTrackerClient(String url) {
+        return url.startsWith("udp://")
+                ? new UdpTrackerClient(url, proxyConfig)
+                : new HttpTrackerClient(url, proxyConfig);
     }
 
     /**

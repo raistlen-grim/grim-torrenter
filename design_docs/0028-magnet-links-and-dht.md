@@ -1116,6 +1116,21 @@ discrepancy. Confirms the periodic `dhtRefreshIntervalSeconds` maintenance tick 
 essentially nothing at idle, and that nothing in this addendum's fixes leaks memory or spins
 CPU over a sustained real run.
 
+## Addendum: a failed tracker announce no longer aborts a magnet fetch (2026-09-21)
+
+Real-world report: a magnet whose trackers all failed DNS resolution once (`UnknownHostException:
+... Try again`, EAI_AGAIN - a transient resolver blip inside the container) was abandoned
+immediately with "Could not announce to any tracker", while qBittorrent (DHT + retries) added the
+same magnet fine. `fetchMagnetMetadataViaTrackerThenAdd()` now treats a failed announce like an
+empty round: it falls back to a DHT lookup when DHT is running (the same backstop
+[[0036-dht-backstop-for-tracker-bearing-torrents]] gives established torrents), otherwise it waits
+`EMPTY_ROUND_RETRY_DELAY` and re-announces, all within the existing
+`magnetFetchTimeBudgetSeconds` deadline. Only at the deadline does it give up, with "Could not
+announce to any tracker" if no announce ever succeeded.
+
+Stability: bounded by the same deadline and 5s retry pacing as an empty round - no new unbounded
+loop; the removal-mid-fetch check still runs every iteration.
+
 ## Alternatives considered
 
 - **Reject unknown magnet params outright** - rejected; BEP 9's own magnet

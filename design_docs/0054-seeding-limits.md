@@ -188,3 +188,10 @@ that needed active thought about resource behavior rather than being an obvious 
   ([[0044-torrent-detail-drawer]]), and every existing tab is a read-only data view, not a form.
 - **`TorrentSession.stop()` called directly from the periodic check** - rejected mid-
   implementation once traced through; see the persistence-correctness reasoning above.
+
+**Addendum (2026-09-19): the dialog is no longer mounted inside the actions cell.** Found while
+building the labels dialog ([[0077-labels]]): this dialog (and [[0072-per-torrent-limits]]'s) was
+hosted in the row's actions cell, which compact mode (the details panel docked) sets to
+`display: none` - and a dialog inside a `display: none` ancestor can't render, so "Seeding limits..."
+silently did nothing whenever the panel was open. All three row dialogs now live in the first
+cell, which is never hidden.

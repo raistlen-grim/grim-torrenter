@@ -401,3 +401,9 @@ detail header the original Summary tab was meant to occupy.
   only while a view is mounted is simpler and matches this app's existing style; revisit
   if a detail view's polling cadence ever proves too coarse for something (peer
   connect/disconnect flicker, maybe).
+
+**Addendum (2026-09-19): fields added since this doc was written.** `GET .../files` now includes a
+`priority` per file (`SKIP`/`LOW`/`MEDIUM`/`HIGH`) and has a matching write endpoint,
+`PUT .../files/priorities` ([[0075-file-priorities]]); `GET .../peers` now includes an `activity`
+per peer (`ACTIVE`/`WAITING`/`IDLE`, computed by the backend - [[0076-peer-activity]]). Both are
+additive; nothing else about these endpoints changed.

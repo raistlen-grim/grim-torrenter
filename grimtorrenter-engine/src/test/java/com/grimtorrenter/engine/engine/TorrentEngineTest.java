@@ -1,6 +1,7 @@
 package com.grimtorrenter.engine.engine;
 
 import com.grimtorrenter.engine.bencode.BDictionary;
+import com.grimtorrenter.engine.bencode.BList;
 import com.grimtorrenter.engine.bencode.BInteger;
 import com.grimtorrenter.engine.bencode.BString;
 import com.grimtorrenter.engine.bencode.BencodeEncoder;
@@ -11,6 +12,7 @@ import com.grimtorrenter.engine.dht.RoutingTable;
 import com.grimtorrenter.engine.events.EventType;
 import com.grimtorrenter.engine.events.InMemoryEventStore;
 import com.grimtorrenter.engine.events.LibraryEvent;
+import com.grimtorrenter.engine.label.Label;
 import com.grimtorrenter.engine.lsd.LsdService;
 import com.grimtorrenter.engine.magnet.MagnetLink;
 import com.grimtorrenter.engine.metainfo.InfoHash;
@@ -19,6 +21,9 @@ import com.grimtorrenter.engine.metainfo.PieceHashes;
 import com.grimtorrenter.engine.metainfo.SingleFileTorrent;
 import com.grimtorrenter.engine.metainfo.TorrentMetadata;
 import com.grimtorrenter.engine.mse.EncryptionMode;
+import com.grimtorrenter.engine.piece.FilePriorities;
+import com.grimtorrenter.engine.proxy.FakeSocks5Proxy;
+import com.grimtorrenter.engine.piece.FilePriority;
 import com.grimtorrenter.engine.peerwire.Handshake;
 import com.grimtorrenter.engine.peerwire.PeerWireCodec;
 import com.grimtorrenter.engine.settings.InMemorySettingsStore;
@@ -52,6 +57,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -853,34 +859,42 @@ class TorrentEngineTest {
     }
 
     /** trackerStatusListenerFor() is the adapter between TrackedTrackerClient's engine-only
-     * TrackerStatusListener callback and a real library event - the debounce policy itself
-     * (only report after two consecutive failures, recover on the first success) is
-     * TrackedTrackerClient's own concern and is covered directly in TrackedTrackerClientTest;
-     * this only proves the adapter records the right EventType/infoHash/torrentName/message.
-     * See design_docs/0055's own TRACKER_UNREACHABLE addendum. */
+     * TrackerStatusListener callback and a real library event - the time-window debounce policy
+     * is TrackedTrackerClient's own concern (TrackedTrackerClientTest); this proves the adapter
+     * records engine-wide events (null infoHash/torrentName, URL in the message) and collapses
+     * several torrents sharing one tracker into a single unreachable/recovered pair. See
+     * design_docs/0055's own TRACKER_UNREACHABLE addendum and its 2026-09-21 revision. */
     @Test
-    void trackerStatusListenerRecordsUnreachableAndRecoveredLibraryEvents(@TempDir Path tempDir) {
+    void trackerStatusListenerCollapsesTorrentsSharingATrackerIntoOneEventPair(@TempDir Path tempDir) {
         InMemoryEventStore eventStore = new InMemoryEventStore();
         TorrentEngine engine = new TorrentEngine(tempDir, 6881, new NoOpListener(), false, false,
                 new InMemorySettingsStore(), FileHandlePool.unbounded(), Integer.MAX_VALUE, eventStore);
-        TorrentMetadata metadata = new SingleFileTorrent("tracker-status.bin", 1, 1, new PieceHashes(fill(20, 0)),
-                InfoHash.of(fill(20, 16)), "http://tracker.example/announce", List.of());
+        String url = "http://tracker.example/announce";
+        TorrentMetadata first = new SingleFileTorrent("tracker-status.bin", 1, 1, new PieceHashes(fill(20, 0)),
+                InfoHash.of(fill(20, 16)), url, List.of());
+        TorrentMetadata second = new SingleFileTorrent("tracker-status-2.bin", 1, 1, new PieceHashes(fill(20, 0)),
+                InfoHash.of(fill(20, 19)), url, List.of());
 
-        var listener = engine.trackerStatusListenerFor(metadata);
-        listener.onTrackerUnreachable("http://tracker.example/announce", "simulated failure");
-        listener.onTrackerRecovered("http://tracker.example/announce");
+        var firstListener = engine.trackerStatusListenerFor(first);
+        var secondListener = engine.trackerStatusListenerFor(second);
+        firstListener.onTrackerUnreachable(url, "simulated failure");
+        secondListener.onTrackerUnreachable(url, "simulated failure");
+        firstListener.onTrackerRecovered(url);
+        secondListener.onTrackerRecovered(url);
 
-        List<LibraryEvent> events = eventStore.forTorrent(metadata.infoHash().hex());
-        LibraryEvent unreachable = events.stream()
-                .filter(e -> e.type() == EventType.TRACKER_UNREACHABLE).findFirst().orElseThrow();
-        assertEquals("tracker-status.bin", unreachable.torrentName());
-        assertTrue(unreachable.message().contains("http://tracker.example/announce"));
-        assertTrue(unreachable.message().contains("simulated failure"));
+        List<LibraryEvent> unreachable = eventStore.all().stream()
+                .filter(e -> e.type() == EventType.TRACKER_UNREACHABLE).toList();
+        assertEquals(1, unreachable.size());
+        assertNull(unreachable.get(0).infoHash());
+        assertNull(unreachable.get(0).torrentName());
+        assertTrue(unreachable.get(0).message().contains(url));
+        assertTrue(unreachable.get(0).message().contains("simulated failure"));
 
-        LibraryEvent recovered = events.stream()
-                .filter(e -> e.type() == EventType.TRACKER_RECOVERED).findFirst().orElseThrow();
-        assertEquals("tracker-status.bin", recovered.torrentName());
-        assertTrue(recovered.message().contains("http://tracker.example/announce"));
+        List<LibraryEvent> recovered = eventStore.all().stream()
+                .filter(e -> e.type() == EventType.TRACKER_RECOVERED).toList();
+        assertEquals(1, recovered.size());
+        assertNull(recovered.get(0).infoHash());
+        assertTrue(recovered.get(0).message().contains(url));
     }
 
     /** design_docs/0055's own MAGNET_RESOLVED addendum: a resolved magnet reuses the existing
@@ -1005,6 +1019,380 @@ class TorrentEngineTest {
 
         TorrentSession restored = secondEngine.getTorrent(infoHash).orElseThrow();
         assertEquals(override, restored.torrentLimits());
+    }
+
+    /** Two 8-byte files, 8-byte pieces (so each file is exactly one piece and skipping either
+     * never touches the other's piece) - just enough shape for file-priority persistence tests,
+     * which don't need any real data on disk. */
+    private static byte[] twoFileTorrentBytes(String name, String announceUrl) {
+        byte[] fileA = fill(8, 1);
+        byte[] fileB = fill(8, 50);
+        byte[] hashes = new byte[40];
+        System.arraycopy(sha1(fileA), 0, hashes, 0, 20);
+        System.arraycopy(sha1(fileB), 0, hashes, 20, 20);
+        BDictionary info = new BDictionary(Map.of(
+                BString.of("name"), BString.of(name),
+                BString.of("piece length"), new BInteger(8),
+                BString.of("pieces"), BString.of(hashes),
+                BString.of("files"), new BList(List.of(
+                        new BDictionary(Map.of(BString.of("length"), new BInteger(8),
+                                BString.of("path"), new BList(List.of(BString.of("a.bin"))))),
+                        new BDictionary(Map.of(BString.of("length"), new BInteger(8),
+                                BString.of("path"), new BList(List.of(BString.of("b.bin")))))))));
+        BDictionary top = new BDictionary(Map.of(
+                BString.of("announce"), BString.of(announceUrl),
+                BString.of("info"), info));
+        return BencodeEncoder.encode(top);
+    }
+
+    private static Path filePrioritiesMarker(Path tempDir, InfoHash infoHash) {
+        return tempDir.resolve("torrents").resolve(infoHash.hex()).resolve(".grimtorrenter-file-priorities");
+    }
+
+    /** design_docs/0075 - same shape as aTorrentLimitOverrideSurvivesARestart above. Also pins
+     * the marker's sparse format: only files not at MEDIUM get a line. */
+    @Test
+    void filePrioritiesSurviveARestartAndOnlyNonMediumFilesArePersisted(@TempDir Path tempDir) throws Exception {
+        String announceUrl = startFakeTrackerServer();
+        byte[] torrentBytes = twoFileTorrentBytes("priorities-restart", announceUrl);
+
+        TorrentEngine firstEngine = new TorrentEngine(tempDir, 6881, new NoOpListener());
+        TorrentSession original = firstEngine.addTorrent(torrentBytes).session();
+        InfoHash infoHash = original.metadata().infoHash();
+        FilePriorities priorities = new FilePriorities(List.of(FilePriority.HIGH, FilePriority.MEDIUM));
+
+        assertTrue(firstEngine.setFilePriorities(infoHash, priorities));
+        assertEquals(priorities, original.filePriorities());
+        assertEquals("0=HIGH\n", Files.readString(filePrioritiesMarker(tempDir, infoHash)));
+        original.stop();
+
+        TorrentEngine secondEngine = new TorrentEngine(tempDir, 6881, new NoOpListener());
+        secondEngine.restore();
+
+        assertEquals(priorities, secondEngine.getTorrent(infoHash).orElseThrow().filePriorities());
+    }
+
+    @Test
+    void aTorrentWithNoPrioritiesMarkerStartsWithEveryFileMedium(@TempDir Path tempDir) throws Exception {
+        String announceUrl = startFakeTrackerServer();
+        TorrentEngine engine = new TorrentEngine(tempDir, 6881, new NoOpListener());
+
+        TorrentSession session = engine.addTorrent(twoFileTorrentBytes("no-marker", announceUrl)).session();
+
+        assertEquals(FilePriorities.allMedium(2), session.filePriorities());
+        assertFalse(Files.exists(filePrioritiesMarker(tempDir, session.metadata().infoHash())));
+        session.stop();
+    }
+
+    /** A hand-edited or truncated marker must degrade to MEDIUM for whatever it can't make
+     * sense of, not fail the restore: a line with no '=', an unknown priority name, and an
+     * out-of-range index are all ignored; the one valid line still applies. */
+    @Test
+    void aMalformedPrioritiesMarkerDegradesToMediumInsteadOfFailingTheRestore(@TempDir Path tempDir)
+            throws Exception {
+        String announceUrl = startFakeTrackerServer();
+        TorrentEngine firstEngine = new TorrentEngine(tempDir, 6881, new NoOpListener());
+        TorrentSession original = firstEngine.addTorrent(twoFileTorrentBytes("malformed", announceUrl)).session();
+        InfoHash infoHash = original.metadata().infoHash();
+        original.stop();
+        Files.writeString(filePrioritiesMarker(tempDir, infoHash),
+                "garbage\n0=BOGUS\n7=SKIP\nnotANumber=LOW\n1=SKIP\n");
+
+        TorrentEngine secondEngine = new TorrentEngine(tempDir, 6881, new NoOpListener());
+        secondEngine.restore();
+
+        assertEquals(new FilePriorities(List.of(FilePriority.MEDIUM, FilePriority.SKIP)),
+                secondEngine.getTorrent(infoHash).orElseThrow().filePriorities());
+    }
+
+    /** A marker that would leave nothing wanted (every file skipped) is the same invalid state
+     * setFilePriorities() itself rejects - restoring it as-is would make the torrent "complete"
+     * instantly, so the read falls back to all-MEDIUM. */
+    @Test
+    void aPrioritiesMarkerSkippingEveryFileFallsBackToAllMediumOnRestore(@TempDir Path tempDir) throws Exception {
+        String announceUrl = startFakeTrackerServer();
+        TorrentEngine firstEngine = new TorrentEngine(tempDir, 6881, new NoOpListener());
+        TorrentSession original = firstEngine.addTorrent(twoFileTorrentBytes("all-skipped", announceUrl)).session();
+        InfoHash infoHash = original.metadata().infoHash();
+        original.stop();
+        Files.writeString(filePrioritiesMarker(tempDir, infoHash), "0=SKIP\n1=SKIP\n");
+
+        TorrentEngine secondEngine = new TorrentEngine(tempDir, 6881, new NoOpListener());
+        secondEngine.restore();
+
+        assertEquals(FilePriorities.allMedium(2), secondEngine.getTorrent(infoHash).orElseThrow().filePriorities());
+    }
+
+    @Test
+    void setFilePrioritiesRejectsAWrongLengthOrAllSkippedArrayWithoutWritingAMarker(@TempDir Path tempDir)
+            throws Exception {
+        String announceUrl = startFakeTrackerServer();
+        TorrentEngine engine = new TorrentEngine(tempDir, 6881, new NoOpListener());
+        TorrentSession session = engine.addTorrent(twoFileTorrentBytes("rejects", announceUrl)).session();
+        InfoHash infoHash = session.metadata().infoHash();
+
+        assertThrows(IllegalArgumentException.class,
+                () -> engine.setFilePriorities(infoHash, FilePriorities.allMedium(3)));
+        assertThrows(IllegalArgumentException.class, () -> engine.setFilePriorities(infoHash,
+                new FilePriorities(List.of(FilePriority.SKIP, FilePriority.SKIP))));
+
+        assertFalse(Files.exists(filePrioritiesMarker(tempDir, infoHash)));
+        assertEquals(FilePriorities.allMedium(2), session.filePriorities());
+        session.stop();
+    }
+
+    @Test
+    void setFilePrioritiesForAnUnknownTorrentReturnsFalse(@TempDir Path tempDir) {
+        TorrentEngine engine = new TorrentEngine(tempDir, 6881, new NoOpListener());
+
+        assertFalse(engine.setFilePriorities(InfoHash.of(fill(20, 99)), FilePriorities.allMedium(1)));
+    }
+
+    private static Path labelIdsMarker(Path tempDir, InfoHash infoHash) {
+        return tempDir.resolve("torrents").resolve(infoHash.hex()).resolve(".grimtorrenter-label-ids");
+    }
+
+    /** design_docs/0077 - a torrent's labels and the label list itself both survive a restart,
+     * and the marker stores ids (not names). */
+    @Test
+    void torrentLabelsAndTheLabelListSurviveARestart(@TempDir Path tempDir) throws Exception {
+        String announceUrl = startFakeTrackerServer();
+        TorrentEngine firstEngine = new TorrentEngine(tempDir, 6881, new NoOpListener());
+        Label movies = firstEngine.labels().create("Movies");
+        Label music = firstEngine.labels().create("Music");
+        TorrentSession original = firstEngine.addTorrent(torrentBytes("labels-restart.bin", fill(20, 11), announceUrl)).session();
+        InfoHash infoHash = original.metadata().infoHash();
+
+        assertTrue(firstEngine.setTorrentLabels(infoHash, List.of(music.id(), movies.id())));
+        assertEquals(List.of(music.id(), movies.id()), original.labelIds());
+        assertEquals(music.id() + "\n" + movies.id() + "\n", Files.readString(labelIdsMarker(tempDir, infoHash)));
+        original.stop();
+
+        TorrentEngine secondEngine = new TorrentEngine(tempDir, 6881, new NoOpListener());
+        secondEngine.restore();
+
+        assertEquals(List.of(music.id(), movies.id()), secondEngine.getTorrent(infoHash).orElseThrow().labelIds());
+        assertEquals(List.of(movies, music), secondEngine.labels().list());
+    }
+
+    /** The whole point of storing ids: a rename changes the registry only, and every torrent
+     * still resolves to the same id. */
+    @Test
+    void renamingALabelLeavesEveryTorrentsIdsUntouched(@TempDir Path tempDir) throws Exception {
+        String announceUrl = startFakeTrackerServer();
+        TorrentEngine engine = new TorrentEngine(tempDir, 6881, new NoOpListener());
+        Label movies = engine.labels().create("Movies");
+        TorrentSession session = engine.addTorrent(torrentBytes("labels-rename.bin", fill(20, 12), announceUrl)).session();
+        engine.setTorrentLabels(session.metadata().infoHash(), List.of(movies.id()));
+
+        engine.labels().rename(movies.id(), "Films");
+
+        assertEquals(List.of(movies.id()), session.labelIds());
+        assertEquals("Films", engine.labels().get(movies.id()).orElseThrow().name());
+        session.stop();
+    }
+
+    @Test
+    void deletingALabelStripsItFromEveryTorrentAndItsMarker(@TempDir Path tempDir) throws Exception {
+        String announceUrl = startFakeTrackerServer();
+        TorrentEngine engine = new TorrentEngine(tempDir, 6881, new NoOpListener());
+        Label movies = engine.labels().create("Movies");
+        Label music = engine.labels().create("Music");
+        TorrentSession session = engine.addTorrent(torrentBytes("labels-delete.bin", fill(20, 13), announceUrl)).session();
+        InfoHash infoHash = session.metadata().infoHash();
+        engine.setTorrentLabels(infoHash, List.of(movies.id(), music.id()));
+
+        assertTrue(engine.deleteLabel(movies.id()));
+        assertFalse(engine.deleteLabel(movies.id()));
+
+        assertEquals(List.of(music.id()), session.labelIds());
+        assertEquals(music.id() + "\n", Files.readString(labelIdsMarker(tempDir, infoHash)));
+        assertEquals(List.of(music), engine.labels().list());
+        session.stop();
+    }
+
+    @Test
+    void setTorrentLabelsRejectsUnknownIdsAndTooManyAndDeduplicates(@TempDir Path tempDir) throws Exception {
+        String announceUrl = startFakeTrackerServer();
+        TorrentEngine engine = new TorrentEngine(tempDir, 6881, new NoOpListener());
+        Label movies = engine.labels().create("Movies");
+        TorrentSession session = engine.addTorrent(torrentBytes("labels-validate.bin", fill(20, 14), announceUrl)).session();
+        InfoHash infoHash = session.metadata().infoHash();
+
+        assertThrows(IllegalArgumentException.class, () -> engine.setTorrentLabels(infoHash, List.of("not-a-label")));
+        assertTrue(session.labelIds().isEmpty());
+        assertFalse(Files.exists(labelIdsMarker(tempDir, infoHash)));
+
+        assertTrue(engine.setTorrentLabels(infoHash, List.of(movies.id(), movies.id())));
+        assertEquals(List.of(movies.id()), session.labelIds());
+
+        List<String> tooMany = new java.util.ArrayList<>();
+        for (int i = 0; i <= TorrentEngine.MAX_LABELS_PER_TORRENT; i++) {
+            tooMany.add(engine.labels().create("label-" + i).id());
+        }
+        assertThrows(IllegalArgumentException.class, () -> engine.setTorrentLabels(infoHash, tooMany));
+        assertEquals(List.of(movies.id()), session.labelIds());
+        session.stop();
+    }
+
+    @Test
+    void setTorrentLabelsForAnUnknownTorrentReturnsFalse(@TempDir Path tempDir) {
+        TorrentEngine engine = new TorrentEngine(tempDir, 6881, new NoOpListener());
+
+        assertFalse(engine.setTorrentLabels(InfoHash.of(fill(20, 98)), List.of()));
+    }
+
+    /** A marker holding an id that's no longer in the registry (deleted while the torrent wasn't
+     * loaded), a blank line, or a duplicate never surfaces a dead or repeated label after a
+     * restore. */
+    @Test
+    void restoreDropsLabelIdsThatNoLongerExistInTheRegistry(@TempDir Path tempDir) throws Exception {
+        String announceUrl = startFakeTrackerServer();
+        TorrentEngine firstEngine = new TorrentEngine(tempDir, 6881, new NoOpListener());
+        Label movies = firstEngine.labels().create("Movies");
+        TorrentSession original = firstEngine.addTorrent(torrentBytes("labels-dead.bin", fill(20, 15), announceUrl)).session();
+        InfoHash infoHash = original.metadata().infoHash();
+        original.stop();
+        Files.writeString(labelIdsMarker(tempDir, infoHash), "dead-id\n\n" + movies.id() + "\n" + movies.id() + "\n");
+
+        TorrentEngine secondEngine = new TorrentEngine(tempDir, 6881, new NoOpListener());
+        secondEngine.restore();
+
+        assertEquals(List.of(movies.id()), secondEngine.getTorrent(infoHash).orElseThrow().labelIds());
+    }
+
+    private static Settings proxySettings(boolean blockUnsupported) {
+        return Settings.defaults().withProxy(true, "127.0.0.1", 1080, "", blockUnsupported);
+    }
+
+    private static TorrentEngine.ServiceStatus serviceNamed(TorrentEngine engine, String name) {
+        return engine.serviceStatuses().stream().filter(s -> s.name().equals(name)).findFirst().orElseThrow();
+    }
+
+    /** design_docs/0079 - with a proxy active and the block switch on (the default), everything a
+     * SOCKS5 proxy can't carry is never started, whatever the engine was asked for. */
+    @Test
+    void aProxyWithTheBlockSwitchOnStartsNeitherDhtNorTheInboundServer(@TempDir Path tempDir) {
+        TorrentEngine engine = new TorrentEngine(tempDir, 0, new NoOpListener(), true, true,
+                new InMemorySettingsStore(proxySettings(true)));
+        try {
+            assertFalse(engine.dhtStatus().enabled());
+            assertTrue(engine.peerServerPort().isEmpty());
+            assertEquals("DISABLED", serviceNamed(engine, "dht").state().name());
+            assertEquals("DISABLED", serviceNamed(engine, "peerServer").state().name());
+            assertNotNull(serviceNamed(engine, "dht").reason());
+            assertTrue(engine.proxyStatus().active());
+            assertTrue(engine.proxyStatus().blockingNow());
+            assertFalse(engine.proxyStatus().restartRequired());
+        } finally {
+            engine.shutdown();
+        }
+    }
+
+    @Test
+    void withNoProxyTheSameEngineStartsDhtAndTheInboundServer(@TempDir Path tempDir) {
+        TorrentEngine engine = new TorrentEngine(tempDir, 0, new NoOpListener(), true, true,
+                new InMemorySettingsStore(Settings.defaults()));
+        try {
+            assertTrue(engine.dhtStatus().enabled());
+            assertTrue(engine.peerServerPort().isPresent());
+            assertNull(serviceNamed(engine, "dht").reason());
+            assertFalse(engine.proxyStatus().active());
+        } finally {
+            engine.shutdown();
+        }
+    }
+
+    /** Someone who deliberately switched the block off keeps DHT and the inbound server even
+     * with a proxy - their call, and the UI says what that exposes. */
+    @Test
+    void aProxyWithTheBlockSwitchOffStillStartsDht(@TempDir Path tempDir) {
+        TorrentEngine engine = new TorrentEngine(tempDir, 0, new NoOpListener(), true, true,
+                new InMemorySettingsStore(proxySettings(false)));
+        try {
+            assertTrue(engine.dhtStatus().enabled());
+            assertTrue(engine.peerServerPort().isPresent());
+            assertTrue(engine.proxyStatus().active());
+            assertFalse(engine.proxyStatus().blockingNow());
+        } finally {
+            engine.shutdown();
+        }
+    }
+
+    /** Enabling a proxy on a running engine can't stop the DHT node that's already running - the
+     * status must say a restart is still needed, so nobody assumes they're protected. */
+    @Test
+    void enablingTheProxyOnARunningEngineReportsThatARestartIsRequired(@TempDir Path tempDir) {
+        InMemorySettingsStore store = new InMemorySettingsStore(Settings.defaults());
+        TorrentEngine engine = new TorrentEngine(tempDir, 0, new NoOpListener(), true, true, store);
+        try {
+            assertFalse(engine.proxyStatus().restartRequired());
+
+            store.update(proxySettings(true));
+
+            assertTrue(engine.proxyStatus().restartRequired());
+            assertFalse(engine.proxyStatus().blockingNow());
+            assertTrue(engine.dhtStatus().enabled(), "the DHT node that is already running stays up until restart");
+        } finally {
+            engine.shutdown();
+        }
+    }
+
+    /** End to end through the engine: a torrent's HTTP tracker announce is tunnelled through the
+     * configured proxy, and the proxy is handed the tracker's name to resolve. */
+    @Test
+    void aTorrentsTrackerAnnounceGoesThroughTheConfiguredProxy(@TempDir Path tempDir) throws Exception {
+        String realUrl = startFakeTrackerServer();
+        int trackerPort = trackerServer.getAddress().getPort();
+        try (FakeSocks5Proxy proxy = new FakeSocks5Proxy()) {
+            proxy.map("tracker.invalid", new InetSocketAddress("127.0.0.1", trackerPort));
+            Settings settings = Settings.defaults().withProxy(true, "127.0.0.1", proxy.port(), "", true);
+            TorrentEngine engine = new TorrentEngine(tempDir, 0, new NoOpListener(), false, false,
+                    new InMemorySettingsStore(settings));
+            try {
+                String url = realUrl.replace("127.0.0.1", "tracker.invalid");
+
+                TorrentSession session = engine.addTorrent(torrentBytes("proxied.bin", fill(20, 21), url)).session();
+
+                assertTrue(proxy.connectTargets.contains("tracker.invalid:" + trackerPort),
+                        "the announce must have been tunnelled: " + proxy.connectTargets);
+                session.stop();
+            } finally {
+                engine.shutdown();
+            }
+        }
+    }
+
+    @Test
+    void testProxyReportsThatNoneIsConfiguredWhenTheProxyIsOff(@TempDir Path tempDir) {
+        TorrentEngine engine = new TorrentEngine(tempDir, 0, new NoOpListener(), false, false,
+                new InMemorySettingsStore(Settings.defaults()));
+        try {
+            assertFalse(engine.testProxy().reachable());
+        } finally {
+            engine.shutdown();
+        }
+    }
+
+    @Test
+    void testProxyChecksTheSavedProxyEndToEnd(@TempDir Path tempDir) throws Exception {
+        try (FakeSocks5Proxy proxy = new FakeSocks5Proxy()) {
+            proxy.requiredUsername = "alice";
+            proxy.requiredPassword = "s3cret";
+            Settings settings = Settings.defaults().withProxy(true, "127.0.0.1", proxy.port(), "alice", true);
+            TorrentEngine engine = new TorrentEngine(tempDir, 0, new NoOpListener(), false, false,
+                    new InMemorySettingsStore(settings));
+            try {
+                assertFalse(engine.testProxy().reachable(), "no password saved yet");
+
+                engine.proxyConfig().setPassword("s3cret");
+
+                assertTrue(engine.testProxy().reachable());
+                assertTrue(engine.testProxy().udpSupported());
+            } finally {
+                engine.shutdown();
+            }
+        }
     }
 
     private static void awaitState(TorrentSession session, TorrentState expected) throws InterruptedException {

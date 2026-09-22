@@ -6,6 +6,8 @@ import { EMPTY, Observable, interval, startWith, switchMap } from 'rxjs';
 
 import { Peer, Tracker } from '../../../models/torrent.model';
 import { TorrentService } from '../../../services/torrent.service';
+import { FormatBytesPipe } from '../../../shared/format-bytes.pipe';
+import { activityDetail, activityLabel, comparePeersByActivity } from '../../../shared/peer-activity';
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -64,7 +66,7 @@ interface PeerSourceCount {
  */
 @Component({
   selector: 'app-tracker-details-dialog',
-  imports: [DialogModule],
+  imports: [DialogModule, FormatBytesPipe],
   templateUrl: './tracker-details-dialog.html',
   styleUrl: './tracker-details-dialog.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -87,6 +89,23 @@ export class TrackerDetailsDialog {
       return { label, connected: forSource.length, seeding: forSource.filter(isSeeding).length };
     });
   });
+
+  /** Every connected peer, same activity-first order as the Peers tab (design_docs/0076). This
+   * table is where the detail the compact Peers tab rows leave out lives: percent done,
+   * relevance, byte totals, choke/interest state. Totals rather than live rates - the dialog
+   * polls on its own and has no rate tracker; the Peers tab shows live speeds. */
+  readonly sortedPeers = computed(() => [...this.peers()].sort(comparePeersByActivity));
+
+  readonly activityLabel = activityLabel;
+  readonly activityDetail = activityDetail;
+
+  percent(fraction: number): string {
+    return `${Math.round(fraction * 100)}%`;
+  }
+
+  sourceLabel(source: Peer['source']): string {
+    return PEER_SOURCES.find((entry) => entry.key === source)?.label ?? source;
+  }
 
   lastAnnouncedDisplay(tracker: Tracker): string {
     return tracker.lastAnnouncedAt ? (this.datePipe.transform(tracker.lastAnnouncedAt, 'short') ?? '—') : '—';

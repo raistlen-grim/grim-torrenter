@@ -58,3 +58,13 @@
 .tracker-alarm-status {
   color: var(--alarm);
 }
+
+/* Eight columns can outgrow a narrow viewport - scroll the table rather than the whole dialog. */
+.table-scroll {
+  overflow-x: auto;
+}
+
+.peer-address {
+  font-family: monospace;
+  white-space: nowrap;
+}

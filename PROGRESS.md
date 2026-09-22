@@ -905,6 +905,142 @@ complete**, per the phased scope in [[0009-phased-scope]]:
   under pressure and the badges are always fully visible, pinned to the right edge per the user's
   own follow-up request.
 
+- **Per-file download priorities / selective download (2026-09-19)** — picked after a review of
+  missing-feature gaps (the Files tab previously had no way to skip files in a multi-file torrent).
+  Each file is `SKIP`/`LOW`/`MEDIUM` (default)/`HIGH`; `SKIP` is a distinct concept from `LOW` (user's
+  call - low still gets fetched eventually, skip may never start), chosen after adding via the Files
+  tab, data already on disk for a newly skipped file is kept. Completion is now "every *wanted* piece
+  verified" (`PieceManager.isWantedComplete()`), so a partial selection reaches `SEEDING`;
+  `progress()`/`bytesRemaining()`/per-peer relevance are measured against the wanted set, and a piece's
+  tier is the highest priority among the files it overlaps (a boundary piece shared with a skipped file
+  is still downloaded). New `SEEDING` -> `DOWNLOADING` transition when a file is un-skipped on a
+  completed torrent. Persisted in a new `.grimtorrenter-file-priorities` config-side marker (sparse
+  `index=PRIORITY` lines), threaded into `create()`/`restoreAsync()` via new widest overloads rather than
+  a setter so `wasCompleteOnRestore` sees the right wanted set. `PUT /api/torrents/{h}/files/priorities`
+  takes the whole priority array and returns the updated file list; `GET .../files` gains `priority`.
+  Files tab gets a native per-row priority select (skipped rows dimmed). Setting every file to `SKIP`
+  is rejected (400). Test-verified (`mvn test` and the frontend build pass, 2026-09-19): `PieceManagerFilePrioritiesTest` (tiers,
+  selection order, shared pieces, wanted-complete), new `TorrentSessionTest` cases (partial seed via
+  restore, `SEEDING` <-> `DOWNLOADING` on un-skip/re-skip, validation), new `TorrentEngineTest` cases
+  (marker sparse format, restart survival, tolerant/malformed/all-skipped marker read, validation),
+  and new `TorrentResourceTest` cases (default `MEDIUM`, `PUT` round trip, 400s, 404). No frontend
+  test for the Files tab select. Deferred: choosing files at add time (needs "add paused"), showing wanted-vs-total
+  size in the list/header. ([[0075-file-priorities]])
+
+- **Peer `activity` field (2026-09-19)** — groundwork for a compact Peers-tab redesign (one line
+  per peer, a single health marker in place of the four choke/interest icons, active peers sorted
+  first, per-peer detail moved into the tracker/peer-source dialog); the field has value to any
+  client regardless of the UI chosen. `PeerView.activity` is `ACTIVE` (a block moved either way
+  within the last 10s), `WAITING` (nothing moving, but we're interested in them) or `IDLE`,
+  derived by the backend from a new last-transfer timestamp on `PeerConnection` so a client never
+  has to recompute it. New `PeerConnectionTest` case covers IDLE -> WAITING -> ACTIVE -> back to
+  WAITING past the window. Test-verified (`mvn test` passes, 2026-09-19). ([[0076-peer-activity]])
+- **Peers tab redesign: one line per peer (2026-09-19)** — built on the `activity` field above.
+  Each row is now `[activity marker] address [in/source/µ badges] [↓/↑ speeds while moving]` in a fixed-column grid (badges and speeds align on every row; both speeds stack inside their column rather than widening it);
+  the header row, Done column and four choke/interest icons are gone. Rows sort active-first, then
+  by lifetime bytes moved. The tracker/peer-source dialog gained a per-peer table (status,
+  address, done, relevance, downloaded/uploaded totals, source, connection type) carrying the
+  detail the row no longer shows; choke/interest wording lives in the marker's tooltip
+  (`shared/peer-activity.ts`). Confirmed in the browser by the user (including the fixed-column
+  layout fix after the first look). ([[0066-peer-diagnostics]]'s own 2026-09-19 addendum)
+
+- **Labels (2026-09-19)** — picked from a missing-feature review. A managed, engine-wide list of
+  labels, each with an immutable UUID `id` and a mutable display `name` (the user's own design: a
+  torrent stores ids, so a rename touches no torrent); torrents carry any number of them. New
+  engine `label` package (`Label`, `LabelRegistry` - one plain-text `.grimtorrenter-labels` file,
+  atomic writes, tolerant load, names 1-32 chars/no control characters/case-insensitively unique,
+  caps of 200 labels and 20 per torrent), a per-torrent `.grimtorrenter-label-ids` marker, and
+  `TorrentEngine.setTorrentLabels()`/`deleteLabel()` (delete cascades to every loaded torrent;
+  dead ids in unloaded markers are dropped on read). REST: `GET/POST /api/labels`, `PUT/DELETE
+  /api/labels/{id}` (400 invalid, 409 duplicate, 404 unknown), `PUT /api/torrents/{h}/labels`,
+  `TorrentView.labelIds`; the label list rides the 2s snapshot tick as a `"labels"` WebSocket
+  message so a second browser sees changes. Frontend: a sidebar "Labels" group (filter with
+  counts, manage button), a manage dialog (create/rename/delete, inline delete confirm), a row
+  context-menu "Labels…" dialog (checkboxes plus create-and-tick), up to two label chips (+N) after
+  the name in the row (also while the details panel is docked), and search matching label names.
+  Assigning at add time / from the watch folder, colors, per-label behavior and bulk assignment are
+  deferred. Follow-up after first use (2026-09-19): an active-filters chips strip (status + labels,
+  each removable, plus Clear) and multi-label filtering (click toggles; Any/All match switch appears
+  with two or more selected), then moved inline onto the toolbar row so selecting a filter never
+  pushes the list down. Test-verified (`mvn test`, the frontend build) and confirmed in the browser
+  by the user, including the docked-panel chips and the spacing fix. ([[0077-labels]])
+
+- **IP blocklist (2026-09-20)** — first of two slices picked from the missing-feature review (proxy
+  support is the second, still to design; established clients - libtorrent/qBittorrent/Transmission -
+  were surveyed for that one first). New engine `blocklist` package: `IpRangeSet` (sorted, merged
+  IPv4 ranges in two `long[]`, binary search, lock-free volatile swap on reload), `BlocklistParser`
+  (auto-detects PeerGuardian .p2p, eMule .dat, plain ranges, CIDR and single IPs, transparent gzip,
+  comments/garbage lines skipped and counted; refuses a list past 1,000,000 entries or 64 MB
+  decompressed rather than truncating), and `Blocklist` (one source field - a file path or an
+  `http(s)://` URL, weekly refresh by default, download capped at 32 MB with connect/header/
+  transfer deadlines, last good download cached so a restart or being offline stays protected, a
+  failed refresh keeps the previous list, retries gated 15 min). Enforced at every entry point:
+  `TorrentSession.recordKnownPeers()` (tracker/DHT/PEX/LSD), `fillConnections()`, both inbound
+  accept methods, `PeerServer` (before a byte is read, so no MSE cost), and magnet metadata
+  candidate rounds; on a reload every session drops now-blocked known addresses and closes live
+  connections to them. New live `Settings` fields `blocklistEnabled`/`blocklistSource`/
+  `blocklistRefreshHours` (boxed so an absent field takes the default while an explicit 0 means
+  "never refresh"), `GET /api/blocklist` + `POST /api/blocklist/reload`, events
+  `BLOCKLIST_UPDATED`/`BLOCKLIST_FAILED`, and a new Settings "Blocklist" group (toggle, source,
+  refresh, live status and a Reload button). A range-set bug (addresses from 128.0.0.0 up sorted
+  before lower ones because of the sign bit) was caught in review and has a regression test.
+  Test-verified (`mvn test` and the frontend build pass, 2026-09-20) and the Settings group and
+  the Events entries confirmed in the browser by the user. Deferred: filtering DHT nodes, IPv6,
+  per-range hit stats. (Fetching the list through a proxy is now done - see the proxy entry below.)
+  ([[0078-ip-blocklist]])
+
+- **SOCKS5 proxy (2026-09-20)** — second slice of the proxy/blocklist item; established clients
+  (libtorrent/qBittorrent/Transmission) were surveyed first, which turned up one change to the
+  original plan: most public torrents announce mainly to UDP trackers, so a TCP-only proxy would
+  leave them with almost no peers - UDP trackers therefore go through SOCKS5 UDP ASSOCIATE. New
+  engine `proxy` package: `Socks5` (a hand-written client - CONNECT, username/password auth, UDP
+  relay, and a `test()` for the settings page; hostnames always go to the proxy unresolved, no
+  local DNS leak, and it never falls back to a direct connection), `MiniHttp` (HTTP/1.0 GET over the
+  tunnel with TLS + hostname verification, bounded body/redirects, an overall deadline - needed
+  because the JDK's HTTP client can't use SOCKS), and `ProxyConfig` (live host/port/username from
+  `Settings`; the **password is not a settings field** - its own owner-only file, write-only over the
+  API, never echoed). Routed through: outbound peer connections (`PeerConnection.connect`, incl. the
+  MSE retry and magnet metadata fetches), `HttpTrackerClient`, `UdpTrackerClient` (refactored onto a
+  small datagram-transport interface), and the blocklist download. **"Block anything that can't use
+  the proxy" defaults on** (confirmed with the user): with a proxy active it keeps DHT, µTP, LSD and
+  the inbound peer server from starting at all - restart-required, so `GET /api/proxy` reports
+  `restartRequired` and the UI says plainly that until a restart those still use the real address;
+  the Services page shows them disabled with the reason. New settings `proxyEnabled`/`proxyHost`/
+  `proxyPort`/`proxyUsername`/`proxyBlockUnsupported` (boxed so an absent field defaults to
+  blocking), `GET /api/proxy`, `PUT/DELETE /api/proxy/password`, `POST /api/proxy/test`, and a
+  Settings "Proxy" group (with a separate immediate password save and a Test button). Test-verified
+  (`mvn test` and the frontend build pass, 2026-09-20; the tests caught one real bug - the SOCKS5
+  request buffer was a byte too long, so every proxied connection would have started with a stray
+  zero byte - fixed): a real fake SOCKS5 proxy (`FakeSocks5Proxy`, TCP + UDP relay + auth)
+  drives `Socks5Test`/`MiniHttpTest`, proxied announces for both tracker clients, proxied peer
+  connections (and that a dead proxy never falls back to direct), engine flags/status, and the REST
+  resource. Not yet tried against a real proxy or in the browser. Deferred: SOCKS4/HTTP proxies,
+  DHT/µTP over the relay, applying the block switch without a restart. ([[0079-socks5-proxy]])
+
+- **Fixes found in real use while building the above (2026-09-19/20)**, each documented where it
+  belongs: the row's modal dialogs (Seeding limits, Torrent limits, and the new Labels dialog) were
+  mounted in the actions cell, which the docked details panel hides with `display: none`, so they
+  silently did nothing while the panel was open - moved to the always-visible first cell
+  ([[0054-seeding-limits]]/[[0072-per-torrent-limits]] addenda); `TorrentList.selectedInfoHash` threw
+  when the page was loaded or refreshed directly on `/torrents/:infoHash` (the child route's
+  `snapshot` isn't populated yet) ([[0043-app-shell-and-filtering]]'s addendum); the search field was
+  declared 210px wide but painted ~25px wider, spilling over the filter chips placed next to it
+  ([[0077-labels]]); and a range-set sign-bit ordering bug (blocklist) and a SOCKS5 request buffer
+  one byte too long (proxy) were both caught by their own tests before shipping.
+
+- **Failed first announce now retries by itself; error text tamed (2026-09-20)** — found by the user
+  while trying the proxy: bad proxy credentials plus a restart put every torrent in `ERROR` (DHT is off
+  under the proxy's block switch, so there was no fallback), and switching the proxy off again did
+  nothing - `ERROR` from a failed first announce was terminal, even for a fully downloaded seeder.
+  The session now retries that specific failure in the background (30s doubling to 15 min, live
+  settings re-read each time, cancelled by pause/remove, one thread per session) and clears the stale
+  `lastError` on recovery; `HttpTrackerClient` error messages no longer include the info-hash query;
+  the row's error text now wraps, is capped at two lines and carries the full text in its tooltip.
+  Changing the proxy host/port/username/enabled flag (via settings) or its password wakes the retry
+  immediately instead of waiting out the backoff (`retryStartNow()`/`retryFailedStarts()`). New
+  `TorrentSessionTest` cases cover recovery, the immediate wake-up and cancel-on-pause. Not yet run
+  or seen in the browser. ([[0036-dht-backstop-for-tracker-bearing-torrents]]'s 2026-09-20 addendum)
+
 **Not yet built** (the rest of Phase 3):
 
 - Multiple/day-of-week-specific rate-limit schedule rules — the one remaining natural addition
@@ -1032,7 +1168,12 @@ existence before starting it rather than after) and a genuinely new feature shap
 magnets as a first-class REST-visible/restart-durable state, which also produced a new standing
 design consideration (thin frontend) alongside the existing stability one. Per-torrent
 bandwidth/connection limits and the tracker/peer-source details dialog (both picked from
-`TODO.md`, 2026-09-12) are also now done:
+`TODO.md`, 2026-09-12) are also now done. So is the whole µTP (BEP 29) transport (five slices plus
+the Peers-tab connection-type badge) and, from a missing-feature review on 2026-09-19/20: per-file
+download priorities/selective download ([[0075-file-priorities]]), a backend-computed peer
+`activity` field and the one-line-per-peer Peers tab built on it ([[0076-peer-activity]]), labels
+with stable ids and multi-label Any/All filtering ([[0077-labels]]), an IP blocklist
+([[0078-ip-blocklist]]) and SOCKS5 proxy support ([[0079-socks5-proxy]]). What's left:
 
 1. **Per-tracker independent announce scheduling** — the more-correct alternative to the current
    shared-cycle concurrent-announce model ([[0022-multi-tracker-fallback]]), deferred as
@@ -1050,3 +1191,11 @@ bandwidth/connection limits and the tracker/peer-source details dialog (both pic
 5. The rate-limiting settings group's one remaining natural addition (a multi-rule schedule,
    per-torrent overrides now done via [[0072-per-torrent-limits]]) — pushed to the back of the
    backlog (2026-08-25), marginal real-world value relative to the items above.
+6. **Remaining items from the 2026-09-19 missing-feature review** (all unscoped, see `TODO.md`): force
+   recheck / force reannounce, choosing files (and labels) at add time - which needs an "add paused"
+   flow and, for a magnet, resolved metadata first - and having the watch folder assign a label from
+   its subfolder name; RSS auto-download; moving a torrent's download location.
+7. **Per-torrent priority / download queueing** — parked as "if we need it" (2026-09-19); the agreed
+   sketch is recorded in `TODO.md` so it can be picked up without redoing the analysis.
+8. **Proxy/blocklist follow-ups**: SOCKS4/HTTP proxies, DHT and µTP over the SOCKS5 UDP relay, applying
+   the proxy's block switch without a restart, IPv6 ranges and DHT-node filtering for the blocklist.

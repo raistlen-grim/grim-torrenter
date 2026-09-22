@@ -3,6 +3,8 @@ package com.grimtorrenter.app;
 import com.grimtorrenter.engine.engine.TorrentEngine;
 import com.grimtorrenter.engine.magnet.MagnetLink;
 import com.grimtorrenter.engine.metainfo.InfoHash;
+import com.grimtorrenter.engine.piece.FilePriorities;
+import com.grimtorrenter.engine.piece.FilePriority;
 import com.grimtorrenter.engine.torrent.SeedingLimitOverride;
 import com.grimtorrenter.engine.torrent.TorrentLimitOverride;
 import com.grimtorrenter.engine.torrent.TorrentSession;
@@ -73,6 +75,39 @@ public class TorrentResource {
     @Produces(MediaType.APPLICATION_JSON)
     public List<FileView> files(@PathParam("infoHash") String infoHashHex) {
         return requireSession(infoHashHex).files().stream().map(FileView::from).toList();
+    }
+
+    /** Body is one priority name (SKIP/LOW/MEDIUM/HIGH) per file, in the same order GET
+     * .../files returns them - whole-array rather than per-file so a client can express "skip
+     * everything except X" atomically. Responds with the updated file list so the caller never
+     * has to reconcile anything itself. A wrong-length array, an unknown name, or every file
+     * skipped is a 400. See design_docs/0075. */
+    @PUT
+    @Path("/{infoHash}/files/priorities")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    public List<FileView> updateFilePriorities(@PathParam("infoHash") String infoHashHex,
+                                               List<String> priorityNames) {
+        InfoHash infoHash = parseInfoHash(infoHashHex);
+        if (priorityNames == null) {
+            throw new BadRequestException("Expected a JSON array of priority names");
+        }
+        FilePriorities priorities;
+        try {
+            priorities = new FilePriorities(priorityNames.stream().map(FilePriority::valueOf).toList());
+        } catch (IllegalArgumentException | NullPointerException e) {
+            throw new BadRequestException("Unknown file priority - expected SKIP, LOW, MEDIUM or HIGH");
+        }
+        boolean found;
+        try {
+            found = torrentEngine.setFilePriorities(infoHash, priorities);
+        } catch (IllegalArgumentException e) {
+            throw new BadRequestException(e.getMessage());
+        }
+        if (!found) {
+            throw new NotFoundException("Torrent not found: " + infoHashHex);
+        }
+        return files(infoHashHex);
     }
 
     /** See design_docs/0031 - transfer rate, % piece availability, and client-name
@@ -181,6 +216,30 @@ public class TorrentResource {
         InfoHash infoHash = parseInfoHash(infoHashHex);
         torrentEngine.setTorrentLimits(infoHash, override);
         return requireSession(infoHashHex).torrentLimits();
+    }
+
+    /** Body is the torrent's complete list of label ids (ids from GET /api/labels, not names);
+     * responds with the updated torrent. An unknown id, or more labels than the per-torrent cap,
+     * is a 400. See design_docs/0077. */
+    @PUT
+    @Path("/{infoHash}/labels")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    public TorrentView updateLabels(@PathParam("infoHash") String infoHashHex, List<String> labelIds) {
+        InfoHash infoHash = parseInfoHash(infoHashHex);
+        if (labelIds == null || labelIds.contains(null)) {
+            throw new BadRequestException("Expected a JSON array of label ids");
+        }
+        boolean found;
+        try {
+            found = torrentEngine.setTorrentLabels(infoHash, labelIds);
+        } catch (IllegalArgumentException e) {
+            throw new BadRequestException(e.getMessage());
+        }
+        if (!found) {
+            throw new NotFoundException("Torrent not found: " + infoHashHex);
+        }
+        return TorrentView.from(requireSession(infoHashHex));
     }
 
     private TorrentSession requireSession(String infoHashHex) {

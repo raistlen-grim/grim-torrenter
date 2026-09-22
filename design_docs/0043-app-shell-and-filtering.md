@@ -267,3 +267,14 @@ toolbar action needs; affected rows still visibly update via the next state-chan
   `resource-usage` section above.
 - **A memory/CPU usage graph over time** — rejected for now, no backing time-series data
   exists on either side yet; see the `resource-usage` section above.
+
+**Addendum (2026-09-19): a second sidebar filter, and a fix in the row-selected highlight.**
+- The sidebar gained a **Labels** group ([[0077-labels]]) beside the status nav. Labels are a
+  separate, additive filter: a label filter and the status filter AND together, several labels can
+  be selected (combined **Any**, the default, or **All**), and the toolbar's search box now also
+  matches label names (placeholder "Filter by name or label"). Because the two groups look like one
+  menu but filter independently, an inline strip of removable chips on the toolbar row shows every
+  active status/label filter, with a "Clear" - see 0077's own addendum for why and how.
+- Fixed a latent bug in `TorrentList.selectedInfoHash` (the row-selected highlight above): loading
+  or refreshing directly on `/torrents/:infoHash` threw while constructing the list, because the
+  child route's `snapshot` isn't populated yet at that point. Both reads now use `snapshot?.`.

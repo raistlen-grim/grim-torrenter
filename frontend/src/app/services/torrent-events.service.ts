@@ -1,17 +1,18 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 
 import { LibraryEvent } from '../models/events.model';
-import { Torrent, TorrentWithRate } from '../models/torrent.model';
+import { Label, Torrent, TorrentWithRate } from '../models/torrent.model';
 import { RateTracker } from '../shared/rate-tracker';
 import { AuthService } from './auth.service';
+import { LabelService } from './label.service';
 import { TorrentService } from './torrent.service';
 
-/** type is "state-changed" (payload: a single Torrent), "snapshot" (payload: Torrent[]), or
- * "event" (payload: a single LibraryEvent, design_docs/0055) - matches the backend's
- * TorrentEventMessage envelope. */
+/** type is "state-changed" (payload: a single Torrent), "snapshot" (payload: Torrent[]),
+ * "event" (payload: a single LibraryEvent, design_docs/0055), or "labels" (payload: the full
+ * Label[], design_docs/0077) - matches the backend's TorrentEventMessage envelope. */
 interface TorrentEventMessage {
-  type: 'state-changed' | 'snapshot' | 'event';
-  payload: Torrent | Torrent[] | LibraryEvent;
+  type: 'state-changed' | 'snapshot' | 'event' | 'labels';
+  payload: Torrent | Torrent[] | LibraryEvent | Label[];
 }
 
 /** Caps how many live-pushed library events this tab keeps in memory - a long-running tab
@@ -56,6 +57,7 @@ export const PRIMARY_RATE_WINDOW_MS = 15_000;
 export class TorrentEventsService {
   private readonly torrentService = inject(TorrentService);
   private readonly authService = inject(AuthService);
+  private readonly labelService = inject(LabelService);
 
   private readonly torrentsByHash = signal(new Map<string, Torrent>());
   private readonly ratesByHash = signal(new Map<string, Rates>());
@@ -78,12 +80,17 @@ export class TorrentEventsService {
   });
 
   private socket?: WebSocket;
+  /** Set while waiting to reconnect after a close. connect() must treat that wait as "already
+   * connecting" - otherwise a second caller (app start, then login, both call it) during the gap
+   * starts a second, independent reconnect loop, and a flapping connection multiplies. */
+  private reconnectTimer?: ReturnType<typeof setTimeout>;
 
   connect(): void {
-    if (this.socket) {
+    if (this.socket || this.reconnectTimer !== undefined) {
       return;
     }
     this.torrentService.list().subscribe((list) => this.replaceAll(list));
+    this.labelService.load();
     this.openSocket();
   }
 
@@ -120,15 +127,23 @@ export class TorrentEventsService {
     const subprotocols = token ? ['bearer', token] : undefined;
     this.socket = new WebSocket(`${protocol}://${location.host}/ws/torrents`, subprotocols);
     this.socket.onmessage = (event) => this.handleMessage(JSON.parse(event.data));
-    this.socket.onclose = () => {
+    this.socket.onclose = (event) => {
+      // Code distinguishes who ended it: 1006 = dropped without a close frame (network/proxy),
+      // 1008/1000 = the server closed it deliberately (e.g. rejected auth token).
+      console.debug(`[events] socket closed, code=${event.code} reason=${event.reason || '-'}`);
       this.socket = undefined;
-      setTimeout(() => this.openSocket(), RECONNECT_DELAY_MS);
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = undefined;
+        this.openSocket();
+      }, RECONNECT_DELAY_MS);
     };
   }
 
   private handleMessage(message: TorrentEventMessage): void {
     if (message.type === 'snapshot') {
       this.replaceAll(message.payload as Torrent[]);
+    } else if (message.type === 'labels') {
+      this.labelService.applyServerList(message.payload as Label[]);
     } else if (message.type === 'event') {
       this.recentLibraryEvents.update((events) =>
         [message.payload as LibraryEvent, ...events].slice(0, MAX_BUFFERED_LIBRARY_EVENTS),

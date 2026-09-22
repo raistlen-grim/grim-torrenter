@@ -130,3 +130,13 @@ accepted.
 - **Extending base32-magnet support to derive a client-side `infoHash`** — out of scope here;
   the existing duplicate-detection gap for the same reason was left as-is, and this change
   just inherits (not worsens) that same limitation rather than fixing it as a side effect.
+
+## Addendum: failure toast restored (2026-09-21)
+
+[[0070-pending-magnet-as-first-class-torrent]] made a magnet a real `FETCHING_METADATA` row, which
+removed the `pendingInfoHashEffect` this doc describes - so a failed fetch silently dropped the
+row, leaving only the Events-page entry. `TorrentList` now has an effect that toasts every live
+`MAGNET_ADD_FAILED` event's `message` (severity error). A timestamp cursor, initialised to the
+newest buffered event, prevents replaying old failures when the component is re-created. Toasts
+only show while the torrent list is mounted; a fully client-agnostic notification would be a
+separate decision. Stability: no new growth - the cursor is one string.

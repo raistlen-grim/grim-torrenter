@@ -8,8 +8,11 @@
  * null even when the magnet had a display name - that infoHash was never actually added as a
  * real torrent, so the Events page can't safely render it as a link to one; any display name
  * is folded into the message field instead. TRACKER_UNREACHABLE/TRACKER_RECOVERED
- * (design_docs/0055's own addendum) are torrent-scoped like every type above them, with the
- * specific tracker URL folded into the message field. */
+ * (design_docs/0055's own addendum, revised 2026-09-21) are engine-wide (null infoHash/
+ * torrentName) - one pair per tracker URL however many torrents use it - with the specific
+ * tracker URL folded into the message field. BLOCKLIST_UPDATED/BLOCKLIST_FAILED
+ * (design_docs/0078) are engine-wide (null infoHash/torrentName), with the range count and
+ * source, or the failure reason, in the message field. */
 export type EventType =
   | 'ADDED'
   | 'COMPLETED'
@@ -22,7 +25,9 @@ export type EventType =
   | 'MAGNET_ADD_FAILED'
   | 'TRACKER_UNREACHABLE'
   | 'TRACKER_RECOVERED'
-  | 'LSD_UNAVAILABLE';
+  | 'LSD_UNAVAILABLE'
+  | 'BLOCKLIST_UPDATED'
+  | 'BLOCKLIST_FAILED';
 
 /** Matches the backend's LibraryEvent record - a curated library-management feed (torrent
  * added/completed/errored/removed, an auto-pause from a reached seeding limit, the app

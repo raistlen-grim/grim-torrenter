@@ -2,12 +2,22 @@
   <p class="empty-message">No files yet.</p>
 } @else {
   <div class="file-list">
-    @for (file of files(); track filePath(file)) {
-      <div class="file-row">
+    @for (file of files(); track filePath(file); let i = $index) {
+      <div class="file-row" [class.file-skipped]="file.priority === 'SKIP'">
         <i class="pi file-icon" [class]="fileTypeIcon(file.pathSegments)" aria-hidden="true"></i>
         <span class="file-path" [title]="filePath(file)">{{ filePath(file) }}</span>
         <span class="file-size tabular-nums">{{ file.length | formatBytes }}</span>
         <span class="file-percent tabular-nums">{{ filePercent(file) }}%</span>
+        <select
+          #prioritySelect
+          class="file-priority"
+          [attr.aria-label]="'Priority for ' + filePath(file)"
+          (change)="onPriorityChange(i, $any(prioritySelect.value), prioritySelect)"
+        >
+          @for (option of priorityOptions; track option.value) {
+            <option [value]="option.value" [selected]="option.value === file.priority">{{ option.label }}</option>
+          }
+        </select>
       </div>
     }
   </div>

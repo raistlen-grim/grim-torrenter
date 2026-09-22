@@ -38,6 +38,12 @@ public class TorrentSnapshotScheduler {
         try {
             String json = objectMapper.writeValueAsString(new TorrentEventMessage("snapshot", views));
             TorrentWebSocket.broadcast(json);
+            // The label list rides the same tick (design_docs/0077) so another open browser
+            // sees a create/rename/delete within ~2s without a mutation-time hook - tiny
+            // payload, and torrents carry ids only, so a rename changes nothing in the
+            // snapshot above.
+            TorrentWebSocket.broadcast(objectMapper.writeValueAsString(
+                    new TorrentEventMessage("labels", torrentEngine.labels().list())));
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("Failed to serialize torrent snapshot", e);
         }

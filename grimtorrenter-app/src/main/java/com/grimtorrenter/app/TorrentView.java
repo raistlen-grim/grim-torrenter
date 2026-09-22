@@ -4,6 +4,7 @@ import com.grimtorrenter.engine.engine.TorrentEngine;
 import com.grimtorrenter.engine.torrent.TorrentSession;
 
 import java.time.Instant;
+import java.util.List;
 
 public record TorrentView(
         String infoHash,
@@ -31,7 +32,11 @@ public record TorrentView(
         long completedAtEpochMillis,
         /** Bytes received and discarded to a failed piece hash check, lifetime - see
          * TorrentSession.wastedBytes()'s own Javadoc. See design_docs/0066. */
-        long wastedBytes
+        long wastedBytes,
+        /** Ids of the labels on this torrent - ids, not names; the names come from GET
+         * /api/labels (and the "labels" WebSocket message), so a rename never changes a torrent
+         * row. Empty for a pending magnet. See design_docs/0077. */
+        List<String> labelIds
 ) {
     /** bytesReceived (raw, includes not-yet-verified data - see
      * TorrentSession.bytesReceived()) is separate from bytesDownloaded (verified-complete
@@ -85,7 +90,8 @@ public record TorrentView(
                 session.lifetimeUploadedBytes(),
                 session.timeActiveMillis(),
                 session.completedAtEpochMillis(),
-                session.wastedBytes());
+                session.wastedBytes(),
+                session.labelIds());
     }
 
     /** A magnet still fetching metadata, rendered through the exact same DTO shape a resolved
@@ -117,6 +123,7 @@ public record TorrentView(
                 0,
                 0,
                 0,
-                0);
+                0,
+                List.of());
     }
 }

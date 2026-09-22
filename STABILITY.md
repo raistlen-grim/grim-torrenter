@@ -239,6 +239,33 @@ scrutinized for stability implications before shipping. See [[0017-torrent-sessi
 2026-09-06 corrections (both same-day) for the full detail, and `TODO.md`'s matching
 Performance entry for the end-to-end investigation this was found during.
 
+## Features added since, each with its bounds stated up front (2026-09-19/20)
+
+The practice above was applied to each of the features that followed the audit, so their resource
+and hostile-input behavior is recorded in their own design docs rather than discovered later. The
+short version, with the doc that has the detail:
+
+- **Per-file priorities** ([[0075-file-priorities]]): one byte per piece, replaced wholesale under
+  `PieceManager`'s existing `ReentrantLock` - no new lock, nothing that grows over time.
+- **Labels** ([[0077-labels]]): hard caps (200 labels, 20 per torrent), atomic file writes, names
+  that can't contain a newline to forge a second record, and ids from a client only accepted if
+  they already exist.
+- **IP blocklist** ([[0078-ip-blocklist]]): a 32 MB download cap, a 64 MB decompressed cap (a gzip
+  bomb is refused), a 1,000,000-entry cap that *fails* rather than truncates, deadlines on the
+  transfer, one load at a time, and lock-free binary-search lookups on the connection path. A
+  failed refresh always leaves the previous list in force.
+- **SOCKS5 proxy** ([[0079-socks5-proxy]]): every proxied connection is closed on every exit path,
+  a UDP association lives only for one announce, proxied HTTP bodies/headers/redirects are bounded
+  with an overall deadline enforced by closing the socket, and a failed proxy fails the connection
+  rather than falling back to a direct one. Its named privacy failure modes (a restart is needed
+  for the "block anything that can't use the proxy" switch) are surfaced in the UI, not hidden.
+- **Peer activity** ([[0076-peer-activity]]): one volatile timestamp per connection.
+
+Two of these were caught by their own tests before shipping - an address-range sort that broke for
+addresses above 128.0.0.0, and a SOCKS5 request one byte too long that would have prefixed every
+proxied stream with junk - a small reminder that the bounds above are only as good as the tests
+that exercise them.
+
 ## Where this leaves things
 
 Every finding from the audit - unbounded file descriptors, unbounded verification bursts, no

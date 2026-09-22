@@ -1,5 +1,6 @@
 package com.grimtorrenter.engine.peer;
 
+import com.grimtorrenter.engine.blocklist.IpFilter;
 import com.grimtorrenter.engine.metainfo.InfoHash;
 import com.grimtorrenter.engine.mse.EncryptionMode;
 import com.grimtorrenter.engine.mse.MseHandshake;
@@ -59,6 +60,15 @@ public final class PeerServer implements AutoCloseable {
     private final Supplier<Collection<InfoHash>> activeInfoHashes;
     private volatile boolean closed;
 
+    /** The engine-wide IP blocklist (design_docs/0078) - checked before reading a single byte, so
+     * a blocked peer never costs an MSE Diffie-Hellman exchange. Set after construction by
+     * TorrentEngine; IpFilter.NONE until then. */
+    private volatile IpFilter ipFilter = IpFilter.NONE;
+
+    public void setIpFilter(IpFilter filter) {
+        this.ipFilter = filter;
+    }
+
     /** Same as the four-arg constructor below but with encryption disabled - for every
      * caller that predates MSE and doesn't need it (tests, mainly). See design_docs/0052. */
     public PeerServer(int port, Function<InfoHash, Optional<IncomingConnectionHandler>> handlerLookup)
@@ -104,6 +114,12 @@ public final class PeerServer implements AutoCloseable {
     }
 
     private void handleConnection(Socket socket) {
+        IpFilter filter = ipFilter;
+        if (filter.isBlocked(socket.getInetAddress())) {
+            filter.recordBlocked();
+            closeQuietly(socket);
+            return;
+        }
         try {
             socket.setSoTimeout(HANDSHAKE_TIMEOUT_MS);
             EncryptionMode mode = encryptionMode.get();

@@ -133,4 +133,19 @@ export interface Settings {
    * fresh on every connection attempt. Same no-unlimited-value, silently-normalized-below-1
    * treatment as the other tunable interval fields above. Default 2s. */
   utpConnectTimeoutSeconds: number;
+  /** design_docs/0078 - the IP blocklist. `blocklistSource` is a local file path or an
+   * http(s):// URL (kept even while disabled); `blocklistRefreshHours` is how often a URL is
+   * re-downloaded, 0 meaning never automatically. All three are live. */
+  blocklistEnabled: boolean;
+  blocklistSource: string;
+  blocklistRefreshHours: number;
+  /** design_docs/0079 - a SOCKS5 proxy for outbound traffic. Host/port/username apply to the next
+   * connection; the password is deliberately not part of this record (see ProxyService). With a
+   * proxy enabled, proxyBlockUnsupported (default true) turns off DHT, uTP, LSD and inbound
+   * connections - restart-required, like their own toggles. */
+  proxyEnabled: boolean;
+  proxyHost: string;
+  proxyPort: number;
+  proxyUsername: string;
+  proxyBlockUnsupported: boolean;
 }

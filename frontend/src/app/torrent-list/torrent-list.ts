@@ -5,6 +5,7 @@ import {
   DestroyRef,
   ElementRef,
   computed,
+  effect,
   inject,
   signal,
   viewChild,
@@ -23,10 +24,12 @@ import { TooltipModule } from 'primeng/tooltip';
 import { filter, map } from 'rxjs';
 
 import { TorrentWithRate } from '../models/torrent.model';
+import { LabelService } from '../services/label.service';
 import { TorrentEventsService } from '../services/torrent-events.service';
 import {
   STATUS_FILTER_LABELS,
   TorrentFilterService,
+  matchesLabelFilter,
   matchesSearchText,
   matchesStatusFilter,
 } from '../services/torrent-filter.service';
@@ -218,6 +221,7 @@ export class TorrentList {
   private readonly document = inject(DOCUMENT);
   private readonly destroyRef = inject(DestroyRef);
   readonly filter = inject(TorrentFilterService);
+  private readonly labelService = inject(LabelService);
 
   private readonly formatBytes = new FormatBytesPipe();
 
@@ -245,9 +249,14 @@ export class TorrentList {
   readonly selectedInfoHash = toSignal(
     this.router.events.pipe(
       filter((e): e is NavigationEnd => e instanceof NavigationEnd),
-      map(() => this.route.firstChild?.snapshot.paramMap.get('infoHash') ?? null),
+      map(() => this.route.firstChild?.snapshot?.paramMap.get('infoHash') ?? null),
     ),
-    { initialValue: this.route.firstChild?.snapshot.paramMap.get('infoHash') ?? null },
+    // `snapshot?.` on both reads: when this component is created while a child route is already
+    // being activated (a page load or refresh directly on /torrents/:infoHash), firstChild
+    // exists but its snapshot isn't populated yet, so a plain `.snapshot.paramMap` throws in
+    // this initializer and the whole list fails to construct. The NavigationEnd stream above
+    // fills in the real value as soon as that navigation finishes.
+    { initialValue: this.route.firstChild?.snapshot?.paramMap.get('infoHash') ?? null },
   );
 
   /** Navigating away is what actually closes the drawer - isDetailOpen recomputes false as
@@ -262,8 +271,29 @@ export class TorrentList {
   readonly sortDirection = signal<SortDirection>('asc');
 
   readonly hasActiveFilter = computed(
-    () => this.filter.statusFilter() !== 'all' || this.filter.searchText().trim() !== '',
+    () =>
+      this.filter.statusFilter() !== 'all' ||
+      this.filter.searchText().trim() !== '' ||
+      this.filter.activeLabelIds().length > 0,
   );
+
+  /** The chips strip above the list (design_docs/0077) shows the two sidebar-driven filters -
+   * status and labels - so it's always visible what, besides the search text, is narrowing the
+   * list. The search box shows its own text and needs no chip. */
+  readonly statusFilterLabel = computed(() => STATUS_FILTER_LABELS[this.filter.statusFilter()]);
+  readonly activeLabelChips = computed(() => {
+    const names = this.labelService.namesById();
+    return this.filter.activeLabelIds().map((id) => ({ id, name: names.get(id) ?? '' }));
+  });
+  readonly hasFilterChips = computed(
+    () => this.filter.statusFilter() !== 'all' || this.filter.activeLabelIds().length > 0,
+  );
+
+  /** Clears the sidebar-driven filters but not the search text - that has its own box. */
+  clearFilterChips(): void {
+    this.filter.statusFilter.set('all');
+    this.filter.clearLabels();
+  }
 
   /** README.md's Copy section: `No matches for "debain"` - the literal example is search-text
    * specific, so that's the only case that gets the exact quoted-query form; a status-only
@@ -274,7 +304,18 @@ export class TorrentList {
     if (query !== '') {
       return `No matches for "${query}"`;
     }
+    const labelPhrase = this.activeLabelPhrase();
+    if (labelPhrase !== '' && this.filter.statusFilter() === 'all') {
+      return `No torrents labeled ${labelPhrase}`;
+    }
     return `No ${STATUS_FILTER_LABELS[this.filter.statusFilter()]} torrents`;
+  });
+
+  /** `"TV"`, `"TV" or "Movie"` (match any) / `"TV" and "Movie"` (match all) - empty when no
+   * label filter is active. */
+  private readonly activeLabelPhrase = computed(() => {
+    const names = this.activeLabelChips().map((chip) => `"${chip.name}"`);
+    return names.join(this.filter.labelMatchMode() === 'all' ? ' and ' : ' or ');
   });
 
   /** "a note that filters are also narrowing the list" (STYLE_GUIDE_NOTES.md's empty-state
@@ -284,7 +325,10 @@ export class TorrentList {
   readonly noMatchBody = computed(() => {
     const query = this.filter.searchText().trim();
     const statusFilter = this.filter.statusFilter();
-    if (query !== '' && statusFilter !== 'all') {
+    if (query !== '' && (statusFilter !== 'all' || this.filter.activeLabelIds().length > 0)) {
+      return 'The other filters are also narrowing the list.';
+    }
+    if (statusFilter !== 'all' && this.filter.activeLabelIds().length > 0) {
       return `The ${STATUS_FILTER_LABELS[statusFilter]} filter is also narrowing the list.`;
     }
     if (query !== '') {
@@ -296,6 +340,7 @@ export class TorrentList {
   clearFilters(): void {
     this.filter.statusFilter.set('all');
     this.filter.searchText.set('');
+    this.filter.clearLabels();
   }
 
   /** Pending uploads first, so a newly-clicked upload appears at the top rather than
@@ -304,12 +349,24 @@ export class TorrentList {
   readonly rows = computed<TableRow[]>(() => {
     const statusFilter = this.filter.statusFilter();
     const searchText = this.filter.searchText();
+    const labelIds = this.filter.activeLabelIds();
+    const labelMode = this.filter.labelMatchMode();
+    const labelNames = this.labelService.namesById();
     const field = this.sortField();
     const direction = this.sortDirection();
 
     const filtered = this.events
       .torrents()
-      .filter((t) => matchesStatusFilter(t, statusFilter) && matchesSearchText(t, searchText));
+      .filter(
+        (t) =>
+          matchesStatusFilter(t, statusFilter) &&
+          matchesLabelFilter(t, labelIds, labelMode) &&
+          matchesSearchText(
+            t,
+            searchText,
+            t.labelIds.flatMap((id) => labelNames.get(id) ?? []),
+          ),
+      );
     const sign = direction === 'asc' ? 1 : -1;
     const sorted = [...filtered].sort((a, b) => sign * this.compare(a, b, field));
 
@@ -498,6 +555,31 @@ export class TorrentList {
           meta: `${state.uris.length} magnet links`,
           hint: 'Enter to add · Esc to clear',
         };
+    }
+  });
+
+  /** A magnet's row is a real FETCHING_METADATA torrent (design_docs/0070), so when the
+   * background fetch gives up the backend just drops it - the only signal is the
+   * MAGNET_ADD_FAILED library event, which nothing here surfaced. Toasts each one live
+   * (design_docs/0060's original intent, lost when its pending-row effect was superseded).
+   * The cursor starts at the newest event already buffered so re-creating this component
+   * (navigating back to the list) doesn't replay old failures. */
+  private lastToastedEventTimestamp = this.events.libraryEvents()[0]?.timestamp ?? '';
+  private readonly magnetFailureToastEffect = effect(() => {
+    const fresh = this.events
+      .libraryEvents()
+      .filter((e) => e.type === 'MAGNET_ADD_FAILED' && e.timestamp > this.lastToastedEventTimestamp);
+    const newest = this.events.libraryEvents()[0]?.timestamp;
+    if (newest && newest > this.lastToastedEventTimestamp) {
+      this.lastToastedEventTimestamp = newest;
+    }
+    for (const event of fresh.reverse()) {
+      this.messageService.add({
+        severity: 'error',
+        summary: 'Magnet add failed',
+        detail: event.message ?? event.infoHash ?? undefined,
+        life: 8000,
+      });
     }
   });
 

@@ -1,12 +1,14 @@
-import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { RouterLink, RouterLinkActive } from '@angular/router';
 import { interval, startWith, switchMap } from 'rxjs';
 
 import { ServiceStatus } from '../../models/system.model';
+import { LabelService } from '../../services/label.service';
 import { SystemService } from '../../services/system.service';
 import { TorrentEventsService } from '../../services/torrent-events.service';
 import { STATUS_FILTER_LABELS, StatusFilter, TorrentFilterService, matchesStatusFilter } from '../../services/torrent-filter.service';
+import { ManageLabelsDialog } from './manage-labels-dialog/manage-labels-dialog';
 
 interface FilterOption {
   value: StatusFilter;
@@ -37,7 +39,7 @@ const SERVICES_POLL_INTERVAL_MS = 30_000;
  */
 @Component({
   selector: 'app-sidebar',
-  imports: [RouterLink, RouterLinkActive],
+  imports: [ManageLabelsDialog, RouterLink, RouterLinkActive],
   templateUrl: './app-sidebar.html',
   styleUrl: './app-sidebar.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -46,6 +48,7 @@ export class AppSidebar {
   private readonly events = inject(TorrentEventsService);
   private readonly system = inject(SystemService);
   readonly filter = inject(TorrentFilterService);
+  private readonly labelService = inject(LabelService);
 
   readonly options = FILTER_OPTIONS;
 
@@ -61,6 +64,29 @@ export class AppSidebar {
 
   select(value: StatusFilter): void {
     this.filter.statusFilter.set(value);
+  }
+
+  /** The managed label list (design_docs/0077), in the backend's own order. */
+  readonly labels = this.labelService.labels;
+  readonly showManageLabels = signal(false);
+
+  /** How many torrents carry each label - like the status counts above, always over every
+   * torrent regardless of the active name search. */
+  readonly labelCounts = computed(() => {
+    const counts = new Map<string, number>();
+    for (const torrent of this.events.torrents()) {
+      for (const id of torrent.labelIds) {
+        counts.set(id, (counts.get(id) ?? 0) + 1);
+      }
+    }
+    return counts;
+  });
+
+  /** Toggles the label in or out of the filter - several can be selected at once (how they
+   * combine is TorrentFilterService.labelMatchMode, switched from the chips strip above the
+   * list). See design_docs/0077. */
+  selectLabel(id: string): void {
+    this.filter.toggleLabel(id);
   }
 
   /** DHT/peer-server bind failures are stable for the whole process lifetime (see

@@ -25,7 +25,10 @@ public record PeerView(
         double relevance,
         /** Which transport this connection actually uses - "TCP" or "UTP". Orthogonal to
          * source above. See design_docs/0066's own addendum. */
-        String transportType
+        String transportType,
+        /** ACTIVE (a block moved within the last 10s), WAITING (nothing moving but we want
+         * something from them) or IDLE - see PeerActivity. See design_docs/0076. */
+        String activity
 ) {
     public static PeerView from(TorrentSession.PeerSnapshot snapshot) {
         return new PeerView(
@@ -42,6 +45,7 @@ public record PeerView(
                 snapshot.source().name(),
                 snapshot.percentAvailable(),
                 snapshot.relevance(),
-                snapshot.transportType().name());
+                snapshot.transportType().name(),
+                snapshot.activity().name());
     }
 }

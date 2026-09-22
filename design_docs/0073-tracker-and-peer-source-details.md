@@ -137,3 +137,10 @@ regardless of this dialog).
 - **Framing DHT/PeX/LSD rows as "seeders"/"leechers" like a tracker row** - rejected; see the
   peer-source-rows note above on why that would misleadingly imply a swarm-wide total these
   sources don't actually have.
+
+**Addendum (2026-09-19): a per-peer table.** With the Peers tab reduced to one line per peer
+([[0066-peer-diagnostics]]'s 2026-09-19 addendum), this dialog gained a third section, **Peers**:
+every connected peer with its activity, address, percent done, relevance, downloaded/uploaded
+totals, source and connection type - the detail the compact row deliberately no longer shows.
+Totals rather than live rates (the dialog polls on its own and has no rate tracker; the Peers tab
+shows live speeds). Sorted the same way as the tab ([[0076-peer-activity]]).

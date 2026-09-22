@@ -6,6 +6,8 @@ import com.grimtorrenter.engine.bencode.BList;
 import com.grimtorrenter.engine.bencode.BString;
 import com.grimtorrenter.engine.bencode.BencodeEncoder;
 import com.grimtorrenter.engine.metainfo.InfoHash;
+import com.grimtorrenter.engine.proxy.FakeSocks5Proxy;
+import com.grimtorrenter.engine.proxy.ProxyProvider;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -127,6 +129,51 @@ class HttpTrackerClientTest {
         assertTrue(query.contains("compact=1"));
         assertArrayEquals(fakeInfoHashBytes(), percentDecode(extractParam(query, "info_hash")));
         assertArrayEquals(fakePeerIdBytes(), percentDecode(extractParam(query, "peer_id")));
+    }
+
+    /** design_docs/0079 - with a proxy active the announce is tunnelled through it, and the
+     * tracker's hostname is handed to the proxy as a name (the proxy resolves it). */
+    @Test
+    void announcesThroughTheProxyWhenOneIsConfigured() throws Exception {
+        byte[] compactPeers = {(byte) 192, (byte) 168, 1, 1, 0x1A, (byte) 0xE1};
+        BDictionary response = new BDictionary(Map.of(
+                BString.of("interval"), new BInteger(900),
+                BString.of("peers"), BString.of(compactPeers)));
+        AtomicReference<String> capturedQuery = new AtomicReference<>();
+        String realUrl = startServer(BencodeEncoder.encode(response), 200, capturedQuery);
+        try (FakeSocks5Proxy proxy = new FakeSocks5Proxy()) {
+            proxy.map("tracker.invalid", new InetSocketAddress("127.0.0.1", server.getAddress().getPort()));
+            String url = realUrl.replace("127.0.0.1", "tracker.invalid");
+            HttpTrackerClient client = new HttpTrackerClient(url, () -> java.util.Optional.of(proxy.settings()));
+
+            TrackerResponse result = client.announce(new TrackerRequest(
+                    InfoHash.of(fakeInfoHashBytes()), PeerId.of(fakePeerIdBytes()),
+                    6881, 0, 0, 1000, TrackerEvent.STARTED, 50));
+
+            assertEquals(900, result.interval());
+            assertEquals("192.168.1.1", result.peers().get(0).address().getHostAddress());
+            assertEquals("tracker.invalid:" + server.getAddress().getPort(), proxy.connectTargets.get(0));
+            assertArrayEquals(fakeInfoHashBytes(), percentDecode(extractParam(capturedQuery.get(), "info_hash")));
+        }
+    }
+
+    @Test
+    void aFailingProxyFailsTheAnnounceInsteadOfGoingDirect() throws Exception {
+        BDictionary response = new BDictionary(Map.of(
+                BString.of("interval"), new BInteger(900),
+                BString.of("peers"), BString.of(new byte[0])));
+        String url = startServer(BencodeEncoder.encode(response), 200, null);
+        int closedPort;
+        try (java.net.ServerSocket probe = new java.net.ServerSocket(0, 1, java.net.InetAddress.getLoopbackAddress())) {
+            closedPort = probe.getLocalPort();
+        }
+        ProxyProvider dead = () -> java.util.Optional.of(
+                new com.grimtorrenter.engine.proxy.ProxySettings("127.0.0.1", closedPort, null, null));
+        HttpTrackerClient client = new HttpTrackerClient(url, dead);
+
+        assertThrows(TrackerException.class, () -> client.announce(new TrackerRequest(
+                InfoHash.of(fakeInfoHashBytes()), PeerId.of(fakePeerIdBytes()),
+                6881, 0, 0, 1000, TrackerEvent.STARTED, 50)));
     }
 
     @Test

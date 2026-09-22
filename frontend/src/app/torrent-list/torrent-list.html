@@ -53,10 +53,74 @@
           type="text"
           [value]="filter.searchText()"
           (input)="onSearchInput($event)"
-          placeholder="Filter by name"
-          aria-label="Filter by name"
+          placeholder="Filter by name or label"
+          aria-label="Filter by name or label"
         />
       </p-iconField>
+
+      @if (hasFilterChips()) {
+        <!-- Every sidebar-driven filter that's narrowing the list, each removable - status and
+             labels live in two separate sidebar groups, so without this it's easy to miss that
+             they stack. Sits on the toolbar's own row, right after the search field, so
+             selecting a filter never pushes the list down. design_docs/0077. -->
+        <div class="filter-chips" role="group" aria-label="Active filters">
+          <div class="filter-chips-list">
+            @if (filter.statusFilter() !== 'all') {
+              <span class="filter-chip">
+                {{ statusFilterLabel() }}
+                <button
+                  type="button"
+                  class="filter-chip-remove"
+                  [attr.aria-label]="'Remove ' + statusFilterLabel() + ' filter'"
+                  (click)="filter.statusFilter.set('all')"
+                >
+                  <i class="pi pi-times" aria-hidden="true"></i>
+                </button>
+              </span>
+            }
+            @for (chip of activeLabelChips(); track chip.id) {
+              <span class="filter-chip">
+                <i class="pi pi-tag filter-chip-icon" aria-hidden="true"></i>
+                {{ chip.name }}
+                <button
+                  type="button"
+                  class="filter-chip-remove"
+                  [attr.aria-label]="'Remove label filter ' + chip.name"
+                  (click)="filter.removeLabel(chip.id)"
+                >
+                  <i class="pi pi-times" aria-hidden="true"></i>
+                </button>
+              </span>
+            }
+            @if (activeLabelChips().length > 1) {
+              <span class="match-mode" role="group" aria-label="How the selected labels combine">
+                <span class="match-mode-caption">Match</span>
+                <button
+                  type="button"
+                  class="match-mode-option"
+                  [class.active]="filter.labelMatchMode() === 'any'"
+                  [attr.aria-pressed]="filter.labelMatchMode() === 'any'"
+                  title="A torrent needs at least one of the selected labels"
+                  (click)="filter.labelMatchMode.set('any')"
+                >
+                  Any
+                </button>
+                <button
+                  type="button"
+                  class="match-mode-option"
+                  [class.active]="filter.labelMatchMode() === 'all'"
+                  [attr.aria-pressed]="filter.labelMatchMode() === 'all'"
+                  title="A torrent needs every selected label"
+                  (click)="filter.labelMatchMode.set('all')"
+                >
+                  All
+                </button>
+              </span>
+            }
+          </div>
+          <button type="button" class="filter-chips-clear" (click)="clearFilterChips()">Clear</button>
+        </div>
+      }
 
       <div class="toolbar-trailing">
         <p-button icon="pi pi-pause" [text]="true" ariaLabel="Pause all" pTooltip="Pause all" tooltipPosition="top" (onClick)="pauseAll()" />

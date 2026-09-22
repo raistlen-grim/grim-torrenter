@@ -154,3 +154,19 @@ user's own real layout:
   (`flex: 0 0 auto` - never shrinks, so the badges are always fully visible regardless of
   address length), with `justify-content: space-between` pushing the address text left and the
   badges right.
+
+**Addendum (2026-09-19): the Peers tab row was redesigned again, superseding the two-line
+layout above.** Still too busy in real use - each peer took two lines, and four choke/interest
+icons plus a `100%` and two `—` placeholders were mostly noise. Now one line per peer: an
+activity marker (the backend-computed `PeerActivity`, [[0076-peer-activity]] - filled dot =
+data moving, hollow ring = waiting, faint dot = idle), the address, the badges, and live
+`↓`/`↑` speeds shown only while non-zero. The column header row, the Done column and the four
+choke/interest icons are gone from the row: choke/interest detail is the marker's tooltip, and
+percent done, relevance, byte totals, source and connection type are a per-peer table in the
+tracker/peer-source details dialog ([[0073-tracker-and-peer-source-details]]). Direction changed
+from an arrow icon to a text capsule ("in", incoming only - outgoing, the common case, gets
+none) so it can't be confused with the new speed arrows; source/µTP badges share one
+`.peer-tag` style. Rows sort by activity, then lifetime bytes moved (a slowly-changing key, so
+rows don't reshuffle on every 3s poll), replacing the old upload-rate order. Deviates further
+from the style guide's four-column Peers grid - accepted: the header row it needed can't line up
+with a single-line row, and everything it showed is still one click away in the dialog.

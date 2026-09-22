@@ -3,6 +3,8 @@ package com.grimtorrenter.engine.metadata;
 import com.grimtorrenter.engine.metainfo.InfoHash;
 import com.grimtorrenter.engine.mse.EncryptionMode;
 import com.grimtorrenter.engine.peer.PeerConnection;
+import com.grimtorrenter.engine.peer.PeerSource;
+import com.grimtorrenter.engine.proxy.ProxyProvider;
 import com.grimtorrenter.engine.peer.PeerConnectionListener;
 import com.grimtorrenter.engine.peerwire.Extended;
 import com.grimtorrenter.engine.peerwire.PeerMessage;
@@ -51,9 +53,18 @@ public final class MetadataFetcher {
 
     public static byte[] fetch(PeerAddress address, InfoHash infoHash, PeerId ourPeerId,
                                 EncryptionMode encryptionMode) throws IOException {
+        return fetch(address, infoHash, ourPeerId, encryptionMode, ProxyProvider.NONE);
+    }
+
+    /** proxy is where the connection goes - a magnet's metadata fetch has to honor the proxy just
+     * like a normal download does, or it would be the one place a configured proxy leaks the real
+     * address. See design_docs/0079. */
+    public static byte[] fetch(PeerAddress address, InfoHash infoHash, PeerId ourPeerId,
+                                EncryptionMode encryptionMode, ProxyProvider proxy) throws IOException {
         FetchListener listener = new FetchListener();
         try (PeerConnection connection = PeerConnection.connect(address, infoHash, ourPeerId, listener,
-                Map.of(EXTENSION_NAME, OUR_EXTENSION_ID), RateLimiters.unlimited(), encryptionMode)) {
+                Map.of(EXTENSION_NAME, OUR_EXTENSION_ID), RateLimiters.unlimited(), encryptionMode,
+                PeerSource.UNKNOWN, proxy)) {
 
             if (!listener.awaitHandshake(HANDSHAKE_TIMEOUT_MS)) {
                 throw new MetadataFetchException("Peer " + address + " never sent an extended handshake");

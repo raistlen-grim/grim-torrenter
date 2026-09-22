@@ -32,6 +32,12 @@
       <div [hidden]="activeGroup() !== 'network'">
         <app-network-settings [form]="settingsForm.controls.network" />
       </div>
+      <div [hidden]="activeGroup() !== 'blocklist'">
+        <app-blocklist-settings [form]="settingsForm.controls.blocklist" />
+      </div>
+      <div [hidden]="activeGroup() !== 'proxy'">
+        <app-proxy-settings [form]="settingsForm.controls.proxy" />
+      </div>
       <div [hidden]="activeGroup() !== 'rateLimiting'">
         <app-rate-limit-settings [form]="settingsForm.controls.rateLimiting" />
       </div>

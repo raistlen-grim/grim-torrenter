@@ -8,10 +8,11 @@
   flex-direction: column;
 }
 
-/* README's Files tab content spec: 15px minmax(0,1fr) 58px 40px, gap 8px. */
+/* README's Files tab content spec: 15px minmax(0,1fr) 58px 40px, gap 8px - plus a trailing
+ * 72px priority select (design_docs/0075), not in the guide. */
 .file-row {
   display: grid;
-  grid-template-columns: 15px minmax(0, 1fr) 58px 40px;
+  grid-template-columns: 15px minmax(0, 1fr) 58px 40px 72px;
   align-items: center;
   gap: 8px;
   padding: 6px 0;
@@ -43,4 +44,23 @@
 .file-percent {
   text-align: right;
   opacity: 0.75;
+}
+
+/* A skipped file's data isn't wanted, so the whole row reads as inactive - dimmed, not struck
+ * through, since it's still a real file the user can restore. */
+.file-skipped .file-icon,
+.file-skipped .file-path,
+.file-skipped .file-size,
+.file-skipped .file-percent {
+  opacity: 0.4;
+}
+
+.file-priority {
+  width: 100%;
+  border: 1px solid var(--color-divider);
+  background: var(--color-bg);
+  color: inherit;
+  padding: 2px 4px;
+  font-family: var(--font-body);
+  font-size: 12px;
 }
