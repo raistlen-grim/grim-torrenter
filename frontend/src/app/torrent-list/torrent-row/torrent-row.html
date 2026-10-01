@@ -1,3 +1,12 @@
+<td class="select-cell" (click)="$event.stopPropagation()" (keydown.enter)="$event.stopPropagation()">
+  <input
+    type="checkbox"
+    class="select-checkbox"
+    [checked]="checked()"
+    [attr.aria-label]="'Select ' + name()"
+    (change)="toggleChecked.emit()"
+  />
+</td>
 <td class="state-icon-cell">
   <div class="progress-underlay" [class.verifying]="isVerifying()" [style.width.%]="progressPercent()"></div>
   <i

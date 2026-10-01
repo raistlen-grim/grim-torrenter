@@ -15,13 +15,14 @@ import { ActivatedRoute, NavigationEnd, Router, RouterOutlet } from '@angular/ro
 import { ConfirmationService, MessageService } from 'primeng/api';
 import { ButtonModule } from 'primeng/button';
 import { ConfirmDialogModule } from 'primeng/confirmdialog';
+import { DialogModule } from 'primeng/dialog';
 import { IconFieldModule } from 'primeng/iconfield';
 import { InputIconModule } from 'primeng/inputicon';
 import { InputTextModule } from 'primeng/inputtext';
 import { TableModule } from 'primeng/table';
 import { ToastModule } from 'primeng/toast';
 import { TooltipModule } from 'primeng/tooltip';
-import { filter, map } from 'rxjs';
+import { Observable, catchError, filter, forkJoin, map, of } from 'rxjs';
 
 import { TorrentWithRate } from '../models/torrent.model';
 import { LabelService } from '../services/label.service';
@@ -40,6 +41,7 @@ import { generateLocalId } from '../shared/local-id';
 import { pluralTorrentCount } from '../shared/plural-torrent-count';
 import { SkullMark } from '../shared/skull-mark/skull-mark';
 import { StatusIndicator } from '../shared/status-indicator/status-indicator';
+import { BulkLabelsDialog } from './bulk-labels-dialog/bulk-labels-dialog';
 import { TorrentRow } from './torrent-row/torrent-row';
 
 /** A brief "request in flight" placeholder, for either an upload or a magnet add - both now
@@ -195,8 +197,10 @@ function resolveAddState(rawValue: string, torrents: readonly TorrentWithRate[])
 @Component({
   selector: 'app-torrent-list',
   imports: [
+    BulkLabelsDialog,
     ButtonModule,
     ConfirmDialogModule,
+    DialogModule,
     IconFieldModule,
     InputIconModule,
     InputTextModule,
@@ -212,6 +216,9 @@ function resolveAddState(rawValue: string, torrents: readonly TorrentWithRate[])
   templateUrl: './torrent-list.html',
   styleUrl: './torrent-list.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
+  host: {
+    '(document:keydown.escape)': 'onDocumentEscape($event)',
+  },
 })
 export class TorrentList {
   private readonly torrentService = inject(TorrentService);
@@ -431,6 +438,208 @@ export class TorrentList {
 
   onSearchInput(event: Event): void {
     this.filter.searchText.set((event.target as HTMLInputElement).value);
+  }
+
+  /** Esc in the filter field clears it - first in the guide's Esc order, ahead of closing the
+   * panel or clearing the selection (see onDocumentEscape()). */
+  onSearchEscape(event: Event): void {
+    event.stopPropagation();
+    this.filter.searchText.set('');
+  }
+
+  // --- Multi-select (design_docs/0083) -------------------------------------------------
+  // A set of ticked rows that drives the selection bar. Deliberately separate from
+  // selectedInfoHash() above (the one row the details panel is showing): a plain click still
+  // opens the panel, and the panel never reacts to this set.
+
+  /** Raw set of ticked info hashes. May hold torrents the current filter is hiding, or that
+   * have since been removed - everything that acts on the selection goes through
+   * selectedTorrents() below, which only ever returns rows actually in the list right now. */
+  readonly selection = signal<ReadonlySet<string>>(new Set());
+
+  /** Where a Shift-click range starts from: the last row ticked or toggled on its own. */
+  private selectionAnchor: string | null = null;
+
+  /** The torrents currently in the list, in display order - what "select all" and a
+   * Shift-click range are measured against. */
+  readonly visibleTorrents = computed(() =>
+    this.rows().flatMap((row) => (row.kind === 'torrent' ? [row.torrent] : [])),
+  );
+
+  readonly selectedTorrents = computed(() => {
+    const selection = this.selection();
+    return selection.size === 0 ? [] : this.visibleTorrents().filter((t) => selection.has(t.infoHash));
+  });
+
+  readonly selectedCount = computed(() => this.selectedTorrents().length);
+  readonly selectionLabel = computed(() => `${pluralTorrentCount(this.selectedCount())} selected`);
+
+  readonly allVisibleSelected = computed(
+    () => this.visibleTorrents().length > 0 && this.selectedCount() === this.visibleTorrents().length,
+  );
+  readonly someVisibleSelected = computed(() => this.selectedCount() > 0 && !this.allVisibleSelected());
+
+  /** What Pause/Resume in the selection bar would actually act on - the same state rules as
+   * Pause all/Resume all, minus anything that already has a request in flight. The buttons
+   * are disabled when these are empty. */
+  readonly pausableSelection = computed(() =>
+    this.selectedTorrents().filter(
+      (t) => (t.state === 'DOWNLOADING' || t.state === 'SEEDING') && this.actions.pendingFor(t.infoHash) === null,
+    ),
+  );
+  readonly resumableSelection = computed(() =>
+    this.selectedTorrents().filter((t) => t.state === 'STOPPED' && this.actions.pendingFor(t.infoHash) === null),
+  );
+
+  /** A magnet still fetching metadata has no session to label yet - the row's own Labels item
+   * is disabled for the same reason. */
+  readonly labelableSelection = computed(() =>
+    this.selectedTorrents().filter((t) => t.state !== 'FETCHING_METADATA'),
+  );
+  readonly showBulkLabelsDialog = signal(false);
+
+  toggleSelection(infoHash: string): void {
+    this.selection.update((current) => {
+      const next = new Set(current);
+      if (!next.delete(infoHash)) {
+        next.add(infoHash);
+      }
+      return next;
+    });
+    this.selectionAnchor = infoHash;
+  }
+
+  /** Adds every row between the anchor and this one (inclusive) to the selection. With no
+   * usable anchor - nothing ticked yet, or the anchor row has left the list - it behaves like
+   * a plain toggle and this row becomes the anchor. */
+  extendSelection(infoHash: string): void {
+    const order = this.visibleTorrents().map((t) => t.infoHash);
+    const from = this.selectionAnchor === null ? -1 : order.indexOf(this.selectionAnchor);
+    const to = order.indexOf(infoHash);
+    if (from === -1 || to === -1) {
+      this.toggleSelection(infoHash);
+      return;
+    }
+    const range = order.slice(Math.min(from, to), Math.max(from, to) + 1);
+    this.selection.update((current) => new Set([...current, ...range]));
+  }
+
+  /** Header checkbox: select everything in the current filter, or clear if it already is. */
+  toggleSelectAll(): void {
+    if (this.allVisibleSelected()) {
+      this.clearSelection();
+    } else {
+      this.selection.set(new Set(this.visibleTorrents().map((t) => t.infoHash)));
+    }
+  }
+
+  clearSelection(): void {
+    this.selection.set(new Set());
+    this.selectionAnchor = null;
+  }
+
+  /** The selection stays in place after Pause/Resume so a second action can follow. */
+  pauseSelected(): void {
+    this.runOnEach(this.pausableSelection(), (infoHash) => this.actions.pause(infoHash), 'pause');
+  }
+
+  resumeSelected(): void {
+    this.runOnEach(this.resumableSelection(), (infoHash) => this.actions.resume(infoHash), 'resume');
+  }
+
+  readonly showRemoveDialog = signal(false);
+  readonly removeAlsoDeleteData = signal(false);
+  /** The selection as it was when the dialog opened - what the dialog describes and what
+   * confirming it removes, even if the list changes underneath while it is open. */
+  private readonly removeTargets = signal<TorrentWithRate[]>([]);
+
+  /** README.md "Copy": `Remove 3 torrents?`, and the body/button below - the singular forms
+   * are this app's own, the guide only spells out the plural. */
+  readonly removeDialogTitle = computed(() => `Remove ${pluralTorrentCount(this.removeTargets().length)}?`);
+  readonly removeDialogBody = computed(
+    () =>
+      `${this.removeTargets().length === 1 ? 'It stops' : 'They stop'} seeding immediately. ` +
+      'Downloaded files stay on disk unless you also delete data.',
+  );
+  readonly removeConfirmLabel = computed(() =>
+    this.removeTargets().length === 1 ? 'Remove torrent' : 'Remove torrents',
+  );
+  /** `Also delete 14.2 GB of data` - the size is what has actually been downloaded, not the
+   * torrents' full size. */
+  readonly removeDeleteDataLabel = computed(() => {
+    const bytes = this.removeTargets().reduce((sum, t) => sum + t.bytesDownloaded, 0);
+    return bytes > 0 ? `Also delete ${this.formatBytes.transform(bytes)} of data` : 'Also delete downloaded data';
+  });
+
+  openRemoveSelected(): void {
+    this.removeTargets.set(this.selectedTorrents());
+    this.removeAlsoDeleteData.set(false);
+    this.showRemoveDialog.set(true);
+  }
+
+  onRemoveDeleteDataChange(event: Event): void {
+    this.removeAlsoDeleteData.set((event.target as HTMLInputElement).checked);
+  }
+
+  confirmRemoveSelected(): void {
+    const targets = this.removeTargets();
+    const deleteData = this.removeAlsoDeleteData();
+    this.showRemoveDialog.set(false);
+    // The panel has nothing left to show once its torrent is gone.
+    const openInPanel = this.selectedInfoHash();
+    if (openInPanel !== null && targets.some((t) => t.infoHash === openInPanel)) {
+      this.closeDetail();
+    }
+    this.runOnEach(targets, (infoHash) => this.actions.remove(infoHash, deleteData), 'remove');
+    this.clearSelection();
+  }
+
+  /** One request per torrent through TorrentActionsService (so each row shows its own pending
+   * state), all at once, with a single toast if any fail rather than one per torrent. */
+  private runOnEach(
+    targets: TorrentWithRate[],
+    action: (infoHash: string) => Observable<void>,
+    verb: 'pause' | 'resume' | 'remove',
+  ): void {
+    if (targets.length === 0) {
+      return;
+    }
+    forkJoin(
+      targets.map((t) =>
+        action(t.infoHash).pipe(
+          map(() => true),
+          catchError(() => of(false)),
+        ),
+      ),
+    ).subscribe((results) => {
+      const failed = results.filter((ok) => !ok).length;
+      if (failed > 0) {
+        this.messageService.add({
+          severity: 'error',
+          summary: `Could not ${verb} ${pluralTorrentCount(failed)}`,
+          detail: 'Please try again.',
+        });
+      }
+    });
+  }
+
+  /** The guide's Esc order (README.md "Interactions"): clear the filter if it's focused, else
+   * close the panel, else clear the selection. The first is the field's own handler; this is
+   * the other two. Left alone while a dialog or menu is open (Esc belongs to that) and while
+   * typing in any other field. */
+  onDocumentEscape(event: Event): void {
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('input, textarea, select, [contenteditable]')) {
+      return;
+    }
+    if (this.document.querySelector('.p-dialog, .p-contextmenu-root-list')) {
+      return;
+    }
+    if (this.isDetailOpen()) {
+      this.closeDetail();
+    } else if (this.selection().size > 0) {
+      this.clearSelection();
+    }
   }
 
   /** Loops the existing per-torrent pause() call rather than needing a new bulk backend

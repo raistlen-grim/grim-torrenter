@@ -39,6 +39,72 @@
   padding-right: 14px;
 }
 
+/* Hidden, not removed, while the selection bar stands in for it - see torrent-list.html. */
+.toolbar.toolbar-replaced {
+  display: none;
+}
+
+/* Selection bar (README.md "Toolbar - selection state", design_docs/0083): takes the
+ * toolbar's exact place - same outer margins, so nothing below it moves - with the guide's own
+ * 10% accent wash, padding and gap. min-height matches the toolbar's tallest control so the
+ * swap doesn't shift the list by a pixel or two. */
+.selection-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  margin-top: var(--space-4);
+  margin-bottom: var(--space-4);
+  margin-right: 14px;
+  padding: 0 14px;
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+}
+
+.selection-count {
+  margin-right: 8px;
+  font-size: 13px;
+}
+
+.selection-clear {
+  margin-left: auto;
+}
+
+.select-header {
+  text-align: center;
+}
+
+.select-checkbox {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  vertical-align: middle;
+  accent-color: var(--color-accent);
+}
+
+.remove-dialog-body {
+  margin: 0 0 var(--space-4);
+  max-width: 26rem;
+}
+
+.remove-dialog-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+  cursor: pointer;
+}
+
+.remove-dialog-option input {
+  accent-color: var(--color-accent);
+}
+
+.remove-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
 /* The bonded add unit (ADD_CONTROL.md / ADDENDUM_02): one paste field plus a primary
  * button that follows the field's contents, reading as a single object rather than two
  * controls. `align-items: stretch` (inherited from flex default) makes the field and the

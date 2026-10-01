@@ -1,6 +1,35 @@
 <p-toast />
 <p-confirmDialog />
 
+<!-- The guide's bulk remove dialog (README.md "Copy"): one confirmation with a delete-data
+     checkbox, for the selection only - the per-torrent Remove flows are unchanged.
+     design_docs/0083. Kept out of .list-panel-grid below - there it would become a grid item
+     of its own. -->
+<p-dialog
+  [visible]="showRemoveDialog()"
+  (visibleChange)="showRemoveDialog.set($event)"
+  [modal]="true"
+  [dismissableMask]="true"
+  [header]="removeDialogTitle()"
+  styleClass="remove-selection-dialog"
+>
+  <p class="remove-dialog-body">{{ removeDialogBody() }}</p>
+  <label class="remove-dialog-option">
+    <input type="checkbox" [checked]="removeAlsoDeleteData()" (change)="onRemoveDeleteDataChange($event)" />
+    <span>{{ removeDeleteDataLabel() }}</span>
+  </label>
+  <div class="remove-dialog-actions">
+    <p-button label="Cancel" severity="secondary" [text]="true" (onClick)="showRemoveDialog.set(false)" />
+    <p-button [label]="removeConfirmLabel()" severity="danger" (onClick)="confirmRemoveSelected()" />
+  </div>
+</p-dialog>
+
+<app-bulk-labels-dialog
+  [torrents]="labelableSelection()"
+  [visible]="showBulkLabelsDialog()"
+  (visibleChange)="showBulkLabelsDialog.set($event)"
+/>
+
 @if (isDraggingFile()) {
   <div class="drop-overlay" aria-hidden="true">
     <div class="drop-overlay-label">Drop to add</div>
@@ -11,7 +40,53 @@
      an overlay, so it can never cover a row the user just interacted with. -->
 <div class="list-panel-grid" [class.panel-open]="isDetailOpen()">
   <div class="list-column">
-    <div class="toolbar">
+    @if (selectedCount() > 0) {
+      <!-- Replaces the toolbar in place while rows are selected (README.md "Toolbar - selection
+           state"). The toolbar below stays in the DOM, hidden, so the add field keeps its
+           contents and its file input stays reachable. design_docs/0083. -->
+      <div class="selection-bar" role="toolbar" aria-label="Actions for the selected torrents">
+        <span class="selection-count tabular-nums" aria-live="polite">{{ selectionLabel() }}</span>
+        <p-button
+          label="Pause"
+          icon="pi pi-pause"
+          severity="secondary"
+          size="small"
+          [outlined]="true"
+          [disabled]="pausableSelection().length === 0"
+          (onClick)="pauseSelected()"
+        />
+        <p-button
+          label="Resume"
+          icon="pi pi-play"
+          severity="secondary"
+          size="small"
+          [outlined]="true"
+          [disabled]="resumableSelection().length === 0"
+          (onClick)="resumeSelected()"
+        />
+        <p-button
+          label="Label"
+          icon="pi pi-tag"
+          severity="secondary"
+          size="small"
+          [outlined]="true"
+          [disabled]="labelableSelection().length === 0"
+          (onClick)="showBulkLabelsDialog.set(true)"
+        />
+        <p-button
+          class="selection-remove"
+          label="Remove…"
+          icon="pi pi-trash"
+          severity="danger"
+          size="small"
+          [text]="true"
+          (onClick)="openRemoveSelected()"
+        />
+        <p-button class="selection-clear" label="Clear" size="small" [text]="true" (onClick)="clearSelection()" />
+      </div>
+    }
+
+    <div class="toolbar" [class.toolbar-replaced]="selectedCount() > 0">
       <div class="add-unit">
         <label class="add-field" [class.tone-accent]="addFieldTone() === 'accent'" [class.tone-alarm]="addFieldTone() === 'alarm'">
           <i class="pi pi-link add-field-icon" aria-hidden="true"></i>
@@ -53,6 +128,7 @@
           type="text"
           [value]="filter.searchText()"
           (input)="onSearchInput($event)"
+          (keydown.escape)="onSearchEscape($event)"
           placeholder="Filter by name or label"
           aria-label="Filter by name or label"
         />
@@ -148,6 +224,7 @@
     >
       <ng-template pTemplate="colgroup">
         <colgroup>
+          <col style="width: 30px" />
           <col style="width: 28px" />
           <col />
           <col style="width: 84px" />
@@ -161,6 +238,17 @@
       </ng-template>
       <ng-template pTemplate="header">
         <tr>
+          <th scope="col" class="select-header">
+            <input
+              type="checkbox"
+              class="select-checkbox"
+              [checked]="allVisibleSelected()"
+              [indeterminate]="someVisibleSelected()"
+              [disabled]="visibleTorrents().length === 0"
+              aria-label="Select all torrents in the list"
+              (change)="toggleSelectAll()"
+            />
+          </th>
           <th scope="col"></th>
           <th scope="col">
             <button type="button" class="sort-header" [class.active]="sortField() === 'name'" (click)="toggleSort('name')">
@@ -197,6 +285,7 @@
         @if (row.kind === 'pending') {
           <tr>
             <td></td>
+            <td></td>
             <td>{{ row.upload.fileName }}</td>
             <td></td>
             <td [class.col-hidden]="isDetailOpen()"><app-status-indicator icon="pi-spin pi-spinner" label="Processing" tone="dim" /></td>
@@ -212,12 +301,15 @@
             [torrent]="row.torrent"
             [compact]="isDetailOpen()"
             [selected]="selectedInfoHash() === row.torrent.infoHash"
+            [checked]="selection().has(row.torrent.infoHash)"
+            (toggleChecked)="toggleSelection(row.torrent.infoHash)"
+            (extendChecked)="extendSelection(row.torrent.infoHash)"
           ></tr>
         }
       </ng-template>
       <ng-template pTemplate="emptymessage">
         <tr>
-          <td colspan="9">
+          <td colspan="10">
             <div class="empty-state">
               @if (hasActiveFilter()) {
                 <i class="pi pi-filter-slash" aria-hidden="true"></i>

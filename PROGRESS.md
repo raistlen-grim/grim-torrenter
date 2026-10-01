@@ -1114,6 +1114,21 @@ complete**, per the phased scope in [[0009-phased-scope]]:
   both actions confirmed in the browser by the user.
   ([[0082-force-recheck-and-reannounce]])
 
+- **Multi-select on the torrent list (2026-10-02)** — picked from `TODO.md`; the part of the style
+  guide's list spec the restyle pass had left out. A checkbox column, Ctrl/Cmd-click and
+  Shift-click build a selection set; while anything is selected a selection bar replaces the
+  toolbar in place with Pause, Resume, Remove… and Clear. Bulk actions loop the per-torrent
+  endpoints through `TorrentActionsService`, so each row shows its own pending state. Bulk remove
+  uses the guide's single dialog with an "Also delete N of data" checkbox. Esc clears the filter,
+  then closes the panel, then clears the selection. Frontend only. Confirmed deviations from the
+  guide: the selection is separate from the details panel (a plain click still opens the panel, no
+  aggregate panel for 2+), no bulk Label button at first, and only Esc of the keyboard shortcuts.
+  Confirmed in the browser by the user (2026-10-02). A bulk Label action was added afterwards the
+  same day: a `Label` button in the selection bar opening a dialog with three-state checkboxes
+  (all / some / none of the selection have the label) to add or remove labels across the
+  selection, through the existing per-torrent endpoint - also confirmed in the browser by the user.
+  ([[0083-multi-select]])
+
 **Not yet built** (the rest of Phase 3):
 
 - Multiple/day-of-week-specific rate-limit schedule rules — the one remaining natural addition
@@ -1258,8 +1273,7 @@ with stable ids and multi-label Any/All filtering ([[0077-labels]]), an IP block
    connection-refill fix landed (2026-09-06), worth revisiting if evidence shows transient
    failures (NAT timing, a briefly-offline peer) actually cost real peer count in practice.
 3. Smaller/unscoped `TODO.md` items: a notification service, running a user-configured script
-   automatically on torrent completion, multi-select on the torrent list
-   (checkboxes/shift-click for bulk Pause/Resume/Remove, 2026-09-03), and UI themes.
+   automatically on torrent completion, and UI themes.
 4. The pending-action-vs-2s-snapshot-lag gap noted above, if it proves to matter in practice.
 5. The rate-limiting settings group's one remaining natural addition (a multi-rule schedule,
    per-torrent overrides now done via [[0072-per-torrent-limits]]) — pushed to the back of the

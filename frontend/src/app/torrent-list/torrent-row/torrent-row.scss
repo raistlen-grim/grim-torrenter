@@ -35,6 +35,30 @@
   box-shadow: inset 2px 0 0 0 var(--color-accent);
 }
 
+/* In the multi-select set (design_docs/0083): the wash only, no left edge - the edge stays
+ * reserved for the one row the details panel is showing, so the two can be told apart when a
+ * row is both. The ticked checkbox is the primary cue; the wash alone is too close to the
+ * progress underlay to carry it (see the comment above). */
+:host(.row-checked) {
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+}
+
+.select-cell {
+  text-align: center;
+}
+
+/* 13px with the accent as its tick colour, per the guide's row anatomy. z-index lifts it above
+ * the progress underlay, which comes later in the DOM and would otherwise paint over it. */
+.select-checkbox {
+  position: relative;
+  z-index: 1;
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  vertical-align: middle;
+  accent-color: var(--color-accent);
+}
+
 :host(.row-pending) {
   opacity: 0.6;
   transition: opacity 0.15s ease;

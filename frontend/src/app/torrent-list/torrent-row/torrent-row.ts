@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, inject, input, signal, viewChild } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, input, output, signal, viewChild } from '@angular/core';
 import { Router } from '@angular/router';
 import { ConfirmationService, MenuItem, MessageService } from 'primeng/api';
 import { ButtonModule } from 'primeng/button';
@@ -61,8 +61,10 @@ const MAX_VISIBLE_LABEL_CHIPS = 2;
     tabindex: '0',
     '[class.row-pending]': 'pendingAction() !== null',
     '[class.row-selected]': 'selected()',
+    '[class.row-checked]': 'checked()',
     '(contextmenu)': 'onContextMenu($event)',
-    '(click)': 'navigateToDetail()',
+    '(click)': 'onRowClick($event)',
+    '(mousedown)': 'onRowMouseDown($event)',
     '(keydown.enter)': 'navigateToDetail()',
   },
 })
@@ -87,9 +89,19 @@ export class TorrentRow {
    * TorrentList's own selectedInfoHash(), not derived locally, so every row agrees on which
    * one (if any) is selected without each re-deriving it from the route itself. Style guide's
    * "Row selected" token - see design_docs/0032's README and TODO.md's own description of it.
-   * No multi-select in this app's model, so this is a single-row highlight, not a selection
-   * set. */
+   * This is the single "open in the panel" row; the multi-select set is `checked` below. */
   readonly selected = input(false);
+
+  /** True when this row is in TorrentList's multi-select set (design_docs/0083) - a separate
+   * thing from `selected` above. The set itself lives in TorrentList; the row only reports the
+   * gestures that change it. */
+  readonly checked = input(false);
+
+  /** The checkbox, or Ctrl/Cmd-click on the row: flip this row in the selection. */
+  readonly toggleChecked = output<void>();
+
+  /** Shift-click on the row: extend the selection from the anchor row to this one. */
+  readonly extendChecked = output<void>();
 
   /** Set the instant Pause/Resume/Remove is started, cleared on response (success or
    * failure) - drives both the button's own loading/disabled state and a whole-row dim (see
@@ -235,6 +247,25 @@ export class TorrentRow {
       },
     ];
   });
+
+  /** Plain click opens the details panel as it always has; the two modifier clicks are the
+   * style guide's selection grammar (README.md "Interactions"). See design_docs/0083. */
+  onRowClick(event: MouseEvent): void {
+    if (event.shiftKey) {
+      this.extendChecked.emit();
+    } else if (event.ctrlKey || event.metaKey) {
+      this.toggleChecked.emit();
+    } else {
+      this.navigateToDetail();
+    }
+  }
+
+  /** A Shift-click would otherwise also select the page text between the two rows. */
+  onRowMouseDown(event: MouseEvent): void {
+    if (event.shiftKey) {
+      event.preventDefault();
+    }
+  }
 
   /** No-op while fetching metadata - there's no session for the detail panel's tabs
    * (Files/Peers/Trackers/Pieces) to poll yet. See design_docs/0070. */
