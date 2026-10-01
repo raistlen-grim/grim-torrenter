@@ -229,6 +229,41 @@ class TorrentResourceTest {
 
     /** See design_docs/0031 - the three self-contained per-torrent detail endpoints
      * added in the "cheap tier" pass. */
+    /** design_docs/0082. Only the REST contract - what a recheck actually does is covered by
+     * TorrentSessionTest. The state isn't asserted: a one-piece torrent can finish verifying
+     * before the response is even built. */
+    @Test
+    void recheckReturnsTheTorrentAndIsRepeatable() {
+        String infoHash = upload(torrentBytes("recheck-test.bin", new byte[]{1, 2, 3}));
+
+        given()
+                .when().post("/api/torrents/" + infoHash + "/recheck")
+                .then().statusCode(200).body("infoHash", equalTo(infoHash));
+        given()
+                .when().post("/api/torrents/" + infoHash + "/recheck")
+                .then().statusCode(200).body("infoHash", equalTo(infoHash));
+    }
+
+    /** The upload helper's tracker is unreachable and DHT is off in tests, so the torrent never
+     * reaches DOWNLOADING - exactly the "nothing to bring forward" case. */
+    @Test
+    void reannounceIsRejectedForATorrentThatIsNotRunning() {
+        String infoHash = upload(torrentBytes("reannounce-test.bin", new byte[]{1, 2, 3}));
+        torrentEngine.pauseTorrent(new com.grimtorrenter.engine.metainfo.InfoHash(infoHash));
+
+        given()
+                .when().post("/api/torrents/" + infoHash + "/reannounce")
+                .then().statusCode(409);
+    }
+
+    @Test
+    void recheckAndReannounceReturn404ForUnknownTorrent() {
+        String unknown = "0123456789abcdef0123456789abcdef01234567";
+
+        given().when().post("/api/torrents/" + unknown + "/recheck").then().statusCode(404);
+        given().when().post("/api/torrents/" + unknown + "/reannounce").then().statusCode(404);
+    }
+
     @Test
     void getPiecesReturnsOneNeededEntryForAFreshSinglePieceUpload() {
         byte[] torrent = torrentBytes("pieces-test.bin", new byte[]{1, 2, 3});

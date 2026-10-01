@@ -313,6 +313,21 @@ public final class PieceManager {
         return matches;
     }
 
+    /** Forgets every completed piece and every received block, as if nothing had been
+     * downloaded - the starting point for a forced recheck, which then re-establishes what is
+     * really on disk by verifying each piece again. See design_docs/0082. */
+    public void resetCompletion() {
+        lock.lock();
+        try {
+            completedPieces.clear();
+            for (BitSet blocks : blockReceived) {
+                blocks.clear();
+            }
+        } finally {
+            lock.unlock();
+        }
+    }
+
     public boolean isComplete(int pieceIndex) {
         validateIndex(pieceIndex);
         lock.lock();

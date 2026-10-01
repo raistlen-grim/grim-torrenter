@@ -383,6 +383,11 @@ public final class TorrentSession implements AutoCloseable {
      * design_docs/0036's 2026-09-20 addendum. */
     private volatile boolean startFailedRetryable;
     private volatile boolean startRetryActive;
+    /** Identifies the current verification pass - bumped by each recheck() so an earlier,
+     * abandoned pass can tell it has been superseded. See verifyThenSettle(). */
+    private final AtomicInteger verificationRun = new AtomicInteger();
+    private final java.util.concurrent.atomic.AtomicBoolean forcedReannounceInFlight =
+            new java.util.concurrent.atomic.AtomicBoolean();
     /** The background STOPPED announce started by the most recent stop(), or null if stop() has
      * never run. See stop() and design_docs/0081. */
     private volatile Thread stoppedAnnounce;
@@ -901,7 +906,7 @@ public final class TorrentSession implements AutoCloseable {
                 encryptionMode, seedingLimitOverride, TorrentState.VERIFYING, addedAt,
                 dhtReannounceIntervalSeconds, lsdActive, persistedLifetimeStats,
                 torrentLimitOverride, maxConnections, utpEnabled, utpConnectTimeoutSeconds);
-        Thread.ofVirtual().start(() -> session.verifyThenSettle(autoStart));
+        Thread.ofVirtual().start(() -> session.verifyThenSettle(autoStart, session.verificationRun.get()));
         return session;
     }
 
@@ -921,10 +926,13 @@ public final class TorrentSession implements AutoCloseable {
      * rather than letting every restoring torrent's full piece set pile up in memory at
      * once. See design_docs/0048.
      */
-    private void verifyThenSettle(boolean autoStart) {
+    private void verifyThenSettle(boolean autoStart, int run) {
         try {
             for (int i = 0; i < pieceManager.pieceCount(); i++) {
-                if (state != TorrentState.VERIFYING) {
+                // The run check matters once recheck() exists: a pass abandoned by a stop() must
+                // not wake up and carry on (from the middle) when a later recheck() puts the
+                // session back into VERIFYING with its own pass. See design_docs/0082.
+                if (state != TorrentState.VERIFYING || verificationRun.get() != run) {
                     return;
                 }
                 pieceVerificationLimiter.acquireUninterruptibly();
@@ -940,7 +948,7 @@ public final class TorrentSession implements AutoCloseable {
             return;
         }
         synchronized (this) {
-            if (state != TorrentState.VERIFYING) {
+            if (state != TorrentState.VERIFYING || verificationRun.get() != run) {
                 return;
             }
             // Recorded before setState()/start() ever run, regardless of autoStart - a
@@ -952,6 +960,52 @@ public final class TorrentSession implements AutoCloseable {
         if (autoStart) {
             start();
         }
+    }
+
+    /**
+     * Forced recheck: throws away what this session believes is complete and re-verifies every
+     * piece against what is actually on disk, the same pass restoreAsync() runs at startup.
+     * Networking is stopped first (peers are disconnected, STOPPED is announced in the
+     * background), the session sits in VERIFYING while the pass runs, and afterwards it goes
+     * back to running if it was in any state other than STOPPED when this was called - a paused
+     * torrent stays paused. Returns immediately; false (and does nothing) if a verification pass
+     * is already running. See design_docs/0082.
+     */
+    public synchronized boolean recheck() {
+        if (state == TorrentState.VERIFYING) {
+            return false;
+        }
+        boolean resumeAfter = state != TorrentState.STOPPED;
+        stop();
+        pieceManager.resetCompletion();
+        int run = verificationRun.incrementAndGet();
+        setState(TorrentState.VERIFYING);
+        Thread.ofVirtual().name("recheck-" + metadata.infoHash()).start(() -> verifyThenSettle(resumeAfter, run));
+        return true;
+    }
+
+    /**
+     * Forced reannounce: asks the tracker(s) and DHT for peers now instead of waiting for the
+     * next scheduled round. Runs in the background and returns immediately. False (nothing
+     * done) unless the torrent is DOWNLOADING or SEEDING, or if a forced reannounce is already
+     * in flight - so repeated clicks can't stack up announces. See design_docs/0082.
+     */
+    public boolean reannounceNow() {
+        if (state != TorrentState.DOWNLOADING && state != TorrentState.SEEDING) {
+            return false;
+        }
+        if (!forcedReannounceInFlight.compareAndSet(false, true)) {
+            return false;
+        }
+        Thread.ofVirtual().name("reannounce-" + metadata.infoHash()).start(() -> {
+            try {
+                reannounce();
+            } finally {
+                forcedReannounceInFlight.set(false);
+            }
+        });
+        discoverPeersViaDht();
+        return true;
     }
 
     /** Every start is treated as fully fresh in itself - no verification of pre-existing disk

@@ -148,8 +148,8 @@ A review of what an established client has that this one didn't, worked through 
   peer `activity` field and a one-line-per-peer Peers tab - `design_docs/0076`.
 
 **Still open (unscoped):**
-- Force recheck and force reannounce (a manual per-torrent action; recheck today only happens
-  automatically on restart).
+- ~~Force recheck and force reannounce (a manual per-torrent action; recheck today only happens
+  automatically on restart).~~ **Done (2026-10-01)** - see `design_docs/0082`.
 - Choosing files, and labels, at add time - needs an "add paused" flow, and for a magnet, resolved
   metadata first ([[0070-pending-magnet-as-first-class-torrent]]); also a watch-folder subfolder
   becoming a label.

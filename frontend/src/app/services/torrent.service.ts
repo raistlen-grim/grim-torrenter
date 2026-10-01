@@ -79,6 +79,18 @@ export class TorrentService {
     return this.http.post<void>(`${this.baseUrl}/${infoHash}/resume`, null);
   }
 
+  /** Forced recheck (design_docs/0082) - returns at once with the torrent as it now is
+   * (normally VERIFYING); progress then arrives through the usual snapshots. */
+  recheck(infoHash: string): Observable<Torrent> {
+    return this.http.post<Torrent>(`${this.baseUrl}/${infoHash}/recheck`, null);
+  }
+
+  /** Forced reannounce (design_docs/0082) - returns once the announce has been started, not
+   * when it finishes. 409 unless the torrent is downloading or seeding. */
+  reannounce(infoHash: string): Observable<void> {
+    return this.http.post<void>(`${this.baseUrl}/${infoHash}/reannounce`, null);
+  }
+
   /** See design_docs/0054 - a torrent's override of the global seeding-limit defaults. */
   seedingLimits(infoHash: string): Observable<SeedingLimitOverride> {
     return this.http.get<SeedingLimitOverride>(`${this.baseUrl}/${infoHash}/seeding-limits`);

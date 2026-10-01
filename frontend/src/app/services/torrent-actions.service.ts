@@ -1,5 +1,5 @@
 import { Injectable, inject, signal } from '@angular/core';
-import { Observable, defer, finalize, tap } from 'rxjs';
+import { Observable, defer, finalize, map, tap } from 'rxjs';
 
 import { TorrentEventsService } from './torrent-events.service';
 import { TorrentService } from './torrent.service';
@@ -43,6 +43,21 @@ export class TorrentActionsService {
       'remove',
       this.torrentService.remove(infoHash, deleteData).pipe(tap(() => this.events.removeLocal(infoHash))),
     );
+  }
+
+  /** Not tracked as pending - the request returns as soon as the recheck has started, and the
+   * torrent's own VERIFYING state (applied here straight from the response) is the feedback.
+   * See design_docs/0082. */
+  recheck(infoHash: string): Observable<void> {
+    return this.torrentService.recheck(infoHash).pipe(
+      tap((torrent) => this.events.upsert(torrent)),
+      map(() => undefined),
+    );
+  }
+
+  /** Not tracked as pending either - returns once the announce has been started. */
+  reannounce(infoHash: string): Observable<void> {
+    return this.torrentService.reannounce(infoHash);
   }
 
   /** Marked pending on subscribe (not on call) and cleared on completion, error or unsubscribe,

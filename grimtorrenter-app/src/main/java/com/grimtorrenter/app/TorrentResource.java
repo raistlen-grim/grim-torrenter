@@ -8,6 +8,7 @@ import com.grimtorrenter.engine.piece.FilePriority;
 import com.grimtorrenter.engine.torrent.SeedingLimitOverride;
 import com.grimtorrenter.engine.torrent.TorrentLimitOverride;
 import com.grimtorrenter.engine.torrent.TorrentSession;
+import com.grimtorrenter.engine.torrent.TorrentState;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.BadRequestException;
 import jakarta.ws.rs.BeanParam;
@@ -22,7 +23,9 @@ import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.QueryParam;
+import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.MediaType;
+import jakarta.ws.rs.core.Response;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -176,6 +179,43 @@ public class TorrentResource {
     @Path("/{infoHash}/resume")
     public void resume(@PathParam("infoHash") String infoHashHex) {
         torrentEngine.resumeTorrent(parseInfoHash(infoHashHex));
+    }
+
+    /** Forced recheck (design_docs/0082). Returns at once with the torrent as it now is -
+     * normally VERIFYING - rather than an empty acknowledgement, so a client has the real
+     * resource without waiting for the next snapshot; progress then arrives the usual way.
+     * Calling it while a pass is already running changes nothing and returns the same view.
+     * 409 for a magnet still fetching metadata: there is nothing on disk to check yet. */
+    @POST
+    @Path("/{infoHash}/recheck")
+    @Produces(MediaType.APPLICATION_JSON)
+    public TorrentView recheck(@PathParam("infoHash") String infoHashHex) {
+        InfoHash infoHash = parseInfoHash(infoHashHex);
+        TorrentSession session = torrentEngine.getTorrent(infoHash).orElseThrow(() ->
+                torrentEngine.getPendingMagnet(infoHash).isPresent()
+                        ? new WebApplicationException("Still fetching metadata - nothing to recheck yet",
+                                Response.Status.CONFLICT)
+                        : new NotFoundException("Torrent not found: " + infoHashHex));
+        torrentEngine.recheckTorrent(infoHash);
+        return TorrentView.from(session);
+    }
+
+    /** Forced reannounce (design_docs/0082). The announce runs in the background - this returns
+     * as soon as it has been started; the result shows up on the Trackers endpoint. 409 unless
+     * the torrent is downloading or seeding: a paused, errored or verifying torrent has no
+     * announce to bring forward. A repeat while one is still in flight is accepted and ignored. */
+    @POST
+    @Path("/{infoHash}/reannounce")
+    public void reannounce(@PathParam("infoHash") String infoHashHex) {
+        InfoHash infoHash = parseInfoHash(infoHashHex);
+        TorrentSession session = torrentEngine.getTorrent(infoHash)
+                .orElseThrow(() -> new NotFoundException("Torrent not found: " + infoHashHex));
+        TorrentState state = session.state();
+        if (state != TorrentState.DOWNLOADING && state != TorrentState.SEEDING) {
+            throw new WebApplicationException("Only a downloading or seeding torrent can be reannounced",
+                    Response.Status.CONFLICT);
+        }
+        torrentEngine.reannounceTorrent(infoHash);
     }
 
     /** No DTO wrapper - SeedingLimitOverride has no engine internals to hide, same reasoning

@@ -158,6 +158,10 @@ export class TorrentRow {
    * set of actions. */
   readonly isFetchingMetadata = computed(() => this.state() === 'FETCHING_METADATA');
 
+  /** Only a torrent that is actually announcing has an announce to bring forward - the backend
+   * rejects a forced reannounce in any other state. See design_docs/0082. */
+  readonly isRunning = computed(() => this.state() === 'DOWNLOADING' || this.state() === 'SEEDING');
+
   /** Rounds any genuinely nonzero progress up to at least 1 - Math.round alone would sit at
    * 0 for a long time on a large file (both in the Done% cell and the underlay's width),
    * looking indistinguishable from "hasn't started" even once real data has arrived. */
@@ -190,6 +194,19 @@ export class TorrentRow {
     return [
       toggleItem,
       { label: 'Copy magnet link', icon: 'pi pi-copy', command: () => this.copyMagnetLink() },
+      {
+        label: 'Force reannounce',
+        icon: 'pi pi-megaphone',
+        disabled: !this.isRunning() || this.pendingAction() !== null,
+        command: () => this.onReannounce(),
+      },
+      {
+        label: 'Force recheck',
+        icon: 'pi pi-refresh',
+        disabled: toggleDisabled,
+        command: () => this.onRecheck(),
+      },
+      { separator: true },
       {
         label: 'Seeding limits…',
         icon: 'pi pi-gauge',
@@ -276,6 +293,20 @@ export class TorrentRow {
     this.actions.resume(this.infoHash()).subscribe({ error: () => this.notifyActionFailed('resume') });
   }
 
+  /** No confirm dialog: a recheck drops the torrent's peers while it runs but destroys nothing,
+   * and the row switches to Verifying at once. See design_docs/0082. */
+  onRecheck(): void {
+    this.actions.recheck(this.infoHash()).subscribe({ error: () => this.notifyActionFailed('recheck') });
+  }
+
+  /** Nothing in the row changes when this succeeds, so it gets a toast of its own. */
+  onReannounce(): void {
+    this.actions.reannounce(this.infoHash()).subscribe({
+      next: () => this.messageService.add({ severity: 'info', summary: 'Reannouncing', detail: this.name() }),
+      error: () => this.notifyActionFailed('reannounce'),
+    });
+  }
+
   onRemove(): void {
     this.actions.remove(this.infoHash()).subscribe({ error: () => this.notifyActionFailed('remove') });
   }
@@ -303,7 +334,7 @@ export class TorrentRow {
    * unlike upload/magnet-add) - a failed action clearing its pending state with no
    * explanation would read as even more confusing than doing nothing, so this closes that
    * gap the same way 0029's upload/magnet toasts already do. */
-  private notifyActionFailed(action: PendingTorrentAction): void {
+  private notifyActionFailed(action: PendingTorrentAction | 'recheck' | 'reannounce'): void {
     this.messageService.add({
       severity: 'error',
       summary: `Could not ${action} torrent`,

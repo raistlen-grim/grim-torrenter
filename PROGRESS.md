@@ -1102,6 +1102,17 @@ complete**, per the phased scope in [[0009-phased-scope]]:
   restart no longer stalls); and the build and full unit-test run pass (2026-10-01),
   including its two new and two updated `TorrentSessionTest` cases.
 
+- **Force recheck and force reannounce (2026-10-01)** — picked from the missing-feature review.
+  Recheck stops the torrent's networking, forgets what it believed complete, re-verifies every
+  piece through the same pass (and the same engine-wide limiter) a restart uses, then goes back to
+  running unless it was paused. It reuses the `VERIFYING` state, so no client needs a new concept.
+  Reannounce runs one ordinary tracker announce plus a DHT lookup now, in the background, for a
+  downloading or seeding torrent. `POST /api/torrents/{h}/recheck` returns the torrent itself;
+  `POST .../reannounce` returns once the announce has started. Both are context-menu items on the
+  row and in the details panel. Known limits (pausing mid-recheck through the API, a deleted file
+  ending in `ERROR`) are listed in the doc. Not yet built, run or seen in the browser.
+  ([[0082-force-recheck-and-reannounce]])
+
 **Not yet built** (the rest of Phase 3):
 
 - Multiple/day-of-week-specific rate-limit schedule rules — the one remaining natural addition
@@ -1252,8 +1263,8 @@ with stable ids and multi-label Any/All filtering ([[0077-labels]]), an IP block
 5. The rate-limiting settings group's one remaining natural addition (a multi-rule schedule,
    per-torrent overrides now done via [[0072-per-torrent-limits]]) — pushed to the back of the
    backlog (2026-08-25), marginal real-world value relative to the items above.
-6. **Remaining items from the 2026-09-19 missing-feature review** (all unscoped, see `TODO.md`): force
-   recheck / force reannounce, choosing files (and labels) at add time - which needs an "add paused"
+6. **Remaining items from the 2026-09-19 missing-feature review** (all unscoped, see `TODO.md`):
+   choosing files (and labels) at add time - which needs an "add paused"
    flow and, for a magnet, resolved metadata first - and having the watch folder assign a label from
    its subfolder name; RSS auto-download; moving a torrent's download location.
 7. **Per-torrent priority / download queueing** — parked as "if we need it" (2026-09-19); the agreed

@@ -1836,6 +1836,23 @@ public final class TorrentEngine {
         }
     }
 
+    /** Forced recheck - see TorrentSession.recheck(). The persisted running/stopped marker is
+     * deliberately left alone: the torrent returns to whatever it was doing, and a restart
+     * mid-recheck re-verifies anyway. False if there is no such session (including a pending
+     * magnet, which has nothing on disk to check) or a verification pass is already running.
+     * See design_docs/0082. */
+    public boolean recheckTorrent(InfoHash infoHash) {
+        TorrentSession session = sessions.get(infoHash);
+        return session != null && session.recheck();
+    }
+
+    /** Forced reannounce - see TorrentSession.reannounceNow(). False if there is no such session,
+     * it isn't running, or one is already in flight. See design_docs/0082. */
+    public boolean reannounceTorrent(InfoHash infoHash) {
+        TorrentSession session = sessions.get(infoHash);
+        return session != null && session.reannounceNow();
+    }
+
     public Optional<TorrentSession> getTorrent(InfoHash infoHash) {
         return Optional.ofNullable(sessions.get(infoHash));
     }

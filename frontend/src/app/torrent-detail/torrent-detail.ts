@@ -187,6 +187,7 @@ export class TorrentDetail {
   readonly contextMenuItems = computed<MenuItem[]>(() => {
     const torrent = this.torrent();
     const disabled = this.isVerifying() || this.pendingAction() !== null;
+    const isRunning = torrent?.state === 'DOWNLOADING' || torrent?.state === 'SEEDING';
     const toggleItem: MenuItem =
       torrent?.state === 'STOPPED'
         ? { label: 'Resume', icon: 'pi pi-play', disabled, command: () => this.onResume() }
@@ -194,6 +195,14 @@ export class TorrentDetail {
     return [
       toggleItem,
       { label: 'Copy magnet link', icon: 'pi pi-copy', command: () => this.copyMagnetLink() },
+      {
+        label: 'Force reannounce',
+        icon: 'pi pi-megaphone',
+        disabled: !isRunning || this.pendingAction() !== null,
+        command: () => this.onReannounce(),
+      },
+      { label: 'Force recheck', icon: 'pi pi-refresh', disabled, command: () => this.onRecheck() },
+      { separator: true },
       { label: 'Seeding limits…', icon: 'pi pi-gauge', command: () => this.showSeedingLimitsDialog.set(true) },
       { separator: true },
       { label: 'Remove', icon: 'pi pi-trash', disabled, command: () => this.onRemove() },
@@ -232,6 +241,20 @@ export class TorrentDetail {
     const infoHash = this.infoHash();
     const name = this.torrent()?.name;
     this.actions.resume(infoHash).subscribe({ error: () => this.notifyActionFailed('resume', name) });
+  }
+
+  /** Same two actions, and the same reasoning, as TorrentRow's own onRecheck()/onReannounce(). */
+  onRecheck(): void {
+    const name = this.torrent()?.name;
+    this.actions.recheck(this.infoHash()).subscribe({ error: () => this.notifyActionFailed('recheck', name) });
+  }
+
+  onReannounce(): void {
+    const name = this.torrent()?.name;
+    this.actions.reannounce(this.infoHash()).subscribe({
+      next: () => this.messageService.add({ severity: 'info', summary: 'Reannouncing', detail: name }),
+      error: () => this.notifyActionFailed('reannounce', name),
+    });
   }
 
   /** Unlike TorrentRow's own onRemove(), this also navigates back to the list - the row
@@ -280,7 +303,7 @@ export class TorrentDetail {
 
   /** Takes the name captured when the action started - by the time a slow request fails, the
    * panel may be showing a different torrent. */
-  private notifyActionFailed(action: PendingTorrentAction, name: string | undefined): void {
+  private notifyActionFailed(action: PendingTorrentAction | 'recheck' | 'reannounce', name: string | undefined): void {
     this.messageService.add({
       severity: 'error',
       summary: `Could not ${action} torrent`,

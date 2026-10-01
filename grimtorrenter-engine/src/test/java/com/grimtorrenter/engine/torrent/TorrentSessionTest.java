@@ -2285,6 +2285,98 @@ class TorrentSessionTest {
         }
     }
 
+    /** design_docs/0082: a forced recheck of intact data passes through VERIFYING and ends up
+     * back where it was, with nothing lost. */
+    @Test
+    void recheckOfIntactDataGoesThroughVerifyingAndReturnsToSeeding(@TempDir Path tempDir) throws Exception {
+        byte[] content = fill(20, 1);
+        Files.write(tempDir.resolve("file.bin"), content);
+        RecordingListener listener = new RecordingListener();
+        TorrentSession session = TorrentSession.restoreAsync(singlePieceMetadata(content), new FakeTrackerClient(),
+                tempDir, fakeRemotePeerId(), 6881, listener, null, true);
+        try {
+            awaitState(session, TorrentState.SEEDING);
+            listener.stateChanges.clear();
+
+            assertTrue(session.recheck());
+
+            awaitState(session, TorrentState.SEEDING);
+            assertTrue(listener.stateChanges.contains(TorrentState.VERIFYING));
+            assertEquals(1, session.completedPieceCount());
+        } finally {
+            session.stop();
+        }
+    }
+
+    /** design_docs/0082: the point of the feature - data that changed on disk behind the
+     * session's back is noticed, and the torrent goes back to downloading it. */
+    @Test
+    void recheckNoticesCorruptedDataAndGoesBackToDownloading(@TempDir Path tempDir) throws Exception {
+        byte[] content = fill(20, 1);
+        Files.write(tempDir.resolve("file.bin"), content);
+        TorrentSession session = TorrentSession.restoreAsync(singlePieceMetadata(content), new FakeTrackerClient(),
+                tempDir, fakeRemotePeerId(), 6881, new RecordingListener(), null, true);
+        try {
+            awaitState(session, TorrentState.SEEDING);
+            Files.write(tempDir.resolve("file.bin"), fill(20, 7));
+
+            assertTrue(session.recheck());
+
+            awaitState(session, TorrentState.DOWNLOADING);
+            assertEquals(0, session.completedPieceCount());
+        } finally {
+            session.stop();
+        }
+    }
+
+    /** design_docs/0082: a paused torrent is rechecked but not started. */
+    @Test
+    void recheckOfAPausedTorrentLeavesItPaused(@TempDir Path tempDir) throws Exception {
+        byte[] content = fill(20, 1);
+        Files.write(tempDir.resolve("file.bin"), content);
+        FakeTrackerClient tracker = new FakeTrackerClient();
+        RecordingListener listener = new RecordingListener();
+        TorrentSession session = TorrentSession.restoreAsync(singlePieceMetadata(content), tracker,
+                tempDir, fakeRemotePeerId(), 6881, listener, null, false);
+        awaitState(session, TorrentState.STOPPED);
+        listener.stateChanges.clear();
+
+        assertTrue(session.recheck());
+
+        awaitState(session, TorrentState.STOPPED);
+        Thread.sleep(100);
+        assertEquals(TorrentState.STOPPED, session.state());
+        assertEquals(List.of(TorrentState.VERIFYING, TorrentState.STOPPED), listener.stateChanges);
+        assertEquals(1, session.completedPieceCount());
+        assertTrue(tracker.requests.isEmpty(), "a paused torrent's recheck must not announce anything");
+    }
+
+    /** design_docs/0082: a forced reannounce sends a regular (event-less) announce now, and is
+     * refused for a torrent that isn't running. */
+    @Test
+    void reannounceNowAnnouncesImmediatelyAndOnlyWhileRunning(@TempDir Path tempDir) throws Exception {
+        FakeTrackerClient tracker = new FakeTrackerClient();
+        TorrentSession session = TorrentSession.create(singlePieceMetadata(fill(20, 1)), tracker, tempDir,
+                fakeRemotePeerId(), 6881, new RecordingListener(), null);
+        assertFalse(session.reannounceNow(), "not running yet");
+        session.start();
+        try {
+            assertEquals(1, tracker.requests.size());
+
+            assertTrue(session.reannounceNow());
+
+            long deadline = System.currentTimeMillis() + 5000;
+            while (tracker.requests.size() < 2 && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10);
+            }
+            assertEquals(2, tracker.requests.size());
+            assertNull(tracker.requests.get(1).event());
+        } finally {
+            session.stop();
+        }
+        assertFalse(session.reannounceNow(), "stopped");
+    }
+
     private static void awaitState(TorrentSession session, TorrentState expected) throws InterruptedException {
         long deadline = System.currentTimeMillis() + 5000;
         while (session.state() != expected && System.currentTimeMillis() < deadline) {
