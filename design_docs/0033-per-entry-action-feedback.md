@@ -75,3 +75,51 @@ next broadcast.
 - **Row-level `pointer-events: none` while pending** - rejected; only the opacity cue was
   wanted, not blocking navigation via the row's name link to the detail page while an
   action is in flight against it.
+
+## Addendum: the details panel's pending state is per torrent (2026-10-01)
+
+**Bug.** With the details panel open, only one torrent could be paused/resumed at a time. The
+panel's `pendingAction` was a single signal on `TorrentDetail`, and that component instance is
+reused as the `:infoHash` route param changes, so a request still in flight for one torrent
+(pause/resume are synchronous and can take a minute while they wait on the tracker) left the
+footer button and menu items disabled for every torrent selected afterwards. The rows never had
+this problem - each `TorrentRow` is its own instance - but their action buttons are hidden while
+the panel is docked, so the panel footer was the main way in.
+
+**Fix.** `TorrentDetail` keeps a `Map<infoHash, action>` signal; `pendingAction` is now a computed
+lookup for the torrent currently shown, so the template is unchanged. Two things the same reuse
+got wrong are fixed alongside: the failure toast names the torrent the action was started on (not
+whichever is shown when the request fails), and a remove that completes after the panel has moved
+to another torrent no longer closes the panel.
+
+## Addendum: one shared pending-action service (2026-10-01)
+
+The fix above left the row and the panel tracking pending state separately: an action started in
+the panel (the usual place while it is docked, since the row's buttons are hidden then) didn't
+dim the row, one started from the row's context menu didn't disable the panel footer, and closing
+the panel forgot it. The user asked for the row to show it too.
+
+**Decision.** A root `TorrentActionsService` (`services/torrent-actions.service.ts`) owns
+`pause()`/`resume()`/`remove()` for a single torrent and a `Map<infoHash, action>` signal of
+requests in flight. An entry is set when the returned observable is subscribed and cleared in
+`finalize`. `TorrentRow.pendingAction` and `TorrentDetail.pendingAction` are both computed lookups
+into it (`pendingFor(infoHash)`), so templates and the `row-pending` host class are unchanged.
+`remove()` also does the `removeLocal()` both components used to do themselves. This revises the
+"duplicated rather than a shared service" call noted in `TorrentDetail`'s own comment - the menus,
+confirm dialogs and failure toasts stay per component (`MessageService`/`ConfirmationService` are
+provided by `TorrentList`, not root), only the request and its pending state moved.
+
+The toolbar's Pause all/Resume all go through the same service, so every affected row now dims
+until its own request returns - [[0043-app-shell-and-filtering]] had noted the lack of per-row
+feedback there as a limitation of row-private state. Failures of a bulk action are still not
+toasted per torrent.
+
+**Alternatives considered.** A backend-reported "pausing"/"resuming" state on `TorrentView` would
+be the [[0071-thin-frontend-as-a-standing-consideration]] answer and would also show in a second
+browser; not done here because it needs pause/resume to stop being one synchronous request, which
+is the larger change already noted for `start()` in PROGRESS.md's known gaps. This service is
+per-viewer feedback on the viewer's own request, which 0071 allows.
+
+**Stability.** One map entry per in-flight request, removed on completion, error or unsubscribe,
+so it is bounded by the number of torrents and can't leak. A second action on the same torrent
+while one is pending is prevented by the disabled controls, as before.

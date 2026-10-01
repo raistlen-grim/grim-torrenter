@@ -7,10 +7,11 @@ import { ButtonModule } from 'primeng/button';
 import { ContextMenu, ContextMenuModule } from 'primeng/contextmenu';
 import { TabsModule } from 'primeng/tabs';
 import { TooltipModule } from 'primeng/tooltip';
-import { finalize, map } from 'rxjs';
+import { map } from 'rxjs';
 
 import { Torrent } from '../models/torrent.model';
 import { TorrentEventsService } from '../services/torrent-events.service';
+import { PendingTorrentAction, TorrentActionsService } from '../services/torrent-actions.service';
 import { DetailTab, TorrentDetailTabService } from '../services/torrent-detail-tab.service';
 import { TorrentService } from '../services/torrent.service';
 import { ActiveContextMenuRegistry } from '../shared/active-context-menu-registry';
@@ -33,9 +34,9 @@ const FILE_COUNT_POLL_INTERVAL_MS = 3000;
  * header reuses TorrentEventsService's existing live data rather than a dedicated "summary"
  * endpoint - everything shown here is already part of the list's own data.
  *
- * <p>Pause/resume/remove are duplicated here rather than factored into a shared service with
- * TorrentRow - same self-contained-per-instance precedent SeedingLimitsDialog's own embedding
- * already follows (see TorrentRow's own comment). ConfirmationService/MessageService are
+ * <p>Pause/resume/remove go through the shared TorrentActionsService (as TorrentRow's do), so
+ * both show the same pending state; the handlers, menu and confirm dialog around them are still
+ * this component's own. ConfirmationService/MessageService are
  * injected, not provided here - this component is always rendered inside TorrentList's
  * <router-outlet> (see torrent-list.html), so it resolves TorrentList's own instances via
  * Angular's hierarchical DI and its existing <p-toast>/<p-confirmDialog> already catch
@@ -67,6 +68,7 @@ export class TorrentDetail {
   private readonly events = inject(TorrentEventsService);
   private readonly tabMemory = inject(TorrentDetailTabService);
   private readonly torrentService = inject(TorrentService);
+  private readonly actions = inject(TorrentActionsService);
   private readonly confirmationService = inject(ConfirmationService);
   private readonly messageService = inject(MessageService);
   private readonly activeContextMenus = inject(ActiveContextMenuRegistry);
@@ -170,7 +172,12 @@ export class TorrentDetail {
     this.router.navigate(['/']);
   }
 
-  readonly pendingAction = signal<'pause' | 'resume' | 'remove' | null>(null);
+  /** Looked up per torrent from the shared TorrentActionsService, not one flag for the whole
+   * panel: this component instance is reused as the route param changes, and a pause/resume
+   * request can take a long time (it blocks on the tracker), so an action still in flight for
+   * one torrent must not disable the footer for whichever torrent is selected next. Shared with
+   * TorrentRow, so either one shows an action the other started. See design_docs/0033's addenda. */
+  readonly pendingAction = computed(() => this.actions.pendingFor(this.infoHash()));
   readonly showSeedingLimitsDialog = signal(false);
 
   private readonly detailContextMenu = viewChild.required<ContextMenu>('detailMenu');
@@ -217,20 +224,14 @@ export class TorrentDetail {
 
   onPause(): void {
     const infoHash = this.infoHash();
-    this.pendingAction.set('pause');
-    this.torrentService
-      .pause(infoHash)
-      .pipe(finalize(() => this.pendingAction.set(null)))
-      .subscribe({ error: () => this.notifyActionFailed('pause') });
+    const name = this.torrent()?.name;
+    this.actions.pause(infoHash).subscribe({ error: () => this.notifyActionFailed('pause', name) });
   }
 
   onResume(): void {
     const infoHash = this.infoHash();
-    this.pendingAction.set('resume');
-    this.torrentService
-      .resume(infoHash)
-      .pipe(finalize(() => this.pendingAction.set(null)))
-      .subscribe({ error: () => this.notifyActionFailed('resume') });
+    const name = this.torrent()?.name;
+    this.actions.resume(infoHash).subscribe({ error: () => this.notifyActionFailed('resume', name) });
   }
 
   /** Unlike TorrentRow's own onRemove(), this also navigates back to the list - the row
@@ -238,17 +239,11 @@ export class TorrentDetail {
    * show once torrent() stops resolving. */
   onRemove(): void {
     const infoHash = this.infoHash();
-    this.pendingAction.set('remove');
-    this.torrentService
-      .remove(infoHash)
-      .pipe(finalize(() => this.pendingAction.set(null)))
-      .subscribe({
-        next: () => {
-          this.events.removeLocal(infoHash);
-          this.router.navigate(['/']);
-        },
-        error: () => this.notifyActionFailed('remove'),
-      });
+    const name = this.torrent()?.name;
+    this.actions.remove(infoHash).subscribe({
+      next: () => this.closeIfStillShowing(infoHash),
+      error: () => this.notifyActionFailed('remove', name),
+    });
   }
 
   /** Same wording, and the same reason, as TorrentRow's own confirmRemoveWithData(). */
@@ -266,26 +261,30 @@ export class TorrentDetail {
       rejectLabel: 'Cancel',
       acceptButtonProps: { severity: 'danger' },
       accept: () => {
-        this.pendingAction.set('remove');
-        this.torrentService
-          .remove(infoHash, true)
-          .pipe(finalize(() => this.pendingAction.set(null)))
-          .subscribe({
-            next: () => {
-              this.events.removeLocal(infoHash);
-              this.router.navigate(['/']);
-            },
-            error: () => this.notifyActionFailed('remove'),
-          });
+        const name = torrent.name;
+        this.actions.remove(infoHash, true).subscribe({
+          next: () => this.closeIfStillShowing(infoHash),
+          error: () => this.notifyActionFailed('remove', name),
+        });
       },
     });
   }
 
-  private notifyActionFailed(action: 'pause' | 'resume' | 'remove'): void {
+  /** A slow remove can finish after the panel has moved on to another torrent - closing it then
+   * would close the wrong torrent's panel. */
+  private closeIfStillShowing(infoHash: string): void {
+    if (this.infoHash() === infoHash) {
+      this.router.navigate(['/']);
+    }
+  }
+
+  /** Takes the name captured when the action started - by the time a slow request fails, the
+   * panel may be showing a different torrent. */
+  private notifyActionFailed(action: PendingTorrentAction, name: string | undefined): void {
     this.messageService.add({
       severity: 'error',
       summary: `Could not ${action} torrent`,
-      detail: `"${this.torrent()?.name}" - please try again.`,
+      detail: `"${name}" - please try again.`,
     });
   }
 }

@@ -25,6 +25,7 @@ import { filter, map } from 'rxjs';
 
 import { TorrentWithRate } from '../models/torrent.model';
 import { LabelService } from '../services/label.service';
+import { TorrentActionsService } from '../services/torrent-actions.service';
 import { TorrentEventsService } from '../services/torrent-events.service';
 import {
   STATUS_FILTER_LABELS,
@@ -214,6 +215,7 @@ function resolveAddState(rawValue: string, torrents: readonly TorrentWithRate[])
 })
 export class TorrentList {
   private readonly torrentService = inject(TorrentService);
+  private readonly actions = inject(TorrentActionsService);
   private readonly messageService = inject(MessageService);
   private readonly events = inject(TorrentEventsService);
   private readonly router = inject(Router);
@@ -432,16 +434,16 @@ export class TorrentList {
   }
 
   /** Loops the existing per-torrent pause() call rather than needing a new bulk backend
-   * endpoint - fired concurrently, not sequentially. No per-row pending-spinner feedback
-   * the way a single row's own button click gets (TorrentRow.pendingAction is private to
-   * each row instance); affected rows still visibly update via the next state-changed push
-   * or snapshot. See design_docs/0043. */
+   * endpoint - fired concurrently, not sequentially. Goes through TorrentActionsService so
+   * each affected row shows the same pending feedback a click on its own button gets. A
+   * failure isn't toasted per torrent here (one toast per row of a large list would bury the
+   * screen); the row simply stays in its old state. See design_docs/0043. */
   pauseAll(): void {
     const targets = this.events.torrents().filter((t) => t.state === 'DOWNLOADING' || t.state === 'SEEDING');
     if (targets.length === 0) {
       return;
     }
-    targets.forEach((t) => this.torrentService.pause(t.infoHash).subscribe());
+    targets.forEach((t) => this.actions.pause(t.infoHash).subscribe({ error: () => undefined }));
     this.messageService.add({ severity: 'info', summary: 'Pausing', detail: pluralTorrentCount(targets.length) });
   }
 
@@ -450,7 +452,7 @@ export class TorrentList {
     if (targets.length === 0) {
       return;
     }
-    targets.forEach((t) => this.torrentService.resume(t.infoHash).subscribe());
+    targets.forEach((t) => this.actions.resume(t.infoHash).subscribe({ error: () => undefined }));
     this.messageService.add({ severity: 'info', summary: 'Resuming', detail: pluralTorrentCount(targets.length) });
   }
 

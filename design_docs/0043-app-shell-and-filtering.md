@@ -251,6 +251,8 @@ private to each row instance with no external setter, and wiring bulk-triggered 
 spinners through would have meant a real state-sharing change, not proportionate to what a
 toolbar action needs; affected rows still visibly update via the next state-changed push or
 2s snapshot, same as any other externally-triggered change already does today.
+(Superseded 2026-10-01: pending state moved to a shared `TorrentActionsService`, so bulk
+actions now dim each affected row too - see [[0033-per-entry-action-feedback]]'s addendum.)
 
 ## Alternatives considered
 

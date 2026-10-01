@@ -3,12 +3,10 @@ import { Router } from '@angular/router';
 import { ConfirmationService, MenuItem, MessageService } from 'primeng/api';
 import { ButtonModule } from 'primeng/button';
 import { ContextMenu, ContextMenuModule } from 'primeng/contextmenu';
-import { finalize } from 'rxjs';
 
 import { TorrentWithRate } from '../../models/torrent.model';
 import { LabelService } from '../../services/label.service';
-import { TorrentEventsService } from '../../services/torrent-events.service';
-import { TorrentService } from '../../services/torrent.service';
+import { PendingTorrentAction, TorrentActionsService } from '../../services/torrent-actions.service';
 import { copyToClipboard } from '../../shared/clipboard';
 import { FormatBytesPipe } from '../../shared/format-bytes.pipe';
 import { FormatEtaPipe } from '../../shared/format-eta.pipe';
@@ -69,8 +67,7 @@ const MAX_VISIBLE_LABEL_CHIPS = 2;
   },
 })
 export class TorrentRow {
-  private readonly torrentService = inject(TorrentService);
-  private readonly events = inject(TorrentEventsService);
+  private readonly actions = inject(TorrentActionsService);
   private readonly confirmationService = inject(ConfirmationService);
   private readonly messageService = inject(MessageService);
   private readonly activeContextMenus = inject(ActiveContextMenuRegistry);
@@ -94,12 +91,13 @@ export class TorrentRow {
    * set. */
   readonly selected = input(false);
 
-  /** Set the instant Pause/Resume/Remove is clicked, cleared on response (success or
-   * failure) via finalize - drives both the clicked button's own loading/disabled state
-   * and a whole-row dim (see host binding above), so this torrent visibly has something
-   * in flight against it rather than looking like the click did nothing. See
+  /** Set the instant Pause/Resume/Remove is started, cleared on response (success or
+   * failure) - drives both the button's own loading/disabled state and a whole-row dim (see
+   * host binding above), so this torrent visibly has something in flight against it rather
+   * than looking like the click did nothing. Read from the shared TorrentActionsService, so an
+   * action started from the details panel or Pause all/Resume all shows here too. See
    * design_docs/0033. */
-  readonly pendingAction = signal<'pause' | 'resume' | 'remove' | null>(null);
+  readonly pendingAction = computed(() => this.actions.pendingFor(this.torrent().infoHash));
 
   /** Toggled from the context menu below, hosting its own SeedingLimitsDialog instance in
    * this row's own template - same self-contained-per-row pattern as the row's own
@@ -271,31 +269,15 @@ export class TorrentRow {
   }
 
   onPause(): void {
-    this.pendingAction.set('pause');
-    this.torrentService
-      .pause(this.infoHash())
-      .pipe(finalize(() => this.pendingAction.set(null)))
-      .subscribe({ error: () => this.notifyActionFailed('pause') });
+    this.actions.pause(this.infoHash()).subscribe({ error: () => this.notifyActionFailed('pause') });
   }
 
   onResume(): void {
-    this.pendingAction.set('resume');
-    this.torrentService
-      .resume(this.infoHash())
-      .pipe(finalize(() => this.pendingAction.set(null)))
-      .subscribe({ error: () => this.notifyActionFailed('resume') });
+    this.actions.resume(this.infoHash()).subscribe({ error: () => this.notifyActionFailed('resume') });
   }
 
   onRemove(): void {
-    this.pendingAction.set('remove');
-    const infoHash = this.infoHash();
-    this.torrentService
-      .remove(infoHash)
-      .pipe(finalize(() => this.pendingAction.set(null)))
-      .subscribe({
-        next: () => this.events.removeLocal(infoHash),
-        error: () => this.notifyActionFailed('remove'),
-      });
+    this.actions.remove(this.infoHash()).subscribe({ error: () => this.notifyActionFailed('remove') });
   }
 
   /** No "Are you sure? This action cannot be undone." (STYLE_GUIDE_NOTES.md's Voice rules
@@ -312,14 +294,7 @@ export class TorrentRow {
       rejectLabel: 'Cancel',
       acceptButtonProps: { severity: 'danger' },
       accept: () => {
-        this.pendingAction.set('remove');
-        this.torrentService
-          .remove(infoHash, true)
-          .pipe(finalize(() => this.pendingAction.set(null)))
-          .subscribe({
-            next: () => this.events.removeLocal(infoHash),
-            error: () => this.notifyActionFailed('remove'),
-          });
+        this.actions.remove(infoHash, true).subscribe({ error: () => this.notifyActionFailed('remove') });
       },
     });
   }
@@ -328,7 +303,7 @@ export class TorrentRow {
    * unlike upload/magnet-add) - a failed action clearing its pending state with no
    * explanation would read as even more confusing than doing nothing, so this closes that
    * gap the same way 0029's upload/magnet toasts already do. */
-  private notifyActionFailed(action: 'pause' | 'resume' | 'remove'): void {
+  private notifyActionFailed(action: PendingTorrentAction): void {
     this.messageService.add({
       severity: 'error',
       summary: `Could not ${action} torrent`,

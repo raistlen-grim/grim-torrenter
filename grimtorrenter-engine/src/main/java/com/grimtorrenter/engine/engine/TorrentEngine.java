@@ -1450,6 +1450,9 @@ public final class TorrentEngine {
      * worth of time, a reasonable re-announce cadence on its own. See design_docs/0028's
      * addendum. */
     private static final Duration EMPTY_ROUND_RETRY_DELAY = Duration.ofSeconds(5);
+    /** How long shutdown() waits, in total, for the sessions' background STOPPED announces. Kept
+     * well under a container runtime's default 10s stop grace period. See design_docs/0081. */
+    private static final Duration SHUTDOWN_ANNOUNCE_GRACE = Duration.ofSeconds(3);
 
     private void fetchMagnetMetadataViaTrackerThenAdd(MagnetLink magnet, List<String> trackerUrls, String source) {
         Settings settings = settingsStore.current();
@@ -2034,13 +2037,15 @@ public final class TorrentEngine {
      * is exiting. */
     public void shutdown() {
         maintenanceScheduler.shutdownNow();
-        for (TorrentSession session : sessions.values()) {
+        List<TorrentSession> closed = List.copyOf(sessions.values());
+        for (TorrentSession session : closed) {
             // A graceful exit shouldn't rely on the next periodic tick having already run -
             // see design_docs/0064.
             flushLifetimeStats(session);
             session.close();
         }
         sessions.clear();
+        awaitStoppedAnnounces(closed);
         if (peerServer != null) {
             peerServer.close();
         }
@@ -2050,6 +2055,25 @@ public final class TorrentEngine {
         }
         if (lsdService != null) {
             lsdService.close();
+        }
+    }
+
+    /** Each close() above only *starts* its STOPPED announce (design_docs/0081), so they all run
+     * at once; this gives them one shared, bounded window to go out before the process exits and
+     * takes the still-running ones down with it. Bounded so shutdown never again takes as long as
+     * the slowest tracker times the number of torrents. */
+    private static void awaitStoppedAnnounces(List<TorrentSession> closed) {
+        long deadlineNanos = System.nanoTime() + SHUTDOWN_ANNOUNCE_GRACE.toNanos();
+        try {
+            for (TorrentSession session : closed) {
+                long remainingNanos = deadlineNanos - System.nanoTime();
+                if (remainingNanos <= 0) {
+                    return;
+                }
+                session.awaitStoppedAnnounce(Duration.ofNanos(remainingNanos));
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 

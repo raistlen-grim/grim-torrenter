@@ -1038,8 +1038,69 @@ complete**, per the phased scope in [[0009-phased-scope]]:
   the row's error text now wraps, is capped at two lines and carries the full text in its tooltip.
   Changing the proxy host/port/username/enabled flag (via settings) or its password wakes the retry
   immediately instead of waiting out the backoff (`retryStartNow()`/`retryFailedStarts()`). New
-  `TorrentSessionTest` cases cover recovery, the immediate wake-up and cancel-on-pause. Not yet run
-  or seen in the browser. ([[0036-dht-backstop-for-tracker-bearing-torrents]]'s 2026-09-20 addendum)
+  `TorrentSessionTest` cases cover recovery, the immediate wake-up and cancel-on-pause. Test-verified
+  (the unit tests pass, 2026-10-01); not yet seen in the browser. ([[0036-dht-backstop-for-tracker-bearing-torrents]]'s 2026-09-20 addendum)
+
+- **Cross-peer request coordination, adaptive request pipeline, endgame mode (2026-09-21)** — from a
+  real report: a magnet with dozens of seeders downloaded from one peer at ~18 kB/s while qBittorrent
+  pulled ~3 MB/s. Three causes in the request path: every peer was asked for the same blocks, the
+  per-peer pipeline was fixed at 5 blocks, and pending requests were never forgotten on choke. Fixed
+  with a per-session `InFlightBlocks` claim map (a block is requested from one peer at a time, a claim
+  older than 30 s can be taken over by another peer), a pipeline depth that scales with the peer's
+  measured rate (5 to 128 blocks), clearing `pendingRequests` on Choke, and an endgame mode that
+  duplicates the last blocks across up to 3 peers and cancels on arrival. Engine-internal, no
+  frontend change. **Confirmed by the user in real use (2026-10-01)**: torrents with active peers
+  download at speeds comparable to qBittorrent. ([[0080-cross-peer-request-coordination]])
+
+- **A failed tracker announce no longer aborts a magnet fetch (2026-09-21)** — from a real report: a
+  magnet whose trackers all failed DNS resolution once (a transient `EAI_AGAIN` resolver blip inside
+  the container) was abandoned immediately with "Could not announce to any tracker", while
+  qBittorrent added the same magnet fine. `fetchMagnetMetadataViaTrackerThenAdd()` now treats a
+  failed announce like an empty round: it falls back to a DHT lookup when DHT is running, otherwise
+  waits `EMPTY_ROUND_RETRY_DELAY` and re-announces, all within the existing
+  `magnetFetchTimeBudgetSeconds` deadline. It only gives up at the deadline.
+  ([[0028-magnet-links-and-dht]]'s 2026-09-21 addendum)
+
+- **Tracker events: time-window debounce, one event pair per tracker URL (2026-09-21)** — a
+  long-running instance's feed had filled with `TRACKER_UNREACHABLE`/`TRACKER_RECOVERED` pairs: the
+  debounce counted announce cycles, so a flapping tracker produced a pair every third cycle, and
+  events were per torrent x tracker, so N torrents on one flaky tracker logged N pairs.
+  `TrackedTrackerClient` now requires announces to have failed continuously for 30 minutes (still at
+  least 2 failures) before reporting unreachable, and to have succeeded continuously for 30 minutes
+  before reporting recovered - this replaces the original "asymmetric on purpose" immediate recovery.
+  A new engine-wide `TrackerReachability` collapses reports across torrents, so both events are now
+  engine-wide (null `infoHash`/`torrentName`, tracker URL in the message). Accepted trade-offs: the
+  events no longer say which torrents were affected, and the in-memory state resets on restart.
+  `TrackedTrackerClientTest` rewritten with an injected clock, new `TrackerReachabilityTest`, and the
+  `TorrentEngineTest` adapter case updated. ([[0055-library-events]]'s 2026-09-21 revision)
+
+- **Magnet failure toast restored (2026-09-21)** — [[0070-pending-magnet-as-first-class-torrent]]
+  removed the frontend's `pendingInfoHashEffect`, so a failed metadata fetch silently dropped the row
+  and left only the Events-page entry. `TorrentList` now toasts every live `MAGNET_ADD_FAILED`
+  event's message, with a timestamp cursor so old failures aren't replayed when the component is
+  re-created. Toasts only show while the torrent list is mounted.
+  ([[0060-magnet-add-failure-feedback]]'s 2026-09-21 addendum)
+
+- **Details-panel pending state, shared action service, WebSocket subprotocol fix (2026-10-01)** —
+  three fixes from one session. (1) With the details panel open only one torrent could be
+  paused/resumed at a time: the panel kept a single pending flag while its component instance is
+  reused across torrents. Pending state now lives in a root `TorrentActionsService`, keyed by info
+  hash, read by the row, the panel and Pause all/Resume all alike, so each shows an action the
+  other started ([[0033-per-entry-action-feedback]]'s addenda). (2) Live updates stalled in the
+  Angular dev server with the socket opening and closing every few seconds: a browser holding a
+  token from an earlier login kept offering `["bearer", <token>]`, and the server selected no
+  subprotocol, which makes a browser drop the connection. The server now selects `bearer`
+  (`quarkus.websockets-next.server.supported-subprotocols`, confirmed with a `curl` handshake),
+  and the frontend no longer offers the token while auth is off ([[0061-authentication]]'s
+  correction). This also fixes live updates for every logged-in browser with auth on, which had
+  never been checked in a browser. (3) A dev-mode live reload took ~10s and
+  briefly returned 503s because shutdown waited on each torrent's `STOPPED` announce in turn - the
+  same wait that made a pause slow. `stop()` now sends that announce in the background, `start()`
+  waits for a pending one so the tracker sees them in order, and shutdown gives all of them one
+  shared 3 s window ([[0081-background-stopped-announce]]). Verification: (1) seen working by the
+  user; (2) confirmed at the handshake level only; (3) confirmed by the user in dev (pause is instant, a
+  restart no longer stalls); and the build and full unit-test run pass (2026-10-01),
+  including its two new and two updated `TorrentSessionTest` cases.
 
 **Not yet built** (the rest of Phase 3):
 

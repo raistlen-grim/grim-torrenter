@@ -120,10 +120,16 @@ export class TorrentEventsService {
    * param would leak a long-lived credential into proxy access logs. Read fresh on every call
    * (including a reconnect after a dropped connection), so a token obtained after this
    * service's first connect attempt - e.g. LoginPage calling connect() once login succeeds -
-   * is still picked up. */
+   * is still picked up.
+   *
+   * <p>Not offered at all while the backend is known to have auth switched off: a token left in
+   * localStorage from an earlier login would otherwise still be sent, and a browser that offers
+   * subprotocols drops the connection unless the server selects one - an endless
+   * open/close/reconnect loop with no live updates. See design_docs/0061's 2026-10-01
+   * correction. */
   private openSocket(): void {
     const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
-    const token = this.authService.token();
+    const token = this.authService.authEnabled() === false ? null : this.authService.token();
     const subprotocols = token ? ['bearer', token] : undefined;
     this.socket = new WebSocket(`${protocol}://${location.host}/ws/torrents`, subprotocols);
     this.socket.onmessage = (event) => this.handleMessage(JSON.parse(event.data));

@@ -96,9 +96,10 @@ imply otherwise. A single shared password is the whole credential.
   itself tells operators to add for TLS, commonly logs the full request
   URL by default, so a query param would leak a long-lived credential into
   proxy access logs, undermining the very setup being recommended. Headers
-  are far less commonly logged by default. No response-side subprotocol
+  are far less commonly logged by default. ~~No response-side subprotocol
   selection is needed — per RFC 6455 that's optional, and browsers
-  complete the handshake fine without one. **Flagged as needing
+  complete the handshake fine without one.~~ **Wrong - corrected
+  2026-10-01, see the correction at the end of this doc.** **Flagged as needing
   verification against `quarkus-websockets-next`'s actual
   handshake-header API once built** — written against the documented
   shape of `HandshakeRequest.header(String)`, not confirmed by compiling
@@ -328,3 +329,37 @@ discoverable after clicking Save. `SettingsResource`'s own server-side
 rejection ([[0061-authentication]]'s "Decision" section) is unchanged and
 still the authoritative guard either way - this is purely a client-side
 UX improvement on top of it.
+
+## Correction (2026-10-01): the server must select the `bearer` subprotocol
+
+Found while looking into a dev-server WebSocket problem (below).
+
+**The error.** This doc claimed a browser completes the handshake when the server selects none of
+the offered subprotocols. It doesn't: a browser that offered subprotocols fails the connection
+when the response carries no `Sec-WebSocket-Protocol`. The frontend offers `["bearer", <token>]`
+whenever a token is in `localStorage`, so with `authEnabled` on, a logged-in browser would never
+keep the socket open. This is the manual browser check this doc left open.
+
+**Fix.** `quarkus.websockets-next.server.supported-subprotocols=bearer` in
+`application.properties`, so the handshake response selects `bearer`. The token is still read
+from the request header in `@OnOpen` exactly as before. Confirmed 2026-10-01 with a `curl`
+handshake against the running backend: the `101` response now carries
+`sec-websocket-protocol: bearer`. It needs a full process restart to take effect - a dev-mode
+live reload did not pick it up.
+
+**The dev-server symptom that prompted it.** In `ng serve` the backend logged `WebSocket
+opened`/`closed` in the same millisecond every few seconds and the UI stopped updating. Reproduced
+at the handshake level with `curl`: with no subprotocol offered the socket opens and snapshots
+flow (directly and through the dev proxy); with `Sec-WebSocket-Protocol: bearer, <token>` offered
+the `101` response selects none. The dev backend had `authEnabled: false, passwordSet: true`, i.e.
+a browser origin that had logged in earlier still held a token and kept offering it. (The browser
+console showed an empty failure reason rather than naming the subprotocol, so the browser half is
+inferred, not observed.)
+
+**Second fix, frontend.** `AuthService` remembers the last `authEnabled` that `status()` returned
+and `TorrentEventsService.openSocket()` doesn't offer the token when it is known to be `false`.
+This removes the loop for the auth-off case regardless of the server setting above; the auth-on
+case still depends on the server selecting `bearer`.
+
+Stability: no new state on the backend; one boolean signal on the frontend. The failure mode
+removed was a reconnect every few seconds per affected browser, forever.

@@ -29,8 +29,16 @@ export class AuthService {
   private readonly _token = signal<string | null>(readStoredToken());
   readonly token = this._token.asReadonly();
 
+  /** The last authEnabled value status() returned, or null before the first answer. Lets
+   * TorrentEventsService leave the token off the WebSocket handshake when the backend doesn't
+   * ask for one. authGuard calls status() on every guarded navigation, so this stays current. */
+  private readonly _authEnabled = signal<boolean | null>(null);
+  readonly authEnabled = this._authEnabled.asReadonly();
+
   status(): Observable<AuthStatus> {
-    return this.http.get<AuthStatus>('/api/auth/status');
+    return this.http
+      .get<AuthStatus>('/api/auth/status')
+      .pipe(tap((status) => this._authEnabled.set(status.authEnabled)));
   }
 
   login(password: string): Observable<void> {

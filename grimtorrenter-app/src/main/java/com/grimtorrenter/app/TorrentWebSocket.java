@@ -47,10 +47,14 @@ public class TorrentWebSocket {
      * <p>Flagged, like this file's other API usage (design_docs/0019), as not yet confirmed
      * by actually compiling it: handshakeRequest().header(String) is written against the
      * documented shape of quarkus-websockets-next's HandshakeRequest, not verified against its
-     * real signature. This endpoint doesn't echo a chosen subprotocol back in the handshake
-     * response - per RFC 6455 that's optional, and browsers complete the connection fine
-     * without one (they just see an empty WebSocket.protocol), so no response-side API is
-     * needed even if this framework doesn't expose one. */
+     * real signature.
+     *
+     * <p>The handshake response has to select one of the offered subprotocols: a browser that
+     * offered any fails the connection as soon as the handshake completes if the server picks
+     * none.
+     * application.properties therefore lists "bearer" under
+     * quarkus.websockets-next.server.supported-subprotocols. See design_docs/0061's
+     * 2026-10-01 correction. */
     @OnOpen
     public void onOpen(WebSocketConnection connection) {
         if (settingsStore.current().authEnabled() && !sessionTokenStore.validate(tokenFromSubprotocol(connection))) {

@@ -1667,7 +1667,7 @@ class TorrentSessionTest {
     }
 
     @Test
-    void stopIsIdempotentAndSendsStoppedEvent(@TempDir Path tempDir) throws IOException {
+    void stopIsIdempotentAndSendsStoppedEvent(@TempDir Path tempDir) throws Exception {
         TorrentMetadata metadata = singlePieceMetadata(fill(20, 1));
         FakeTrackerClient tracker = new FakeTrackerClient();
         RecordingListener listener = new RecordingListener();
@@ -1679,6 +1679,8 @@ class TorrentSessionTest {
         session.stop();
 
         assertEquals(TorrentState.STOPPED, session.state());
+        // The announce runs in the background (design_docs/0081).
+        assertTrue(session.awaitStoppedAnnounce(Duration.ofSeconds(5)));
         assertEquals(1, tracker.requests.stream().filter(r -> r.event() == TrackerEvent.STOPPED).count());
     }
 
@@ -2156,6 +2158,9 @@ class TorrentSessionTest {
         assertEquals(TorrentState.ERROR, session.state());
 
         session.stop();
+        // stop()'s own STOPPED announce runs in the background (design_docs/0081) - let it land
+        // so it isn't mistaken for a retry.
+        assertTrue(session.awaitStoppedAnnounce(Duration.ofSeconds(5)));
         int afterStop = tracker.requests.size();
         Thread.sleep(300);
 
@@ -2204,6 +2209,77 @@ class TorrentSessionTest {
             Thread.sleep(100);
             assertEquals(TorrentState.DOWNLOADING, session.state());
             assertEquals(announces, tracker.requests.size());
+        } finally {
+            session.stop();
+        }
+    }
+
+    /** design_docs/0081: stop() must return without waiting on the tracker - a pause used to
+     * hold its request (and engine shutdown every other torrent) for as long as the slowest
+     * tracker took to answer. */
+    @Test
+    void stopReturnsWithoutWaitingForTheStoppedAnnounce(@TempDir Path tempDir) throws Exception {
+        CountDownLatch releaseStopped = new CountDownLatch(1);
+        List<TrackerEvent> events = new CopyOnWriteArrayList<>();
+        TrackerClient slowOnStopped = request -> {
+            if (request.event() == TrackerEvent.STOPPED) {
+                try {
+                    releaseStopped.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            events.add(request.event());
+            return new TrackerResponse(3600, null, 0, 0, List.of(), null, null);
+        };
+        TorrentSession session = TorrentSession.create(singlePieceMetadata(fill(20, 1)), slowOnStopped, tempDir,
+                fakeRemotePeerId(), 6881, new RecordingListener(), null);
+        try {
+            session.start();
+
+            session.stop(); // would hang here forever if it still announced synchronously
+
+            assertEquals(TorrentState.STOPPED, session.state());
+            assertFalse(session.awaitStoppedAnnounce(Duration.ofMillis(50)), "the announce is still in flight");
+            assertFalse(events.contains(TrackerEvent.STOPPED));
+        } finally {
+            releaseStopped.countDown();
+        }
+        assertTrue(session.awaitStoppedAnnounce(Duration.ofSeconds(5)));
+        assertEquals(List.of(TrackerEvent.STARTED, TrackerEvent.STOPPED), events);
+    }
+
+    /** design_docs/0081: a resume right after a pause waits for the pause's STOPPED announce, so
+     * the tracker never sees STARTED arrive first and then drops us on the late STOPPED. */
+    @Test
+    void startWaitsForAPendingStoppedAnnounceSoTheTrackerSeesThemInOrder(@TempDir Path tempDir) throws Exception {
+        CountDownLatch releaseStopped = new CountDownLatch(1);
+        List<TrackerEvent> events = new CopyOnWriteArrayList<>();
+        TrackerClient slowOnStopped = request -> {
+            if (request.event() == TrackerEvent.STOPPED) {
+                try {
+                    releaseStopped.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            events.add(request.event());
+            return new TrackerResponse(3600, null, 0, 0, List.of(), null, null);
+        };
+        TorrentSession session = TorrentSession.create(singlePieceMetadata(fill(20, 1)), slowOnStopped, tempDir,
+                fakeRemotePeerId(), 6881, new RecordingListener(), null);
+        session.start();
+        session.stop();
+
+        Thread resume = Thread.ofVirtual().start(session::start);
+        Thread.sleep(100);
+        assertEquals(TorrentState.STOPPED, session.state(), "the resume must still be waiting");
+
+        releaseStopped.countDown();
+        resume.join(5000);
+        try {
+            assertEquals(TorrentState.DOWNLOADING, session.state());
+            assertEquals(List.of(TrackerEvent.STARTED, TrackerEvent.STOPPED, TrackerEvent.STARTED), events);
         } finally {
             session.stop();
         }

@@ -383,6 +383,9 @@ public final class TorrentSession implements AutoCloseable {
      * design_docs/0036's 2026-09-20 addendum. */
     private volatile boolean startFailedRetryable;
     private volatile boolean startRetryActive;
+    /** The background STOPPED announce started by the most recent stop(), or null if stop() has
+     * never run. See stop() and design_docs/0081. */
+    private volatile Thread stoppedAnnounce;
     /** Released by retryStartNow() to cut the retry thread's backoff short. */
     private final java.util.concurrent.Semaphore startRetryWake = new java.util.concurrent.Semaphore(0);
     private volatile long startRetryInitialMillis = 30_000;
@@ -968,6 +971,18 @@ public final class TorrentSession implements AutoCloseable {
             return;
         }
         startFailedRetryable = false;
+        // A STOPPED announce from a just-finished stop() may still be on its way out - let it
+        // land first so the tracker doesn't see STARTED then STOPPED. Bounded by the tracker
+        // clients' own timeouts, like the announce below. See design_docs/0081.
+        Thread pendingStopped = stoppedAnnounce;
+        if (pendingStopped != null) {
+            try {
+                pendingStopped.join();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
         TrackerResponse response;
         try {
             response = trackerClient.announce(new TrackerRequest(metadata.infoHash(), ourPeerId, ourListenPort,
@@ -1146,14 +1161,32 @@ public final class TorrentSession implements AutoCloseable {
             return;
         }
         startFailedRetryable = false;
-        try {
-            trackerClient.announce(new TrackerRequest(metadata.infoHash(), ourPeerId, ourListenPort,
-                    bytesUploaded(), bytesDownloaded(), bytesRemaining(), TrackerEvent.STOPPED, 0));
-        } catch (RuntimeException ignored) {
-            // best-effort - we're shutting down locally regardless
-        }
+        // Totals captured now, before the connections they're read from are torn down.
+        TrackerRequest stopped = new TrackerRequest(metadata.infoHash(), ourPeerId, ourListenPort,
+                bytesUploaded(), bytesDownloaded(), bytesRemaining(), TrackerEvent.STOPPED, 0);
         setState(TorrentState.STOPPED);
         shutdownNetworking();
+        // The announce itself is best-effort and can take as long as the slowest tracker's
+        // timeout, so it runs in the background rather than holding up the caller (a pause
+        // request, removal, or every other torrent's turn during engine shutdown). start()
+        // waits for it, so a quick pause-then-resume can't deliver STARTED ahead of STOPPED.
+        // See design_docs/0081.
+        stoppedAnnounce = Thread.ofVirtual().name("stopped-announce-" + metadata.infoHash()).start(() -> {
+            try {
+                trackerClient.announce(stopped);
+            } catch (RuntimeException ignored) {
+                // best-effort - we've already stopped locally regardless
+            }
+        });
+    }
+
+    /** Waits for the background STOPPED announce that the last stop() started, if it is still
+     * running. Returns false if it hasn't finished within the timeout (it keeps running). Used by
+     * engine shutdown to give the announces a bounded chance to go out before the process exits.
+     * See design_docs/0081. */
+    public boolean awaitStoppedAnnounce(Duration timeout) throws InterruptedException {
+        Thread announce = stoppedAnnounce;
+        return announce == null || announce.join(timeout);
     }
 
     /** Stops (if not already) and releases storage - unlike a plain stop(), this session is
