@@ -1110,7 +1110,8 @@ complete**, per the phased scope in [[0009-phased-scope]]:
   downloading or seeding torrent. `POST /api/torrents/{h}/recheck` returns the torrent itself;
   `POST .../reannounce` returns once the announce has started. Both are context-menu items on the
   row and in the details panel. Known limits (pausing mid-recheck through the API, a deleted file
-  ending in `ERROR`) are listed in the doc. Not yet built, run or seen in the browser.
+  ending in `ERROR`) are listed in the doc. Test-verified (the build and all unit tests pass, 2026-10-02) and
+  both actions confirmed in the browser by the user.
   ([[0082-force-recheck-and-reannounce]])
 
 **Not yet built** (the rest of Phase 3):
