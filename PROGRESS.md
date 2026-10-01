@@ -1126,7 +1126,10 @@ complete**, per the phased scope in [[0009-phased-scope]]:
   Confirmed in the browser by the user (2026-10-02). A bulk Label action was added afterwards the
   same day: a `Label` button in the selection bar opening a dialog with three-state checkboxes
   (all / some / none of the selection have the label) to add or remove labels across the
-  selection, through the existing per-torrent endpoint - also confirmed in the browser by the user.
+  selection, through the existing per-torrent endpoint - also confirmed in the browser by the user. Then a
+  selection summary panel (combined size, progress, rates, ratio, peers, count by state and the
+  selected torrents), opened from a `Details` toggle in the selection bar rather than
+  automatically - also confirmed in the browser by the user.
   ([[0083-multi-select]])
 
 **Not yet built** (the rest of Phase 3):

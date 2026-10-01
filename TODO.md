@@ -370,7 +370,7 @@ then revisit this as a follow-up rather than bundling both into one change.
   at once, then bulk Pause/Resume/Remove across the selection, rather than one row (or the
   existing global Pause all/Resume all) at a time.~~ **Done (2026-10-02)** - see
   `design_docs/0083`. Still open from the guide's fuller spec: the
-  Space/Delete/arrow-key shortcuts, and an aggregate details panel for 2+ selected rows.
+  Space/Delete/arrow-key shortcuts.
 - UI themes — user-selectable themes beyond the current light/dark split. Unscoped: how many,
   whether custom/user-defined, how they interact with the existing manual System/Light/Dark
   switcher (design_docs/0032's addendum).

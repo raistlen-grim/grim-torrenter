@@ -42,6 +42,7 @@ import { pluralTorrentCount } from '../shared/plural-torrent-count';
 import { SkullMark } from '../shared/skull-mark/skull-mark';
 import { StatusIndicator } from '../shared/status-indicator/status-indicator';
 import { BulkLabelsDialog } from './bulk-labels-dialog/bulk-labels-dialog';
+import { SelectionSummary } from './selection-summary/selection-summary';
 import { TorrentRow } from './torrent-row/torrent-row';
 
 /** A brief "request in flight" placeholder, for either an upload or a magnet add - both now
@@ -205,6 +206,7 @@ function resolveAddState(rawValue: string, torrents: readonly TorrentWithRate[])
     InputIconModule,
     InputTextModule,
     RouterOutlet,
+    SelectionSummary,
     SkullMark,
     StatusIndicator,
     TableModule,
@@ -536,6 +538,47 @@ export class TorrentList {
   clearSelection(): void {
     this.selection.set(new Set());
     this.selectionAnchor = null;
+    this.summaryRequested.set(false);
+  }
+
+  /** The selection bar's Details toggle (design_docs/0083's second addendum). The summary is
+   * only ever opened by asking for it - ticking rows alone never changes what the panel shows. */
+  readonly summaryRequested = signal(false);
+
+  /** Shown while asked for and there is still something selected; an emptied selection closes
+   * it by itself. */
+  readonly summaryOpen = computed(() => this.summaryRequested() && this.selectedCount() > 0);
+
+  /** The panel column is open for either occupant - a torrent's details (route-driven, as
+   * before) or the selection summary. Everything that's about layout (the grid column, the
+   * rows shedding columns) follows this; isDetailOpen() stays specifically "a torrent is open". */
+  readonly isPanelOpen = computed(() => this.isDetailOpen() || this.summaryOpen());
+
+  toggleSummary(): void {
+    this.summaryRequested.update((requested) => !requested);
+  }
+
+  /** Opening a torrent's details - by clicking its row, or its entry in the summary - is the
+   * more recent request, so the summary gives the panel back. Driven by the click itself, not
+   * by the navigation: clicking the torrent that is already open underneath navigates nowhere,
+   * and still has to bring its details back. */
+  onTorrentOpened(): void {
+    this.summaryRequested.set(false);
+  }
+
+  openTorrentDetail(infoHash: string): void {
+    this.summaryRequested.set(false);
+    this.router.navigate(['/torrents', infoHash]);
+  }
+
+  /** Esc inside the panel, and the second step of the page-wide Esc order: whichever occupant
+   * is showing closes. A summary shown over an open torrent closes first, revealing it. */
+  closePanel(): void {
+    if (this.summaryOpen()) {
+      this.summaryRequested.set(false);
+    } else {
+      this.closeDetail();
+    }
   }
 
   /** The selection stays in place after Pause/Resume so a second action can follow. */
@@ -635,8 +678,8 @@ export class TorrentList {
     if (this.document.querySelector('.p-dialog, .p-contextmenu-root-list')) {
       return;
     }
-    if (this.isDetailOpen()) {
-      this.closeDetail();
+    if (this.isPanelOpen()) {
+      this.closePanel();
     } else if (this.selection().size > 0) {
       this.clearSelection();
     }

@@ -103,6 +103,10 @@ export class TorrentRow {
   /** Shift-click on the row: extend the selection from the anchor row to this one. */
   readonly extendChecked = output<void>();
 
+  /** This row's details were asked for (click or Enter) - emitted alongside the navigation, so
+   * TorrentList can give the panel back to the torrent if the selection summary has it. */
+  readonly opened = output<void>();
+
   /** Set the instant Pause/Resume/Remove is started, cleared on response (success or
    * failure) - drives both the button's own loading/disabled state and a whole-row dim (see
    * host binding above), so this torrent visibly has something in flight against it rather
@@ -273,6 +277,7 @@ export class TorrentRow {
     if (this.isFetchingMetadata()) {
       return;
     }
+    this.opened.emit();
     this.router.navigate(['/torrents', this.infoHash()]);
   }
 

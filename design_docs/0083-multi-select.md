@@ -118,3 +118,41 @@ Stability: no backend change; N ordinary quick requests. Frontend state is one s
 choices, discarded when the dialog closes.
 
 Not covered by tests. Built and confirmed in the browser by the user (2026-10-02).
+
+## Addendum: selection summary panel, opened explicitly (2026-10-02)
+
+The guide: with 2+ rows selected "the panel shows an aggregate summary (combined size, combined
+rates, count by state) instead of blanking or showing the first row". The first cut left this out
+because the selection is deliberately separate from the panel. Built now in the form the user
+chose from two options: **opened explicitly**, not taking the panel over as rows are ticked.
+
+- A `Details` toggle in the selection bar (enabled with 2+ selected) opens a new
+  `SelectionSummary` in the docked panel. Ticking or unticking rows never opens or closes it by
+  itself, except that it closes when the selection becomes empty.
+- Contents: header (`N torrents selected`), a fact grid of combined Size, Done (bytes and
+  percent), Down, Up, Ratio and Peers, a combined progress bar, one `2 downloading · 1 seeding`
+  line, and the selected torrents themselves, each showing its download rate or its state.
+  Combined progress is bytes done over bytes total, and combined ratio is total uploaded over
+  total downloaded - neither is an average of the per-torrent figures. The guide gives no layout
+  for this panel; the fact grid and header copy the single-torrent panel, and the member list is
+  this app's addition in place of the Files/Peers/Trackers/Pieces tabs, which have no combined
+  form.
+- No actions in the panel - the selection bar beside it carries them.
+- **Sharing the panel with a torrent's details.** The panel column is open if either a torrent
+  is open (route-driven, unchanged) or the summary is; rows shed their columns for both. If both
+  apply, the summary is shown and the routed `TorrentDetail` is hidden (not destroyed - the
+  outlet must stay in the DOM), and comes back when the summary closes. Clicking a row, or a
+  torrent in the summary's list, opens that torrent's details and closes the summary - the more
+  recent request wins.
+- Esc closes whichever of the two is showing, the summary first.
+- Everything is computed in the browser from the list's existing snapshot; no backend change and
+  no request of its own.
+
+Not built: the guide's version where the summary appears automatically, which was the option not
+chosen.
+
+Stability: no new state beyond one boolean; the summary recomputes from the same signals the list
+already renders from. A hidden `TorrentDetail` keeps polling its tabs while covered, as it would
+if visible.
+
+Not covered by tests. Built and confirmed in the browser by the user (2026-10-02).

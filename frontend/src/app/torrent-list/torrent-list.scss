@@ -66,8 +66,17 @@
   font-size: 13px;
 }
 
-.selection-clear {
+/* Details and Clear sit together at the trailing edge. */
+.selection-details {
   margin-left: auto;
+}
+
+.routed-detail {
+  display: contents;
+}
+
+.routed-detail.routed-hidden {
+  display: none;
 }
 
 .select-header {

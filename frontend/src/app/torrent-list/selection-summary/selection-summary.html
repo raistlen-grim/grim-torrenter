@@ -1,0 +1,79 @@
+<header class="panel-header">
+  <div class="header-text">
+    <div class="header-label">Selection</div>
+    <h1 class="header-name">{{ title() }}</h1>
+  </div>
+  <button type="button" class="close-button" title="Close (Esc)" aria-label="Close" (click)="closed.emit()">
+    <i class="pi pi-times" aria-hidden="true"></i>
+  </button>
+</header>
+
+<div class="fact-grid">
+  <div class="fact-cell">
+    <div class="fact-label">Size</div>
+    <div class="fact-value tabular-nums">{{ totalLength() | formatBytes }}</div>
+  </div>
+  <div class="fact-cell">
+    <div class="fact-label">Done</div>
+    <div class="fact-value tabular-nums">{{ bytesDownloaded() | formatBytes }} &middot; {{ progressPercent() }}%</div>
+  </div>
+  <div class="fact-cell">
+    <div class="fact-label">Down</div>
+    <div class="fact-value tabular-nums" [class.idle]="downloadRate() === 0">
+      @if (downloadRate() > 0) {
+        {{ downloadRate() | formatRate }}
+      } @else {
+        &mdash;
+      }
+    </div>
+  </div>
+  <div class="fact-cell">
+    <div class="fact-label">Up</div>
+    <div class="fact-value tabular-nums" [class.idle]="uploadRate() === 0">
+      @if (uploadRate() > 0) {
+        {{ uploadRate() | formatRate }}
+      } @else {
+        &mdash;
+      }
+    </div>
+  </div>
+  <div class="fact-cell">
+    <div class="fact-label">Ratio</div>
+    <div class="fact-value tabular-nums">
+      @if (ratio() !== null) {
+        {{ ratio() | number: '1.2-2' }}
+      } @else {
+        &mdash;
+      }
+    </div>
+  </div>
+  <div class="fact-cell">
+    <div class="fact-label">Peers</div>
+    <div class="fact-value tabular-nums">{{ connectedPeers() }}</div>
+  </div>
+</div>
+
+@if (progressPercent() < 100) {
+  <div class="progress-track">
+    <div class="progress-fill" [style.width.%]="progressPercent()"></div>
+  </div>
+}
+
+<div class="state-counts tabular-nums">{{ stateCounts() }}</div>
+
+<ul class="member-list" aria-label="Selected torrents">
+  @for (torrent of torrents(); track torrent.infoHash) {
+    <li>
+      <button type="button" class="member" [title]="torrent.name" (click)="torrentOpened.emit(torrent.infoHash)">
+        <span class="member-name">{{ torrent.name }}</span>
+        <span class="member-status tabular-nums">
+          @if (torrent.downloadRateBytesPerSec > 0) {
+            &darr; {{ torrent.downloadRateBytesPerSec | formatRate }}
+          } @else {
+            {{ stateLabel(torrent.state) }}
+          }
+        </span>
+      </button>
+    </li>
+  }
+</ul>
