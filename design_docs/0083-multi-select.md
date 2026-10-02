@@ -50,8 +50,8 @@ Frontend only. No backend or REST change.
   there is no aggregate panel. Chosen as the smaller change that leaves the route-driven panel
   alone.
 - ~~**No `Label` button** in the selection bar.~~ Added the same day - see the addendum below.
-- **Of the selection keyboard shortcuts, only Esc.** Space (pause/resume), Delete (remove) and
-  arrow keys are not built.
+- ~~**Of the selection keyboard shortcuts, only Esc.**~~ The rest were added the same day - see
+  the third addendum below.
 
 ## Behaviour worth knowing
 
@@ -156,3 +156,38 @@ already renders from. A hidden `TorrentDetail` keeps polling its tabs while cove
 if visible.
 
 Not covered by tests. Built and confirmed in the browser by the user (2026-10-02).
+
+## Addendum: the rest of the list shortcuts (2026-10-02)
+
+Space, Delete/Backspace, Up/Down, `/` and `I` from README.md's "Interactions" table, on top of
+the Esc handling above. One document-level key handler in `TorrentList`, active only while the
+torrent list is the routed page.
+
+The guide writes these against its single "selection". With the ticked set and the panel kept
+separate here, each needs a target rule, and the same one is used throughout: **the ticked rows
+if there are any, otherwise the current row** - the row with keyboard focus, else the row whose
+details are open.
+
+| Key | Does |
+|---|---|
+| `Space` | Pauses whichever targets are downloading or seeding; if none are, resumes the paused ones. |
+| `Delete` / `Backspace` | Opens the bulk remove dialog for the targets - also for a single current row, which gets the same dialog (with its delete-data checkbox) rather than the row menu's two separate remove items. |
+| `Up` / `Down` | Moves keyboard focus one row; from the top/bottom edge when no row is current. While a torrent's details are open, the panel follows the focus. Does not change the ticked set and does not move the selection summary. |
+| `/` | Focuses the filter field. |
+| `I` | With 2+ ticked: toggles the selection summary. Otherwise opens the one ticked or current torrent's details. |
+
+Ignored when: a modifier is held (Ctrl/Cmd/Alt - browser shortcuts stay intact; Shift is
+allowed), a dialog or context menu is open, the key press is in a field or on a button, link or
+tab, or focus is inside the details panel.
+
+Known limits:
+- `/` does nothing while the selection bar is showing - the filter field is in the toolbar the
+  bar replaces.
+- `I` is the guide's key for its pin toggle, which this app doesn't have (the panel is
+  route-driven); here it only opens.
+- `Backspace` no longer navigates back in browsers that still map it, while focus is on the list.
+- Up/Down prevent the list's own scroll-by-arrow; the focused row is scrolled into view instead.
+
+Stability: none - no new state, no new requests beyond the bulk actions already described.
+
+Not covered by tests. Not yet built or seen in the browser.

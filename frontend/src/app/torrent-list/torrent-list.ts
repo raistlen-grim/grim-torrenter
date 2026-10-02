@@ -220,6 +220,7 @@ function resolveAddState(rawValue: string, torrents: readonly TorrentWithRate[])
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: {
     '(document:keydown.escape)': 'onDocumentEscape($event)',
+    '(document:keydown)': 'onDocumentKeydown($event)',
   },
 })
 export class TorrentList {
@@ -230,6 +231,7 @@ export class TorrentList {
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
   private readonly document = inject(DOCUMENT);
+  private readonly host: ElementRef<HTMLElement> = inject(ElementRef);
   private readonly destroyRef = inject(DestroyRef);
   readonly filter = inject(TorrentFilterService);
   private readonly labelService = inject(LabelService);
@@ -238,6 +240,7 @@ export class TorrentList {
 
   readonly fileInput = viewChild<ElementRef<HTMLInputElement>>('fileInput');
   readonly addFieldInput = viewChild<ElementRef<HTMLInputElement>>('addFieldInput');
+  readonly searchInput = viewChild<ElementRef<HTMLInputElement>>('searchInput');
 
   /** Drives the detail drawer's open/closed state directly from whether the
    * torrents/:infoHash child route is currently matched, rather than a separate boolean
@@ -615,7 +618,14 @@ export class TorrentList {
   });
 
   openRemoveSelected(): void {
-    this.removeTargets.set(this.selectedTorrents());
+    this.openRemoveFor(this.selectedTorrents());
+  }
+
+  private openRemoveFor(targets: TorrentWithRate[]): void {
+    if (targets.length === 0) {
+      return;
+    }
+    this.removeTargets.set(targets);
     this.removeAlsoDeleteData.set(false);
     this.showRemoveDialog.set(true);
   }
@@ -664,6 +674,128 @@ export class TorrentList {
         });
       }
     });
+  }
+
+  // --- List keyboard shortcuts (design_docs/0083's third addendum) ----------------------
+  // README.md "Interactions": Space, Delete/Backspace, Up/Down, `/` and `I`. The guide has one
+  // "selection"; here the ticked set and the current row are separate, so each shortcut acts
+  // on the ticked rows when there are any and on the current row otherwise.
+
+  /** The torrent rows as rendered, in the same order as visibleTorrents() - pending-upload
+   * placeholder rows aren't app-torrent-row elements, so the two line up index for index. */
+  private rowElements(): HTMLElement[] {
+    return Array.from(this.host.nativeElement.querySelectorAll<HTMLElement>('tr[app-torrent-row]'));
+  }
+
+  /** Index of the row keyboard focus is in, or -1. */
+  private focusedRowIndex(): number {
+    const active = this.document.activeElement;
+    const row = active instanceof HTMLElement ? active.closest<HTMLElement>('tr[app-torrent-row]') : null;
+    return row === null ? -1 : this.rowElements().indexOf(row);
+  }
+
+  /** "The current row": the one with keyboard focus, else the one whose details are open. */
+  private currentRowIndex(): number {
+    const focused = this.focusedRowIndex();
+    if (focused !== -1) {
+      return focused;
+    }
+    const open = this.selectedInfoHash();
+    return open === null ? -1 : this.visibleTorrents().findIndex((t) => t.infoHash === open);
+  }
+
+  /** What Space and Delete act on: the ticked rows if any, otherwise the current row. */
+  private shortcutTargets(): TorrentWithRate[] {
+    const selected = this.selectedTorrents();
+    if (selected.length > 0) {
+      return selected;
+    }
+    const current = this.visibleTorrents()[this.currentRowIndex()];
+    return current ? [current] : [];
+  }
+
+  /** Space: pause whatever in the targets is running; if nothing is, resume what's paused. */
+  private pauseOrResume(targets: TorrentWithRate[]): void {
+    const idle = (t: TorrentWithRate) => this.actions.pendingFor(t.infoHash) === null;
+    const running = targets.filter((t) => (t.state === 'DOWNLOADING' || t.state === 'SEEDING') && idle(t));
+    if (running.length > 0) {
+      this.runOnEach(running, (infoHash) => this.actions.pause(infoHash), 'pause');
+      return;
+    }
+    const paused = targets.filter((t) => t.state === 'STOPPED' && idle(t));
+    this.runOnEach(paused, (infoHash) => this.actions.resume(infoHash), 'resume');
+  }
+
+  /** Up/Down: move keyboard focus one row (from the current row; from the top or bottom edge
+   * when there is none). While a torrent's details are open the panel follows, as the guide
+   * asks; the selection summary and the ticked set are left alone. */
+  private moveRowFocus(step: 1 | -1): void {
+    const rows = this.rowElements();
+    if (rows.length === 0) {
+      return;
+    }
+    const current = this.currentRowIndex();
+    const next = current === -1 ? (step === 1 ? 0 : rows.length - 1) : Math.min(rows.length - 1, Math.max(0, current + step));
+    rows[next].focus();
+    const torrent = this.visibleTorrents()[next];
+    if (torrent && this.isDetailOpen() && !this.summaryOpen() && torrent.state !== 'FETCHING_METADATA') {
+      this.router.navigate(['/torrents', torrent.infoHash]);
+    }
+  }
+
+  /** `I`: details for what's selected - the summary for 2+ ticked rows, otherwise the one
+   * ticked (or current) torrent's own details. */
+  private openDetailsForShortcut(): void {
+    const targets = this.shortcutTargets();
+    if (this.selectedCount() >= 2) {
+      this.toggleSummary();
+    } else if (targets.length === 1 && targets[0].state !== 'FETCHING_METADATA') {
+      this.openTorrentDetail(targets[0].infoHash);
+    }
+  }
+
+  /** Only when the key press is "on the list": not with a modifier held, not while a dialog or
+   * menu is open, not in a field or on a button/link/tab (Space and the arrows mean something
+   * else there), and not inside the details panel, which has its own keyboard handling. */
+  onDocumentKeydown(event: KeyboardEvent): void {
+    if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) {
+      return;
+    }
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('input, textarea, select, button, a, [contenteditable], [role="tab"], .detail-panel')) {
+      return;
+    }
+    if (this.document.querySelector('.p-dialog, .p-contextmenu-root-list')) {
+      return;
+    }
+    switch (event.key) {
+      case ' ':
+        event.preventDefault();
+        this.pauseOrResume(this.shortcutTargets());
+        break;
+      case 'Delete':
+      case 'Backspace':
+        event.preventDefault();
+        this.openRemoveFor(this.shortcutTargets());
+        break;
+      case 'ArrowDown':
+        event.preventDefault();
+        this.moveRowFocus(1);
+        break;
+      case 'ArrowUp':
+        event.preventDefault();
+        this.moveRowFocus(-1);
+        break;
+      case '/':
+        event.preventDefault();
+        this.searchInput()?.nativeElement.focus();
+        break;
+      case 'i':
+      case 'I':
+        event.preventDefault();
+        this.openDetailsForShortcut();
+        break;
+    }
   }
 
   /** The guide's Esc order (README.md "Interactions"): clear the filter if it's focused, else

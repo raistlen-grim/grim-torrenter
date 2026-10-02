@@ -1129,7 +1129,10 @@ complete**, per the phased scope in [[0009-phased-scope]]:
   selection, through the existing per-torrent endpoint - also confirmed in the browser by the user. Then a
   selection summary panel (combined size, progress, rates, ratio, peers, count by state and the
   selected torrents), opened from a `Details` toggle in the selection bar rather than
-  automatically - also confirmed in the browser by the user.
+  automatically - also confirmed in the browser by the user. Last, the remaining list shortcuts:
+  Space (pause/resume), Delete (remove dialog), Up/Down (move row focus, the open panel follows),
+  `/` (focus the filter) and `I` (details), acting on the ticked rows or else the current row -
+  not yet built or seen in the browser.
   ([[0083-multi-select]])
 
 **Not yet built** (the rest of Phase 3):
