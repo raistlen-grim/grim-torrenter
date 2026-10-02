@@ -20,7 +20,7 @@ only actual protocol requirement is 20 bytes total - the prefix is a
 convention (lets trackers/other clients identify GrimTorrenter for
 debugging/statistics), not something enforced by the spec. Confirmed with
 the user rather than assumed, since a UUID-backed alternative (16 bytes +
-padding, no client identification) was a real option.
+padding, no client identification) was a real option. (Since 2026-10-02 the prefix is derived from the build version - see [[0084-client-identification]].)
 
 **Per-torrent download directories are namespaced by info hash**
 (`baseDownloadDirectory/<infoHash-hex>/...`), not by the torrent's

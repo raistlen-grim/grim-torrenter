@@ -677,7 +677,8 @@ export class TorrentList {
   }
 
   // --- List keyboard shortcuts (design_docs/0083's third addendum) ----------------------
-  // README.md "Interactions": Space, Delete/Backspace, Up/Down, `/` and `I`. The guide has one
+  // README.md "Interactions": Delete/Backspace, Up/Down, `/` and `I`, plus Space and Enter as
+  // the user asked for them (the guide has Space pause/resume). The guide has one
   // "selection"; here the ticked set and the current row are separate, so each shortcut acts
   // on the ticked rows when there are any and on the current row otherwise.
 
@@ -704,7 +705,7 @@ export class TorrentList {
     return open === null ? -1 : this.visibleTorrents().findIndex((t) => t.infoHash === open);
   }
 
-  /** What Space and Delete act on: the ticked rows if any, otherwise the current row. */
+  /** What Enter and Delete act on: the ticked rows if any, otherwise the current row. */
   private shortcutTargets(): TorrentWithRate[] {
     const selected = this.selectedTorrents();
     if (selected.length > 0) {
@@ -714,7 +715,21 @@ export class TorrentList {
     return current ? [current] : [];
   }
 
-  /** Space: pause whatever in the targets is running; if nothing is, resume what's paused. */
+  /** Space: tick or untick the current row - with Shift, extend the ticked range to it, the
+   * keyboard equivalent of Shift-click. */
+  private toggleCurrentRow(extend: boolean): void {
+    const current = this.visibleTorrents()[this.currentRowIndex()];
+    if (!current) {
+      return;
+    }
+    if (extend) {
+      this.extendSelection(current.infoHash);
+    } else {
+      this.toggleSelection(current.infoHash);
+    }
+  }
+
+  /** Enter: pause whatever in the targets is running; if nothing is, resume what's paused. */
   private pauseOrResume(targets: TorrentWithRate[]): void {
     const idle = (t: TorrentWithRate) => this.actions.pendingFor(t.infoHash) === null;
     const running = targets.filter((t) => (t.state === 'DOWNLOADING' || t.state === 'SEEDING') && idle(t));
@@ -762,7 +777,18 @@ export class TorrentList {
       return;
     }
     const target = event.target as HTMLElement | null;
-    if (target?.closest('input, textarea, select, button, a, [contenteditable], [role="tab"], .detail-panel')) {
+    // A row's (or the header's) own checkbox is part of the list, not a field to type in:
+    // ticking one leaves focus on it, and the shortcuts have to keep working from there. Only
+    // Space stays with the checkbox itself - it ticks it natively, which is the same thing the
+    // Space shortcut does for a focused row.
+    const onSelectCheckbox = target?.matches('input.select-checkbox') ?? false;
+    if (onSelectCheckbox && event.key === ' ') {
+      return;
+    }
+    if (
+      !onSelectCheckbox &&
+      target?.closest('input, textarea, select, button, a, [contenteditable], [role="tab"], .detail-panel')
+    ) {
       return;
     }
     if (this.document.querySelector('.p-dialog, .p-contextmenu-root-list')) {
@@ -770,6 +796,10 @@ export class TorrentList {
     }
     switch (event.key) {
       case ' ':
+        event.preventDefault();
+        this.toggleCurrentRow(event.shiftKey);
+        break;
+      case 'Enter':
         event.preventDefault();
         this.pauseOrResume(this.shortcutTargets());
         break;
@@ -804,7 +834,9 @@ export class TorrentList {
    * typing in any other field. */
   onDocumentEscape(event: Event): void {
     const target = event.target as HTMLElement | null;
-    if (target?.closest('input, textarea, select, [contenteditable]')) {
+    // Same exception as onDocumentKeydown(): focus resting on a just-ticked checkbox is still
+    // "on the list", so Esc must work from there.
+    if (!target?.matches('input.select-checkbox') && target?.closest('input, textarea, select, [contenteditable]')) {
       return;
     }
     if (this.document.querySelector('.p-dialog, .p-contextmenu-root-list')) {

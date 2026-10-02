@@ -208,3 +208,8 @@ an optional `reason`, set only when a SOCKS5 proxy turned the service off ([[007
 with a proxy active and "block anything that can't use the proxy" on, DHT, LSD and the inbound peer
 server are never started). The Services page shows it beside the DISABLED state so the difference
 between "you turned this off" and "the proxy did" is visible. Null for every other state.
+
+**Addendum (2026-10-02): superseded as a page, kept as a data source.** The Services page is now
+the Health page ([[0086-health-page-and-healthcheck]]); these three services are its first group,
+read from the same `serviceStatuses()`. `GET /api/system/services` still exists but the UI no
+longer calls it.

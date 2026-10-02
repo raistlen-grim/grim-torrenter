@@ -22,3 +22,10 @@
 .free-space {
   margin-left: auto;
 }
+
+/* The licence's "offer the source" link (see app-footer.ts). Inherits the footer's own ink;
+ * underlined so it reads as the one link in a row of plain figures. */
+.source-link {
+  color: inherit;
+  text-decoration: underline;
+}

@@ -1,5 +1,7 @@
 package com.grimtorrenter.engine.tracker;
 
+import com.grimtorrenter.engine.ClientIdentity;
+
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.HexFormat;
@@ -23,9 +25,10 @@ public record PeerId(String hex) {
         }
     }
 
-    /** Azureus-style convention: a client identifying prefix followed by random bytes. */
+    /** Azureus-style convention: a client identifying prefix (client code + version, see
+     * ClientIdentity) followed by random bytes. */
     public static PeerId generate() {
-        byte[] prefix = "-GT0100-".getBytes(StandardCharsets.US_ASCII);
+        byte[] prefix = ClientIdentity.peerIdPrefix().getBytes(StandardCharsets.US_ASCII);
         byte[] bytes = new byte[LENGTH_BYTES];
         System.arraycopy(prefix, 0, bytes, 0, prefix.length);
         byte[] random = new byte[LENGTH_BYTES - prefix.length];

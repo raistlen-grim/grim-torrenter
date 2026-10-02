@@ -26,3 +26,8 @@ dist/
 
 # OS
 .DS_Store
+
+# Local docker compose settings (paths, ports, PUID/PGID) - copy .env.example. Also the default
+# host directories docker-compose.yml uses when .env sets none.
+.env
+/data/

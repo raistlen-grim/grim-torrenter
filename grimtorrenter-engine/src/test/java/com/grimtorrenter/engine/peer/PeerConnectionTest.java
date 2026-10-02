@@ -484,6 +484,13 @@ class PeerConnectionTest {
         fakePeer.join(2000);
     }
 
+    /** The "v" entry our extended handshake always carries (design_docs/0084), as it appears
+     * bencoded - after "m", since dictionary keys are sorted. */
+    private static String bencodedClientName() {
+        String name = com.grimtorrenter.engine.ClientIdentity.displayName();
+        return "1:v" + name.length() + ":" + name;
+    }
+
     @Test
     void exchangesExtendedHandshakeWhenBothSidesSupportIt() throws Exception {
         PeerAddress address = startFakePeerServer();
@@ -513,7 +520,7 @@ class PeerConnectionTest {
         try (PeerConnection connection = PeerConnection.connect(address, fakeInfoHash(), ourPeerId(), listener, Map.of())) {
             assertTrue(receivedLatch.await(2, TimeUnit.SECONDS));
             // {"m": {}} bencoded: d + "1:m" (key) + "de" (empty dict value) + e
-            assertEquals(new Extended(0, "d1:mdee".getBytes()), receivedFromUs.get());
+            assertEquals(new Extended(0, ("d1:mde" + bencodedClientName() + "e").getBytes()), receivedFromUs.get());
 
             assertTrue(awaitRemoteExtensionId(connection, "ut_metadata").isPresent());
             assertEquals(3, connection.remoteExtensionId("ut_metadata").orElseThrow());
@@ -546,7 +553,7 @@ class PeerConnectionTest {
                 address, fakeInfoHash(), ourPeerId(), listener, Map.of("ut_metadata", 1))) {
             assertTrue(receivedLatch.await(2, TimeUnit.SECONDS));
             // {"m": {"ut_metadata": 1}} bencoded
-            assertEquals(new Extended(0, "d1:md11:ut_metadatai1eee".getBytes()), receivedFromUs.get());
+            assertEquals(new Extended(0, ("d1:md11:ut_metadatai1ee" + bencodedClientName() + "e").getBytes()), receivedFromUs.get());
         }
         fakePeer.join(2000);
     }

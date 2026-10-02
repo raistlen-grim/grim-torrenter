@@ -1,5 +1,5 @@
 import { EventType } from '../models/events.model';
-import { ServiceState, ServiceStatus } from '../models/system.model';
+import { HealthCheck, HealthState, ServiceState, ServiceStatus } from '../models/system.model';
 import { TorrentState, TrackerState } from '../models/torrent.model';
 import { StatusTone } from './status-indicator/status-indicator';
 
@@ -68,6 +68,7 @@ const EVENT_TYPE_DISPLAY: Record<EventType, StatusDisplay> = {
   LSD_UNAVAILABLE: { icon: 'pi-wifi', label: 'LSD unavailable', tone: 'alarm' },
   BLOCKLIST_UPDATED: { icon: 'pi-ban', label: 'Blocklist updated', tone: 'dim' },
   BLOCKLIST_FAILED: { icon: 'pi-ban', label: 'Blocklist failed', tone: 'alarm' },
+  STORAGE_UNWRITABLE: { icon: 'pi-folder', label: 'Storage not writable', tone: 'alarm' },
 };
 
 export function eventTypeDisplay(type: EventType): StatusDisplay {
@@ -105,4 +106,52 @@ const SERVICE_STATE_TONE: Record<ServiceState, StatusTone> = {
 export function serviceStatusDisplay(status: ServiceStatus): StatusDisplay {
   const display = SERVICE_DISPLAY[status.name] ?? { label: status.name, icon: 'pi-question-circle' };
   return { icon: display.icon, label: display.label, tone: SERVICE_STATE_TONE[status.state] };
+}
+
+/** The Health page's groups, in the backend's own order (design_docs/0086). An unrecognised
+ * name falls back to itself, so a backend-only addition still shows up. */
+const HEALTH_GROUP_LABELS: Record<string, string> = {
+  network: 'Network services',
+  storage: 'Storage',
+  connectivity: 'Connectivity',
+  protection: 'Protection',
+  build: 'This build',
+};
+
+export function healthGroupLabel(name: string): string {
+  return HEALTH_GROUP_LABELS[name] ?? name;
+}
+
+/** Health checks by their stable backend name. The three network services keep the labels and
+ * icons SERVICE_DISPLAY above already gives them. */
+const HEALTH_CHECK_DISPLAY: Record<string, { label: string; icon: string }> = {
+  ...SERVICE_DISPLAY,
+  downloads: { label: 'Downloads folder', icon: 'pi-folder' },
+  config: { label: 'Config folder', icon: 'pi-folder' },
+  watch: { label: 'Watch folder', icon: 'pi-folder-open' },
+  freeSpace: { label: 'Free space', icon: 'pi-database' },
+  incoming: { label: 'Incoming connections', icon: 'pi-sign-in' },
+  proxy: { label: 'Proxy', icon: 'pi-globe' },
+  blocklist: { label: 'IP blocklist', icon: 'pi-ban' },
+  auth: { label: 'Password', icon: 'pi-lock' },
+  version: { label: 'Version', icon: 'pi-tag' },
+  uptime: { label: 'Running for', icon: 'pi-clock' },
+  user: { label: 'Running as', icon: 'pi-user' },
+};
+
+/** Same three-tone ink-weight vocabulary as everything else here: only FAILED is the alarm,
+ * OK is active, and INFO/WARNING/DISABLED are all dim - told apart by the message beside them
+ * (and OK by its checkmark), the same "never tone alone" rule serviceStatusDisplay() follows.
+ * WARNING staying dim rather than becoming a fourth tone matches DEGRADED above. */
+const HEALTH_STATE_TONE: Record<HealthState, StatusTone> = {
+  OK: 'active',
+  INFO: 'dim',
+  WARNING: 'dim',
+  DISABLED: 'dim',
+  FAILED: 'alarm',
+};
+
+export function healthCheckDisplay(check: HealthCheck): StatusDisplay {
+  const display = HEALTH_CHECK_DISPLAY[check.name] ?? { label: check.name, icon: 'pi-question-circle' };
+  return { icon: display.icon, label: display.label, tone: HEALTH_STATE_TONE[check.state] };
 }

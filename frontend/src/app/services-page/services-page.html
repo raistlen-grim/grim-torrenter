@@ -1,24 +1,35 @@
-<h1 class="display-font">Services</h1>
+<h1 class="display-font">Health</h1>
 
 <div class="page-frame blueprint">
   <i class="corner tl" aria-hidden="true"></i><i class="corner tr" aria-hidden="true"></i><i class="corner bl" aria-hidden="true"></i><i class="corner br" aria-hidden="true"></i>
 
-  <ul class="service-list">
-    @for (service of services(); track service.name) {
-      <li class="service-card">
-        <app-status-indicator
-          [icon]="statusDisplay(service).icon"
-          [label]="statusDisplay(service).label"
-          [tone]="statusDisplay(service).tone"
-        />
-        @if (service.state === 'RUNNING') {
-          <i class="pi pi-check-circle service-status-ok" aria-hidden="true"></i>
-        } @else if (service.state === 'DEGRADED') {
-          <span class="service-status-degraded">Sparse routing table</span>
-        } @else if (service.reason) {
-          <span class="service-status-reason">{{ service.reason }}</span>
-        }
-      </li>
+  @if (report(); as report) {
+    @for (group of report.groups; track group.name) {
+      <section class="health-group">
+        <h2 class="health-group-title heading-font">{{ groupLabel(group.name) }}</h2>
+        <ul class="service-list">
+          @for (check of group.checks; track check.name) {
+            <li class="service-card" [class.failed]="check.state === 'FAILED'">
+              <app-status-indicator
+                class="check-name"
+                [icon]="checkDisplay(check).icon"
+                [label]="checkDisplay(check).label"
+                [tone]="checkDisplay(check).tone"
+              />
+              <span class="check-message" [class.check-message-alarm]="check.state === 'FAILED'">{{ check.message }}</span>
+              @if (check.state === 'OK') {
+                <i class="pi pi-check-circle service-status-ok" aria-hidden="true"></i>
+              } @else if (check.state === 'WARNING') {
+                <span class="check-flag">Check</span>
+              } @else if (check.state === 'FAILED') {
+                <span class="check-flag check-flag-alarm">Failed</span>
+              }
+            </li>
+          }
+        </ul>
+      </section>
     }
-  </ul>
+  } @else {
+    <p class="health-loading">Loading&hellip;</p>
+  }
 </div>

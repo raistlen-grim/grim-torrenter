@@ -1,5 +1,6 @@
 package com.grimtorrenter.engine.proxy;
 
+import com.grimtorrenter.engine.ClientIdentity;
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
@@ -28,7 +29,7 @@ import java.util.concurrent.TimeUnit;
  */
 public final class MiniHttp {
 
-    private static final String USER_AGENT = "GrimTorrenter/0.1.0";
+    private static final String USER_AGENT = ClientIdentity.userAgent();
     private static final int CONNECT_TIMEOUT_MS = 15_000;
     private static final int READ_TIMEOUT_MS = 30_000;
     private static final int MAX_HEADER_LINE = 8192;

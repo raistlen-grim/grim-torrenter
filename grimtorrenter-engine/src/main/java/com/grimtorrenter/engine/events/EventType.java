@@ -53,5 +53,9 @@ public enum EventType {
     TRACKER_RECOVERED,
     LSD_UNAVAILABLE,
     BLOCKLIST_UPDATED,
-    BLOCKLIST_FAILED
+    BLOCKLIST_FAILED,
+    /** A directory the app needs (downloads, config, watch) can't be written to - engine-wide,
+     * the path and the fix in the message. Recorded by the app layer's health checks, once per
+     * occurrence. See design_docs/0086. */
+    STORAGE_UNWRITABLE
 }

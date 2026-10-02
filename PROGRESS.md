@@ -1130,10 +1130,57 @@ complete**, per the phased scope in [[0009-phased-scope]]:
   selection summary panel (combined size, progress, rates, ratio, peers, count by state and the
   selected torrents), opened from a `Details` toggle in the selection bar rather than
   automatically - also confirmed in the browser by the user. Last, the remaining list shortcuts:
-  Space (pause/resume), Delete (remove dialog), Up/Down (move row focus, the open panel follows),
+  Space (tick/untick the current row), Enter (pause/resume), Delete (remove dialog), Up/Down (move row focus, the open panel follows),
   `/` (focus the filter) and `I` (details), acting on the ticked rows or else the current row -
-  not yet built or seen in the browser.
+  confirmed in the browser by the user.
   ([[0083-multi-select]])
+
+- **Client identification from one source (2026-10-02)** — first step of preparing the app for
+  outside testers. A new engine `ClientIdentity` takes the version from the Maven build (resource
+  filtering) and everything else derives from it: the peer id prefix (`-GT0100-`), the User-Agent
+  for trackers, proxied fetches and the blocklist, and a new `v` field in the BEP 10 extended
+  handshake so other clients can name this one. `GET /api/system/version` reports the build and
+  the UI footer shows it. Open: `GT` has not been checked against the client codes already in use
+  (logged in `TODO.md`). Test-verified (the build and all unit tests pass, 2026-10-02);
+  the footer version not yet confirmed in the browser. ([[0084-client-identification]])
+
+- **Container fixes for outside testers (2026-10-02)** — three things a first run would trip on.
+  The built image listened on 7881 (a dev-network workaround in `application.properties`) while
+  the Dockerfile and compose file used 6881; the override is now dev-mode only. `docker-compose.yml`
+  no longer holds one machine's paths: everything is a variable with a default, documented in
+  `.env.example`, with personal values in a git-ignored `.env`. And the container no longer runs
+  as root: a `PUID`/`PGID` entrypoint (default 1000:1000, `0:0` for the old behaviour) drops
+  privileges, takes ownership of the config directory only, and warns if downloads or watch
+  aren't writable instead of re-owning them. Not yet built or run.
+  ([[0085-container-user-and-portable-compose]])
+
+- **Health page and container health check (2026-10-02)** — the Services page grows into a
+  Health page so setup problems show in the UI instead of only in container logs. One grouped
+  report (`GET /api/system/health`) from a new app-layer `HealthService`: the three network
+  services as before; storage (downloads/config/watch writable, low free space); connectivity
+  (whether any incoming connection has been received, whether the proxy answers); protection
+  (blocklist state, password on or off - off is information, not a warning, the user's call); and
+  the build (version, uptime, the uid/gid it runs as). The backend writes each row's message; the
+  frontend only maps names to labels. The sidebar badge counts failed checks across all groups,
+  and a storage failure also records a new `STORAGE_UNWRITABLE` event. The proxy test runs in the
+  background and is cached, so the report never waits on the network. `GET /api/system/healthz`
+  (no login needed, UP/DOWN only) backs a Dockerfile `HEALTHCHECK`, down only when config or
+  downloads is unusable. Test-verified (the build and all unit tests pass, 2026-10-02); the page
+  confirmed in the browser by the user; an actually unwritable folder and the Docker image not yet
+  tried. ([[0086-health-page-and-healthcheck]])
+
+- **README for testers (2026-10-02)** — replaces the one-line placeholder: what the app does,
+  a compose quick start with the `.env` settings, first-start steps (Health page, port forwarding,
+  password), folder permissions, the keyboard shortcuts, known limitations, how to report a
+  problem, upgrading and a short development section. A draft: the licence section says none has
+  been chosen yet, and the commands in it have not been run as written.
+
+- **Licence: AGPL-3.0 (2026-10-02)** — chosen by the user from AGPL-3.0, GPL-3.0, Apache-2.0 and
+  MIT, for a self-hosted web app whose modified versions, when run for others, should stay open.
+  Version 3 only, not "or any later version". Added: `LICENSE` (the official text, taken from the
+  SPDX licence list), licence metadata in the parent `pom.xml` and `frontend/package.json`, the
+  README's licence section, and a *Source* link in the UI footer so a network user can get the
+  code (the licence's section 13). No per-file headers. The footer link is not yet built or seen.
 
 **Not yet built** (the rest of Phase 3):
 

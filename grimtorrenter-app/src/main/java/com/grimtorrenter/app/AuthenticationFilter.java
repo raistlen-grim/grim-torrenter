@@ -28,7 +28,7 @@ import java.util.Set;
 @Priority(Priorities.AUTHENTICATION)
 public class AuthenticationFilter implements ContainerRequestFilter {
 
-    private static final Set<String> ALWAYS_ALLOWED_PATHS = Set.of("api/auth/login", "api/auth/status");
+    private static final Set<String> ALWAYS_ALLOWED_PATHS = Set.of("api/auth/login", "api/auth/status", "api/system/healthz");
 
     @Inject
     SettingsStore settingsStore;

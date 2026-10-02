@@ -1,24 +1,25 @@
 import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
-import { interval, startWith, switchMap } from 'rxjs';
+import { catchError, interval, of, startWith, switchMap, tap } from 'rxjs';
 
-import { ServiceStatus } from '../models/system.model';
+import { HealthReport } from '../models/system.model';
 import { SystemService } from '../services/system.service';
-import { serviceStatusDisplay } from '../shared/status-display';
+import { healthCheckDisplay, healthGroupLabel } from '../shared/status-display';
 import { StatusIndicator } from '../shared/status-indicator/status-indicator';
 
-const SERVICES_POLL_INTERVAL_MS = 30_000;
+const HEALTH_POLL_INTERVAL_MS = 15_000;
 
 /**
- * Engine-wide singleton subsystems only (DHT, the inbound peer server) - per-torrent status
- * stays on the torrent itself, not here. A green/red checklist rather than an issue feed: a
- * fixed set of named rows is self-documenting about what's actually being watched, and needs
- * no "no issues" empty-state copy since all-RUNNING rows already read as "nothing's wrong."
- * See design_docs/0059.
+ * The Health page (design_docs/0086) - grown out of the original Services page
+ * (design_docs/0059), whose three network services are now its first group. Still a fixed
+ * checklist rather than an issue feed, for the same reason: named rows are self-documenting
+ * about what is being watched, and an all-fine page needs no "no issues" copy. The class and
+ * folder keep the Services name; only what the page shows, its title and its route changed.
  *
- * <p>Polls independently of AppSidebar's own badge-count poll - no shared "live polled state"
- * service exists in this codebase yet, every consumer polls GET /api/system/services on its
- * own, same as AppHeader/AppFooter already do for DHT status and disk/resource usage.
+ * <p>Everything shown comes from GET /api/system/health as-is: the backend decides each row's
+ * state and writes its message, this only maps names to labels and icons. Polls on its own,
+ * independently of AppSidebar's badge poll, like every other polled view here; a failed poll
+ * keeps the last report on screen rather than blanking the page.
  */
 @Component({
   selector: 'app-services-page',
@@ -30,13 +31,22 @@ const SERVICES_POLL_INTERVAL_MS = 30_000;
 export class ServicesPage {
   private readonly system = inject(SystemService);
 
-  readonly services = toSignal(
-    interval(SERVICES_POLL_INTERVAL_MS).pipe(
+  /** The most recent successful report - what a failed poll falls back to. */
+  private lastReport: HealthReport | null = null;
+
+  readonly report = toSignal(
+    interval(HEALTH_POLL_INTERVAL_MS).pipe(
       startWith(0),
-      switchMap(() => this.system.services()),
+      switchMap(() =>
+        this.system.health().pipe(
+          tap((report) => (this.lastReport = report)),
+          catchError(() => of(this.lastReport)),
+        ),
+      ),
     ),
-    { initialValue: [] as ServiceStatus[] },
+    { initialValue: null },
   );
 
-  readonly statusDisplay = serviceStatusDisplay;
+  readonly checkDisplay = healthCheckDisplay;
+  readonly groupLabel = healthGroupLabel;
 }

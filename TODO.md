@@ -115,6 +115,10 @@ than something that'd change a decision someone makes.
   test-verified end to end, `mvn test` passing cleanly on the first run for slices 3-5. The
   Peers tab's "Connection type" (TCP/µTP) column follow-up is also now done - see that item
   above.
+- **Check that the peer id client code `GT` is not already used by another client** before a
+  public release (2026-10-02). It was picked without checking BEP 20's table or the larger lists
+  other clients use to name peers. If taken, change `ClientIdentity.PEER_ID_CLIENT_CODE`. See
+  `design_docs/0084`'s open item.
 - Notification service (emails, or something else yet to be defined)
 - Run a user-configured script automatically when a torrent completes
 - ~~UI bug: refreshing the page while the torrent-detail side panel is open

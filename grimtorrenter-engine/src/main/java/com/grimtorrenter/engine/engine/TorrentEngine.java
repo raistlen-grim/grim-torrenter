@@ -914,16 +914,29 @@ public final class TorrentEngine {
         }
     }
 
+    /** How many inbound peer connections (TCP or µTP) have got as far as naming a torrent since
+     * this engine started - whether or not we had that torrent. Any at all is proof the listen
+     * port is reachable from outside, which is what the health report uses it for
+     * (design_docs/0086). */
+    private final java.util.concurrent.atomic.AtomicLong incomingConnectionsSeen =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    public long incomingConnectionsSeen() {
+        return incomingConnectionsSeen.get();
+    }
+
     /** The one place that bridges PeerServer's generic, TorrentSession-unaware lookup
      * (see IncomingConnectionHandler's own Javadoc on why it stays that way) to this
      * engine's actual session map. */
     private Optional<IncomingConnectionHandler> findIncomingConnectionHandler(InfoHash infoHash) {
+        incomingConnectionsSeen.incrementAndGet();
         return Optional.ofNullable(sessions.get(infoHash)).map(session -> session::acceptIncomingConnection);
     }
 
     /** The µTP counterpart to findIncomingConnectionHandler() above (design_docs/0074's slice
      * 3) - same bridging role, for UtpPeerAcceptor instead of PeerServer. */
     private Optional<UtpIncomingConnectionHandler> findIncomingUtpConnectionHandler(InfoHash infoHash) {
+        incomingConnectionsSeen.incrementAndGet();
         return Optional.ofNullable(sessions.get(infoHash)).map(session -> session::acceptIncomingUtpConnection);
     }
 

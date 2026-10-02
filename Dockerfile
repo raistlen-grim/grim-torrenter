@@ -24,15 +24,19 @@ RUN mvn -B -pl grimtorrenter-app -am package -DskipTests
 
 # ---- Runtime ----
 FROM eclipse-temurin:25-jre-alpine AS runtime
+# su-exec: lets the entrypoint drop from root to PUID:PGID (see docker/entrypoint.sh).
+RUN apk add --no-cache su-exec
 WORKDIR /app
 COPY --from=backend-build /build/grimtorrenter-app/target/quarkus-app/ ./
+COPY docker/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
 # 8080: the web UI/REST API (http).
 EXPOSE 8080
 # 6881: the BitTorrent listen port (grimtorrenter.listen-port) - both peer-wire (tcp,
 # incoming connections - see design_docs/0038) and DHT (udp - see design_docs/0028) use
 # this same port number. Deploy-time only (not user-editable via settings.json, see
-# design_docs/0041) - override with -e grimtorrenter.listen-port=<port> if 6881 needs to
+# design_docs/0041) - override with -e GRIMTORRENTER_LISTEN_PORT=<port> if 6881 needs to
 # map to something else; the container-side value only needs to match whatever -p/-p udp
 # mapping is actually used, not this literal number.
 EXPOSE 6881/tcp
@@ -70,4 +74,17 @@ EXPOSE 6881/udp
 # deployed. Without a config-directory mount, the event log (like settings.json) is lost on
 # every container recreate, not just a plain restart of the same container; without a
 # watch-directory mount, there's nowhere outside the container to actually drop files into.
-ENTRYPOINT ["java", "-jar", "quarkus-run.jar"]
+#
+# PUID / PGID (both default 1000): the user and group id the app runs as, so files it creates
+# in the mounted directories belong to a real user on the host rather than root. Set them to
+# the output of `id -u` / `id -g` for the host user that owns the mounted directories. The
+# container starts as root only long enough to take ownership of the config directory and drop
+# to that user (docker/entrypoint.sh); it never changes ownership of downloads or watch, and
+# warns at startup if it can't write to them. PUID=0 PGID=0 keeps the old run-as-root
+# behaviour. See design_docs/0085.
+ENV PUID=1000 PGID=1000
+# Healthy while the app answers and can write to its config and downloads directories
+# (GET /api/system/healthz - design_docs/0086). busybox wget exits non-zero on a 503.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+  CMD wget -q -O /dev/null http://127.0.0.1:8080/api/system/healthz || exit 1
+ENTRYPOINT ["/app/entrypoint.sh"]

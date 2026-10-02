@@ -24,10 +24,12 @@ export const routes: Routes = [
     ],
   },
   {
-    path: 'services',
+    path: 'health',
     canActivate: [authGuard],
     loadComponent: () => import('./services-page/services-page').then((m) => m.ServicesPage),
   },
+  // The page's old address, from before it grew into Health (design_docs/0086).
+  { path: 'services', redirectTo: 'health', pathMatch: 'full' },
   {
     path: 'events',
     canActivate: [authGuard],

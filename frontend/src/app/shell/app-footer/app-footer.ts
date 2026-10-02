@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
-import { interval, startWith, switchMap } from 'rxjs';
+import { catchError, interval, of, startWith, switchMap } from 'rxjs';
 
 import { DiskUsage, ResourceUsage } from '../../models/system.model';
 import { SystemService } from '../../services/system.service';
@@ -8,6 +8,11 @@ import { TorrentEventsService } from '../../services/torrent-events.service';
 import { FormatBytesPipe } from '../../shared/format-bytes.pipe';
 import { FormatRatePipe } from '../../shared/format-rate.pipe';
 import { pluralTorrentCount } from '../../shared/plural-torrent-count';
+
+/** Where this build's source code lives. The licence (AGPL-3.0, section 13) requires anyone
+ * running a modified version for others over a network to offer them that version's source -
+ * someone doing so points this at their own repository. See LICENSE and the README. */
+const SOURCE_URL = 'https://github.com/raistlen-grim/grim-torrenter';
 
 const SYSTEM_POLL_INTERVAL_MS = 30_000;
 
@@ -31,6 +36,8 @@ export class AppFooter {
   private readonly events = inject(TorrentEventsService);
   private readonly system = inject(SystemService);
   private readonly formatBytes = new FormatBytesPipe();
+
+  readonly sourceUrl = SOURCE_URL;
 
   readonly torrentCount = computed(() => this.events.torrents().length);
   readonly torrentCountDisplay = computed(() => pluralTorrentCount(this.torrentCount()));
@@ -79,6 +86,18 @@ export class AppFooter {
       return '—';
     }
     return `${this.formatBytes.transform(usage.heapUsedBytes)} / ${this.formatBytes.transform(usage.heapMaxBytes)}`;
+  });
+
+  /** Fetched once - it can't change while this page is loaded against the same backend. Nothing
+   * is shown until it arrives (or if it never does), rather than a placeholder. The "v" is
+   * display only; the API returns the bare version. See design_docs/0084. */
+  private readonly appVersion = toSignal(this.system.version().pipe(catchError(() => of(null))), {
+    initialValue: null,
+  });
+
+  readonly versionDisplay = computed(() => {
+    const version = this.appVersion();
+    return version ? `v${version.version}` : null;
   });
 
   /** -1 is the JDK's own "can't determine this" sentinel, passed through unchanged from the

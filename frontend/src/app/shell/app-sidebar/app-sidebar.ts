@@ -1,9 +1,8 @@
 import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { RouterLink, RouterLinkActive } from '@angular/router';
-import { interval, startWith, switchMap } from 'rxjs';
+import { catchError, interval, of, startWith, switchMap } from 'rxjs';
 
-import { ServiceStatus } from '../../models/system.model';
 import { LabelService } from '../../services/label.service';
 import { SystemService } from '../../services/system.service';
 import { TorrentEventsService } from '../../services/torrent-events.service';
@@ -93,17 +92,24 @@ export class AppSidebar {
    * design_docs/0059), so this cadence is about freshness-on-first-load, not chasing a
    * genuinely live transition - same 30s cadence AppFooter already uses for its own
    * system-stats polling. */
-  /** Not private - app-sidebar.html reads services().length directly, to tell "no failures
-   * because everything's healthy" apart from "no failures because the first poll hasn't
-   * resolved yet" (still the [] initialValue) - the latter shouldn't flash a false all-clear
-   * checkmark. */
-  readonly services = toSignal(
+  /** Not private - app-sidebar.html reads health() directly, to tell "no failures because
+   * everything's healthy" apart from "no failures because the first poll hasn't resolved yet"
+   * (still the null initialValue) - the latter shouldn't flash a false all-clear checkmark. A
+   * failed poll also yields null: no claim either way. See design_docs/0086. */
+  readonly health = toSignal(
     interval(SERVICES_POLL_INTERVAL_MS).pipe(
       startWith(0),
-      switchMap(() => this.system.services()),
+      switchMap(() => this.system.health().pipe(catchError(() => of(null)))),
     ),
-    { initialValue: [] as ServiceStatus[] },
+    { initialValue: null },
   );
 
-  readonly failedServiceCount = computed(() => this.services().filter((s) => s.state === 'FAILED').length);
+  /** Only FAILED checks - a WARNING (a sparse DHT table, low disk space) or an INFO row is not
+   * an alarm, the same call design_docs/0059 made for DEGRADED. */
+  readonly failedCheckCount = computed(
+    () =>
+      this.health()
+        ?.groups.flatMap((group) => group.checks)
+        .filter((check) => check.state === 'FAILED').length ?? 0,
+  );
 }

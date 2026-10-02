@@ -170,7 +170,8 @@ details are open.
 
 | Key | Does |
 |---|---|
-| `Space` | Pauses whichever targets are downloading or seeding; if none are, resumes the paused ones. |
+| `Space` | Ticks or unticks the current row. `Shift`+`Space` extends the ticked range to it, like Shift-click. |
+| `Enter` | Pauses whichever targets are downloading or seeding; if none are, resumes the paused ones. |
 | `Delete` / `Backspace` | Opens the bulk remove dialog for the targets - also for a single current row, which gets the same dialog (with its delete-data checkbox) rather than the row menu's two separate remove items. |
 | `Up` / `Down` | Moves keyboard focus one row; from the top/bottom edge when no row is current. While a torrent's details are open, the panel follows the focus. Does not change the ticked set and does not move the selection summary. |
 | `/` | Focuses the filter field. |
@@ -179,6 +180,12 @@ details are open.
 Ignored when: a modifier is held (Ctrl/Cmd/Alt - browser shortcuts stay intact; Shift is
 allowed), a dialog or context menu is open, the key press is in a field or on a button, link or
 tab, or focus is inside the details panel.
+
+**Deviation from the guide, at the user's request (same day):** the guide has `Space`
+pause/resume the selection and no key for ticking a row. Here `Space` ticks and `Enter`
+pauses/resumes. That also changes what `Enter` did before on a focused row - it used to open the
+row's details (the keyboard stand-in for a click, from [[0032-style-guide-and-primeng-theme]]'s
+row redesign). Opening details from the keyboard is now `I`.
 
 Known limits:
 - `/` does nothing while the selection bar is showing - the filter field is in the toolbar the
@@ -190,4 +197,4 @@ Known limits:
 
 Stability: none - no new state, no new requests beyond the bulk actions already described.
 
-Not covered by tests. Not yet built or seen in the browser.
+Not covered by tests. Built and confirmed in the browser by the user (2026-10-02).

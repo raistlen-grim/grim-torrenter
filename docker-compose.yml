@@ -1,16 +1,28 @@
 # Convenience wrapper around `docker build -t grimtorrenter .` + `docker run` (see
-# design_docs/0003 - still one container, compose is just running it). Volumes/ports match
-# the Dockerfile's own documentation comments.
+# design_docs/0003 - still one container, compose is just running it).
+#
+# Nothing in this file is specific to one machine: every path, port and id comes from a
+# variable with a working default. To change any of them, copy .env.example to .env (which
+# compose reads automatically and git ignores) and edit it there. See design_docs/0085.
 services:
   grimtorrenter:
     build: .
     container_name: grimtorrenter
     restart: unless-stopped
+    environment:
+      # The user/group the app runs as - files it creates on the volumes below get this owner.
+      PUID: "${PUID:-1000}"
+      PGID: "${PGID:-1000}"
+      # Must be the same number as the host side of the two port mappings below: it is what the
+      # app tells trackers and peers to connect back on.
+      GRIMTORRENTER_LISTEN_PORT: "${GRIMTORRENTER_LISTEN_PORT:-6881}"
     ports:
-      - "8087:8080"
-      - "6881:6881/tcp"
-      - "6881:6881/udp"
+      # Web UI / REST API.
+      - "${GRIMTORRENTER_HTTP_PORT:-8080}:8080"
+      # BitTorrent: incoming peer connections (tcp) and DHT/uTP (udp).
+      - "${GRIMTORRENTER_LISTEN_PORT:-6881}:${GRIMTORRENTER_LISTEN_PORT:-6881}/tcp"
+      - "${GRIMTORRENTER_LISTEN_PORT:-6881}:${GRIMTORRENTER_LISTEN_PORT:-6881}/udp"
     volumes:
-      - /srv/dev-disk-by-uuid-48dca88d-2275-47d9-99b7-ffaa469ae120/downloads:/app/downloads
-      - /srv/dev-disk-by-uuid-48dca88d-2275-47d9-99b7-ffaa469ae120/config/grimtorrenter:/app/config
-      - /srv/dev-disk-by-uuid-48dca88d-2275-47d9-99b7-ffaa469ae120/downloads/grimtorrenter-watch:/app/watch
+      - "${GRIMTORRENTER_DOWNLOADS:-./data/downloads}:/app/downloads"
+      - "${GRIMTORRENTER_CONFIG:-./data/config}:/app/config"
+      - "${GRIMTORRENTER_WATCH:-./data/watch}:/app/watch"

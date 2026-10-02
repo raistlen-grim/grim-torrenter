@@ -33,8 +33,9 @@ import { TorrentLimitsDialog } from './torrent-limits-dialog/torrent-limits-dial
  *
  * <p>The row itself is the click target (style guide's row-anatomy redesign, see
  * design_docs/0032's second pass) - not the name, which is plain text now, never a link.
- * `tabindex="0"` plus `(keydown.enter)` make that keyboard-operable in place of the
- * `<a routerLink>` this replaced; `(click)` on the actions wrapper stops propagation so
+ * `tabindex="0"` makes the row focusable in place of the `<a routerLink>` this replaced; the
+ * keys themselves (Space, Enter, arrows, `I` to open the details) are TorrentList's list-wide
+ * shortcuts, not handled here (design_docs/0083); `(click)` on the actions wrapper stops propagation so
  * clicking a row action doesn't also navigate.
  */
 /** More than this many labels collapse into a "+N" chip so a heavily-labelled torrent can't
@@ -65,7 +66,6 @@ const MAX_VISIBLE_LABEL_CHIPS = 2;
     '(contextmenu)': 'onContextMenu($event)',
     '(click)': 'onRowClick($event)',
     '(mousedown)': 'onRowMouseDown($event)',
-    '(keydown.enter)': 'navigateToDetail()',
   },
 })
 export class TorrentRow {

@@ -1,5 +1,6 @@
 package com.grimtorrenter.engine.tracker;
 
+import com.grimtorrenter.engine.ClientIdentity;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -16,7 +17,8 @@ class PeerIdTest {
         assertEquals(20, id.bytes().length);
         byte[] prefix = new byte[8];
         System.arraycopy(id.bytes(), 0, prefix, 0, 8);
-        assertEquals("-GT0100-", new String(prefix, StandardCharsets.US_ASCII));
+        assertEquals(ClientIdentity.peerIdPrefix(), new String(prefix, StandardCharsets.US_ASCII));
+        assertEquals("-GT", ClientIdentity.peerIdPrefix().substring(0, 3));
     }
 
     @Test

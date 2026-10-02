@@ -1,5 +1,6 @@
 package com.grimtorrenter.engine.blocklist;
 
+import com.grimtorrenter.engine.ClientIdentity;
 import com.grimtorrenter.engine.events.EventStore;
 import com.grimtorrenter.engine.events.EventType;
 import com.grimtorrenter.engine.events.LibraryEvent;
@@ -257,7 +258,7 @@ public final class Blocklist implements IpFilter {
         }
         HttpRequest request = HttpRequest.newBuilder(uri)
                 .timeout(HEADERS_TIMEOUT)
-                .header("User-Agent", "GrimTorrenter")
+                .header("User-Agent", ClientIdentity.userAgent())
                 .GET()
                 .build();
         HttpResponse<InputStream> response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());

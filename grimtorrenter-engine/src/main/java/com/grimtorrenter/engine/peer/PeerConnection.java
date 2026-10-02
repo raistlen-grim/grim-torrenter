@@ -1,5 +1,6 @@
 package com.grimtorrenter.engine.peer;
 
+import com.grimtorrenter.engine.ClientIdentity;
 import com.grimtorrenter.engine.bencode.BDictionary;
 import com.grimtorrenter.engine.bencode.BInteger;
 import com.grimtorrenter.engine.bencode.BString;
@@ -551,7 +552,11 @@ public final class PeerConnection implements AutoCloseable {
         for (Map.Entry<String, Integer> entry : extensionsToAdvertise.entrySet()) {
             m.put(BString.of(entry.getKey()), new BInteger(entry.getValue()));
         }
-        BDictionary handshakeDict = new BDictionary(Map.of(BString.of("m"), new BDictionary(m)));
+        // "v" is BEP 10's client name and version - what other clients show for this peer
+        // instead of an unrecognised peer id. See design_docs/0084.
+        BDictionary handshakeDict = new BDictionary(Map.of(
+                BString.of("m"), new BDictionary(m),
+                BString.of("v"), BString.of(ClientIdentity.displayName())));
         send(new Extended(0, BencodeEncoder.encode(handshakeDict)));
     }
 

@@ -5,3 +5,6 @@
 .git/
 design_docs/
 *.md
+.env
+.env.example
+data/

@@ -6,4 +6,8 @@
   <span class="free-space"><i class="pi pi-database" aria-hidden="true"></i> {{ freeSpaceDisplay() }}</span>
   <span><i class="pi pi-server" aria-hidden="true"></i> {{ heapDisplay() }}</span>
   <span><i class="pi pi-microchip" aria-hidden="true"></i> {{ cpuDisplay() }}</span>
+  @if (versionDisplay(); as version) {
+    <span title="GrimTorrenter version">{{ version }}</span>
+  }
+  <a class="source-link" [href]="sourceUrl" target="_blank" rel="noopener noreferrer">Source</a>
 </footer>

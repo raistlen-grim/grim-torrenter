@@ -30,6 +30,14 @@
   </dependencies>
 
   <build>
+    <!-- Filtering writes ${project.version} into client-identity.properties - the client's
+         one source for its own version (ClientIdentity, design_docs/0084). -->
+    <resources>
+      <resource>
+        <directory>src/main/resources</directory>
+        <filtering>true</filtering>
+      </resource>
+    </resources>
     <plugins>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>

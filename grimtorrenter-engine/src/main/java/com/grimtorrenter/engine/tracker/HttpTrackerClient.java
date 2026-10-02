@@ -1,5 +1,6 @@
 package com.grimtorrenter.engine.tracker;
 
+import com.grimtorrenter.engine.ClientIdentity;
 import com.grimtorrenter.engine.bencode.BDictionary;
 import com.grimtorrenter.engine.bencode.BInteger;
 import com.grimtorrenter.engine.bencode.BString;
@@ -40,7 +41,7 @@ public final class HttpTrackerClient implements TrackerClient {
     private static final int COMPACT_PEER_ENTRY_LENGTH = 6;
     /** Real clients always identify themselves - Java's HttpClient default User-Agent gets
      * many trackers to reject the request outright (403) as obvious non-client traffic. */
-    private static final String USER_AGENT = "GrimTorrenter/0.1.0";
+    private static final String USER_AGENT = ClientIdentity.userAgent();
 
     /** A tracker reply is a few KB of bencode (a compact peer list); this is a generous ceiling
      * that only exists to bound a hostile or broken tracker. Applies to the proxied path - the

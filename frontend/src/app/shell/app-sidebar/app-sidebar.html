@@ -32,12 +32,12 @@
     <p class="nav-hint">No labels yet</p>
   }
   <app-manage-labels-dialog [visible]="showManageLabels()" (visibleChange)="showManageLabels.set($event)" />
-  <a routerLink="/services" routerLinkActive="active" class="nav-item below-filters">
+  <a routerLink="/health" routerLinkActive="active" class="nav-item below-filters">
     <i class="pi pi-shield" aria-hidden="true"></i>
-    <span class="nav-label">Services</span>
-    @if (failedServiceCount() > 0) {
-      <span class="nav-count nav-count-alarm tabular-nums">{{ failedServiceCount() }}</span>
-    } @else if (services().length > 0) {
+    <span class="nav-label">Health</span>
+    @if (failedCheckCount() > 0) {
+      <span class="nav-count nav-count-alarm tabular-nums">{{ failedCheckCount() }}</span>
+    } @else if (health() !== null) {
       <i class="pi pi-check-circle nav-status-ok" aria-hidden="true"></i>
     }
   </a>

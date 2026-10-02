@@ -1,5 +1,6 @@
 package com.grimtorrenter.app;
 
+import com.grimtorrenter.engine.ClientIdentity;
 import com.grimtorrenter.engine.engine.TorrentEngine;
 import com.sun.management.OperatingSystemMXBean;
 import jakarta.inject.Inject;
@@ -7,6 +8,7 @@ import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.core.MediaType;
+import jakarta.ws.rs.core.Response;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.io.IOException;
@@ -30,6 +32,9 @@ public class SystemResource {
 
     @Inject
     TorrentEngine torrentEngine;
+
+    @Inject
+    HealthService healthService;
 
     /** Creates the directory itself first rather than assuming TorrentEngine already has -
      * it only creates it as an incidental side effect of persisting a DHT node id marker
@@ -70,6 +75,41 @@ public class SystemResource {
         var os = (OperatingSystemMXBean) ManagementFactory.getOperatingSystemMXBean();
         return new ResourceUsageView(heap.getUsed(), heap.getMax(), os.getProcessCpuLoad(),
                 os.getAvailableProcessors());
+    }
+
+    /** Which build this is - shown in the UI footer so a bug report can name it. The full
+     * version, qualifier included; see ClientIdentity and design_docs/0084. */
+    @GET
+    @Path("/version")
+    @Produces(MediaType.APPLICATION_JSON)
+    public VersionView version() {
+        return new VersionView(ClientIdentity.NAME, ClientIdentity.version());
+    }
+
+    public record VersionView(String name, String version) {
+    }
+
+    /** The full health report behind the Health page - see HealthView and design_docs/0086. */
+    @GET
+    @Path("/health")
+    @Produces(MediaType.APPLICATION_JSON)
+    public HealthView health() {
+        return healthService.report();
+    }
+
+    public record LivenessView(String status) {
+    }
+
+    /** For the container's HEALTHCHECK: 200 while the app can do its job, 503 when it cannot
+     * (see HealthService.isLive()). Says nothing but UP/DOWN, and is reachable without a login
+     * (AuthenticationFilter) - a health probe has no way to hold a session. */
+    @GET
+    @Path("/healthz")
+    @Produces(MediaType.APPLICATION_JSON)
+    public Response healthz() {
+        return healthService.isLive()
+                ? Response.ok(new LivenessView("UP")).build()
+                : Response.status(Response.Status.SERVICE_UNAVAILABLE).entity(new LivenessView("DOWN")).build();
     }
 
     /** Engine-wide singleton subsystems only (DHT, the inbound peer server) - per-torrent

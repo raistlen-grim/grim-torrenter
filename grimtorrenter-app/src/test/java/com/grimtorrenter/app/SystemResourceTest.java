@@ -48,6 +48,47 @@ class SystemResourceTest {
         assertTrue(heapMax.longValue() > 0, "heapMaxBytes should be positive");
     }
 
+    /** design_docs/0086 - shape only: which states come back depends on the test profile. */
+    @Test
+    void healthReportsEveryGroupWithItsChecks() {
+        given()
+                .when().get("/api/system/health")
+                .then().statusCode(200)
+                .body("status", org.hamcrest.Matchers.oneOf("OK", "WARNING", "FAILED"))
+                .body("groups.name", org.hamcrest.Matchers.contains(
+                        "network", "storage", "connectivity", "protection", "build"))
+                .body("groups.find { it.name == 'network' }.checks.name", hasItems("dht", "peerServer", "lsd"))
+                .body("groups.find { it.name == 'storage' }.checks.name",
+                        org.hamcrest.Matchers.contains("downloads", "config", "watch", "freeSpace"))
+                .body("groups.find { it.name == 'storage' }.checks.find { it.name == 'downloads' }.state",
+                        org.hamcrest.Matchers.equalTo("OK"))
+                .body("groups.find { it.name == 'connectivity' }.checks.name",
+                        org.hamcrest.Matchers.contains("incoming", "proxy"))
+                .body("groups.find { it.name == 'protection' }.checks.name",
+                        org.hamcrest.Matchers.contains("blocklist", "auth"))
+                .body("groups.find { it.name == 'build' }.checks.name",
+                        org.hamcrest.Matchers.contains("version", "uptime", "user"));
+    }
+
+    /** design_docs/0086 - the container health check's endpoint. */
+    @Test
+    void healthzReportsUpWhileTheDirectoriesAreUsable() {
+        given()
+                .when().get("/api/system/healthz")
+                .then().statusCode(200)
+                .body("status", org.hamcrest.Matchers.equalTo("UP"));
+    }
+
+    /** design_docs/0084. */
+    @Test
+    void versionReportsTheClientNameAndBuildVersion() {
+        given()
+                .when().get("/api/system/version")
+                .then().statusCode(200)
+                .body("name", org.hamcrest.Matchers.equalTo("GrimTorrenter"))
+                .body("version", org.hamcrest.Matchers.equalTo(com.grimtorrenter.engine.ClientIdentity.version()));
+    }
+
     /** Asserts names/shape only, not a specific state - whether each service reports RUNNING
      * or DISABLED depends on the test profile's own DHT/incoming-connections/LSD settings,
      * which this test shouldn't need to know about. See design_docs/0059/0062. */

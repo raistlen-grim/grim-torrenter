@@ -27,7 +27,9 @@ export type EventType =
   | 'TRACKER_RECOVERED'
   | 'LSD_UNAVAILABLE'
   | 'BLOCKLIST_UPDATED'
-  | 'BLOCKLIST_FAILED';
+  | 'BLOCKLIST_FAILED'
+  // Engine-wide; the path and the fix are in the message. design_docs/0086.
+  | 'STORAGE_UNWRITABLE';
 
 /** Matches the backend's LibraryEvent record - a curated library-management feed (torrent
  * added/completed/errored/removed, an auto-pause from a reached seeding limit, the app
