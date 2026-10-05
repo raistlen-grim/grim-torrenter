@@ -213,6 +213,43 @@ session has registered the connection, which removes the window instead of toler
 changes `PeerConnection`'s construction contract for every caller. No regression test - the
 window is between two statements on one thread and has no seam to hold it open.
 
+**Revision (2026-10-05): outbound attempts no longer hold connection slots.** With the listen
+port forwarded, a real container received about 1,500 inbound connections in a ten-minute log
+and kept 3. Of the 315 that reached a torrent, 286 were refused as "at the connection limit of
+30" while those torrents had 1-11 peers connected. Since the first correction above, an outbound
+attempt took its `connectionSlots` permit *before* dialling and every failure immediately
+started a replacement, so with a large candidate pool (most of it dead addresses) nearly every
+permit was permanently held by a dial in progress - and inbound peers, the ones known to be
+alive and reachable, were turned away.
+
+`connectionSlots` now bounds **established** connections only, inbound and outbound together; a
+permit is taken once a handshake has completed. Attempts get their own bound,
+`outboundAttemptSlots` (`min(maxConnections, 16)`), acquired atomically in `fillConnections()`
+before the attempt's thread starts - the same structural guarantee the first correction needed
+against an attempt cascade, just no longer spent from the budget inbound peers use.
+`fillConnections()` starts attempts only for the room left (free slots minus attempts already in
+flight); that subtraction isn't atomic, so an attempt can still succeed into a session that
+filled meanwhile, in which case the new connection is closed and its address stays eligible. A
+`slotHolders` set records which connections hold a permit, so it is released exactly once
+whichever of `adopt()` and `onDisconnected()` reaches a dead connection first, and never for one
+closed before it was given a permit. `adopt()` also closes a connection that finishes its
+handshake after the session has stopped, which previously stayed open on a paused torrent.
+
+Stability: worst case per session is `maxConnections` established plus 16 attempts (sockets and
+virtual threads), up from a flat `maxConnections` - bounded, and attempts are short-lived. Cost:
+a session connects out at most 16 at a time instead of 30, so the first fill of a fresh torrent
+is somewhat slower. Alternatives considered: reserving a fixed share of slots for inbound
+(still refuses inbound once the outbound share is all dials); keeping one semaphore and evicting
+a pending dial when an inbound peer arrives (needs cancellable attempts, which `connect()` is
+not).
+
+**Also 2026-10-05: connections to ourselves are dropped.** Our own public address comes back
+from trackers, DHT and PEX like anyone else's, and the session dialled it - seen in the same log
+as inbound connections from the router's address, one of which was kept (two slots on one
+torrent, talking to itself). Both ends now compare the remote peer id with our own: the inbound
+side refuses before taking a slot, the outbound side closes and puts the address in
+`failedAddresses`. The peer id is per process, so this can't match another install.
+
 **Requesting blocks without double-requesting from the same connection.**
 `PieceManager` only tracks "received," not "requested" (by design, per
 [[0016-piece-and-storage]]), which means `selectNextBlock` alone will keep

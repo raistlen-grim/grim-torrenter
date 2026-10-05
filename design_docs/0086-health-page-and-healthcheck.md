@@ -42,6 +42,19 @@ looks the same). Hence INFO rather than a failure. The engine gains one counter,
 `TorrentEngine.incomingConnectionsSeen()`, bumped when an inbound TCP or uTP connection names a
 torrent.
 
+**Addendum (2026-10-03): the row shows three numbers, not one.** On a real container the single
+count read 53,812 after three and a half hours while about nine inbound peers were connected -
+a number that looks healthy and says nothing about whether peers stay. The message is now
+"9 connected now. Since start: 53,812 received, 1,204 accepted": `incomingConnectionsActive()`
+(a sum over each session's connections), the existing seen count, and a new
+`incomingConnectionsAccepted()` counter bumped when a session keeps a connection it was handed
+(`acceptIncomingConnection()`/`acceptIncomingUtpConnection()` now return whether they did). The
+state rule is unchanged - any connection seen is still the evidence the port is open - and the
+frontend is untouched, since the backend writes the message. Stability: two `AtomicLong`s and a
+walk over the already-bounded connection sets per report; nothing grows. `PeerServer` and
+`TorrentSession` also log each refused inbound connection and why at DEBUG, for the case the
+numbers flag but can't explain.
+
 ### Where it is computed
 
 A new app-layer `HealthService`. The directories are deploy-time config the engine doesn't own,

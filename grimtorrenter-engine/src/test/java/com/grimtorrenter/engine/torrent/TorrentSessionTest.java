@@ -135,6 +135,12 @@ class TorrentSessionTest {
         return PeerId.of(fill(20, 100));
     }
 
+    /** The session's own id - must differ from every fake peer's, since a session drops a
+     * connection whose remote peer id is its own (design_docs/0017's 2026-10-05 revision). */
+    private static PeerId fakeLocalPeerId() {
+        return PeerId.of(fill(20, 60));
+    }
+
     /** Reads and discards messages until one of the requested type arrives - the client
      * legitimately interleaves other protocol messages (Interested, KeepAlive, ...). */
     private static <T extends PeerMessage> T readUntil(InputStream in, Class<T> type) throws IOException {
@@ -245,7 +251,7 @@ class TorrentSessionTest {
         RecordingListener listener = new RecordingListener();
 
         TorrentSession session = TorrentSession.create(
-                metadata, tracker, tempDir, fakeRemotePeerId(), 6881, listener, null);
+                metadata, tracker, tempDir, fakeLocalPeerId(), 6881, listener, null);
         session.start();
         try {
             assertEquals(1, tracker.requests.size());
@@ -264,7 +270,7 @@ class TorrentSessionTest {
         RecordingListener listener = new RecordingListener();
 
         TorrentSession session = TorrentSession.create(
-                metadata, tracker, tempDir, fakeRemotePeerId(), 6881, listener, null);
+                metadata, tracker, tempDir, fakeLocalPeerId(), 6881, listener, null);
         session.start();
 
         assertEquals(TorrentState.ERROR, session.state());
@@ -286,7 +292,7 @@ class TorrentSessionTest {
         DhtNode sessionDht = createDhtNode(1);
 
         TorrentSession session = TorrentSession.create(
-                metadata, tracker, tempDir, fakeRemotePeerId(), 6881, listener, sessionDht);
+                metadata, tracker, tempDir, fakeLocalPeerId(), 6881, listener, sessionDht);
         try {
             session.start();
 
@@ -386,7 +392,7 @@ class TorrentSessionTest {
         FakeTrackerClient tracker = new FakeTrackerClient();
         tracker.failure = new RuntimeException("tracker down");
         TorrentSession session = TorrentSession.create(
-                metadata, tracker, tempDir, fakeRemotePeerId(), 6881, new RecordingListener(), sessionDht);
+                metadata, tracker, tempDir, fakeLocalPeerId(), 6881, new RecordingListener(), sessionDht);
         try {
             session.start();
 
@@ -440,7 +446,7 @@ class TorrentSessionTest {
 
         FakeTrackerClient tracker = new FakeTrackerClient();
         TorrentSession session = TorrentSession.create(metadata, tracker, tempDir,
-                fakeRemotePeerId(), 6881, new RecordingListener(), sessionDht);
+                fakeLocalPeerId(), 6881, new RecordingListener(), sessionDht);
         try {
             session.start();
             assertEquals(TorrentState.DOWNLOADING, session.state());
@@ -499,7 +505,7 @@ class TorrentSessionTest {
 
         FakeTrackerClient tracker = new FakeTrackerClient();
         TorrentSession session = TorrentSession.create(metadata, tracker, tempDir,
-                fakeRemotePeerId(), 6881, new RecordingListener(), sessionDht);
+                fakeLocalPeerId(), 6881, new RecordingListener(), sessionDht);
         try {
             session.start();
             assertEquals(TorrentState.DOWNLOADING, session.state());
@@ -716,7 +722,7 @@ class TorrentSessionTest {
         fakePeer.start();
 
         TorrentSession session = TorrentSession.create(metadata, new NoOpTrackerClient(), tempDir,
-                fakeRemotePeerId(), 6881, new RecordingListener(), null);
+                fakeLocalPeerId(), 6881, new RecordingListener(), null);
         try {
             session.start();
             session.addKnownPeers(List.of(fakePeerAddress), PeerSource.UNKNOWN);
@@ -759,7 +765,7 @@ class TorrentSessionTest {
         FakeTrackerClient tracker = new FakeTrackerClient();
         tracker.peersToReturn = List.of(badAddress);
         TorrentSession session = TorrentSession.create(metadata, tracker, tempDir,
-                fakeRemotePeerId(), 6881, new RecordingListener(), null);
+                fakeLocalPeerId(), 6881, new RecordingListener(), null);
         try {
             session.start();
 
@@ -838,7 +844,7 @@ class TorrentSessionTest {
         FakeTrackerClient tracker = new FakeTrackerClient();
         tracker.peersToReturn = candidates;
         TorrentSession session = TorrentSession.create(metadata, tracker, tempDir,
-                fakeRemotePeerId(), 6881, new RecordingListener(), null);
+                fakeLocalPeerId(), 6881, new RecordingListener(), null);
         try {
             session.start();
             // Enough time for every candidate to be attempted and fail, across as many
@@ -899,7 +905,7 @@ class TorrentSessionTest {
         peerAnnouncer.findPeers(infoHash, fakePeerAddress.port(), false, DHT_TEST_TIMEOUT);
 
         TorrentSession session = TorrentSession.create(metadata, new NoOpTrackerClient(), tempDir,
-                fakeRemotePeerId(), 6881, new RecordingListener(), sessionDht);
+                fakeLocalPeerId(), 6881, new RecordingListener(), sessionDht);
         try {
             session.start();
 
@@ -946,7 +952,7 @@ class TorrentSessionTest {
         peerAnnouncer.routingTable().insert(contactOf(dhtResponder));
 
         TorrentSession session = TorrentSession.create(metadata, new NoOpTrackerClient(), tempDir,
-                fakeRemotePeerId(), 6881, new RecordingListener(), sessionDht,
+                fakeLocalPeerId(), 6881, new RecordingListener(), sessionDht,
                 RateLimiters.unlimited(), FileHandlePool.unbounded(), new Semaphore(Integer.MAX_VALUE),
                 () -> EncryptionMode.DISABLED, SeedingLimitOverride.INHERIT, Instant.now(), () -> 1L);
         try {
@@ -1000,7 +1006,7 @@ class TorrentSessionTest {
         fakePeer.start();
 
         TorrentSession session = TorrentSession.create(metadata, new NoOpTrackerClient(), tempDir,
-                fakeRemotePeerId(), 6881, new RecordingListener(), null, RateLimiters.unlimited(),
+                fakeLocalPeerId(), 6881, new RecordingListener(), null, RateLimiters.unlimited(),
                 FileHandlePool.unbounded(), new Semaphore(Integer.MAX_VALUE), () -> EncryptionMode.DISABLED,
                 SeedingLimitOverride.INHERIT, Instant.now(), () -> 300L, false, TorrentSession.PersistedLifetimeStats.NONE,
                 TorrentLimitOverride.INHERIT, 30, true, () -> 2);
@@ -1046,7 +1052,7 @@ class TorrentSessionTest {
         fakePeer.start();
 
         TorrentSession session = TorrentSession.create(metadata, new NoOpTrackerClient(), tempDir,
-                fakeRemotePeerId(), 6881, new RecordingListener(), null, RateLimiters.unlimited(),
+                fakeLocalPeerId(), 6881, new RecordingListener(), null, RateLimiters.unlimited(),
                 FileHandlePool.unbounded(), new Semaphore(Integer.MAX_VALUE), () -> EncryptionMode.DISABLED,
                 SeedingLimitOverride.INHERIT, Instant.now(), () -> 300L, false, TorrentSession.PersistedLifetimeStats.NONE,
                 TorrentLimitOverride.INHERIT, 30, true, () -> 1);
@@ -1094,7 +1100,7 @@ class TorrentSessionTest {
         Handshake remoteHandshake = PeerWireCodec.readHandshake(accepted.getInputStream());
 
         TorrentSession session = TorrentSession.create(metadata, new FakeTrackerClient(), tempDir,
-                fakeRemotePeerId(), 6881, new RecordingListener(), null);
+                fakeLocalPeerId(), 6881, new RecordingListener(), null);
         try {
             session.start();
             session.acceptIncomingConnection(accepted, accepted.getInputStream(), accepted.getOutputStream(), remoteHandshake);
@@ -1137,7 +1143,7 @@ class TorrentSessionTest {
             Handshake remoteHandshake = PeerWireCodec.readHandshake(accepted.getInputStream());
 
             TorrentSession session = TorrentSession.create(metadata, new FakeTrackerClient(), tempDir,
-                    fakeRemotePeerId(), 6881, new RecordingListener(), null);
+                    fakeLocalPeerId(), 6881, new RecordingListener(), null);
             try {
                 session.start();
                 session.acceptIncomingUtpConnection(accepted, remoteHandshake);
@@ -1196,7 +1202,7 @@ class TorrentSessionTest {
         FakeTrackerClient tracker = new FakeTrackerClient();
         tracker.peersToReturn = List.of(addressA, addressB);
         TorrentSession session = TorrentSession.create(metadata, tracker, tempDir,
-                fakeRemotePeerId(), 6881, new RecordingListener(), null);
+                fakeLocalPeerId(), 6881, new RecordingListener(), null);
         try {
             session.start();
             // Waits for each connection's own extended handshake to have actually been
@@ -1295,7 +1301,7 @@ class TorrentSessionTest {
         FakeTrackerClient tracker = new FakeTrackerClient();
         tracker.peersToReturn = List.of(addressA, addressB);
         TorrentSession session = TorrentSession.create(metadata, tracker, tempDir,
-                fakeRemotePeerId(), 6881, new RecordingListener(), null);
+                fakeLocalPeerId(), 6881, new RecordingListener(), null);
         try {
             session.start();
             long deadline = System.currentTimeMillis() + 5000;
@@ -1370,7 +1376,7 @@ class TorrentSessionTest {
         FakeTrackerClient tracker = new FakeTrackerClient();
         tracker.peersToReturn = List.of(senderAddress);
         TorrentSession session = TorrentSession.create(metadata, tracker, tempDir,
-                fakeRemotePeerId(), 6881, new RecordingListener(), null);
+                fakeLocalPeerId(), 6881, new RecordingListener(), null);
         try {
             session.start();
             assertTrue(introducedHandshakeReceived.await(5, TimeUnit.SECONDS));
@@ -1386,7 +1392,7 @@ class TorrentSessionTest {
     void pieceStatesStartAllNeeded(@TempDir Path tempDir) throws IOException {
         TorrentMetadata metadata = twoPieceMetadata(fill(20, 1), fill(20, 21));
         try (TorrentSession session = TorrentSession.create(metadata, new FakeTrackerClient(), tempDir,
-                fakeRemotePeerId(), 6881, new RecordingListener(), null)) {
+                fakeLocalPeerId(), 6881, new RecordingListener(), null)) {
             assertEquals(List.of(PieceState.NEEDED, PieceState.NEEDED), session.pieceStates());
         }
     }
@@ -1396,9 +1402,9 @@ class TorrentSessionTest {
         TorrentMetadata metadata = singlePieceMetadata(fill(20, 1));
 
         try (TorrentSession withTracker = TorrentSession.create(metadata, new FakeTrackerClient(),
-                tempDir.resolve("a"), fakeRemotePeerId(), 6881, new RecordingListener(), null);
+                tempDir.resolve("a"), fakeLocalPeerId(), 6881, new RecordingListener(), null);
              TorrentSession withoutTracker = TorrentSession.create(metadata, new NoOpTrackerClient(),
-                tempDir.resolve("b"), fakeRemotePeerId(), 6881, new RecordingListener(), null)) {
+                tempDir.resolve("b"), fakeLocalPeerId(), 6881, new RecordingListener(), null)) {
             assertFalse(withTracker.isTrackerless());
             assertTrue(withoutTracker.isTrackerless());
         }
@@ -1418,7 +1424,7 @@ class TorrentSessionTest {
         tracker.statusesToReturn = expected;
 
         try (TorrentSession session = TorrentSession.create(metadata, tracker, tempDir,
-                fakeRemotePeerId(), 6881, new RecordingListener(), null)) {
+                fakeLocalPeerId(), 6881, new RecordingListener(), null)) {
             assertEquals(expected, session.trackers());
         }
     }
@@ -1445,7 +1451,7 @@ class TorrentSessionTest {
         FakeTrackerClient tracker = new FakeTrackerClient();
         tracker.peersToReturn = List.of(fakePeerAddress);
         TorrentSession session = TorrentSession.create(metadata, tracker, tempDir,
-                fakeRemotePeerId(), 6881, new RecordingListener(), null);
+                fakeLocalPeerId(), 6881, new RecordingListener(), null);
         try {
             session.start();
             List<TorrentSession.PeerSnapshot> peers = awaitOnePeer(session);
@@ -1495,7 +1501,7 @@ class TorrentSessionTest {
         FakeTrackerClient tracker = new FakeTrackerClient();
         tracker.peersToReturn = List.of(fakePeerAddress);
         TorrentSession session = TorrentSession.restoreAsync(
-                metadata, tracker, tempDir, fakeRemotePeerId(), 6881, new RecordingListener(), null, true);
+                metadata, tracker, tempDir, fakeLocalPeerId(), 6881, new RecordingListener(), null, true);
         try {
             awaitState(session, TorrentState.DOWNLOADING);
             awaitOnePeer(session);
@@ -1557,7 +1563,7 @@ class TorrentSessionTest {
         FakeTrackerClient tracker = new FakeTrackerClient();
         tracker.peersToReturn = List.of(fakePeerAddress);
         TorrentSession session = TorrentSession.create(metadata, tracker, tempDir,
-                fakeRemotePeerId(), 6881, new RecordingListener(), null);
+                fakeLocalPeerId(), 6881, new RecordingListener(), null);
         try {
             session.start();
             awaitBytesReceivedAtLeast(session, content.length);
@@ -1618,7 +1624,7 @@ class TorrentSessionTest {
         RecordingListener listener = new RecordingListener();
 
         TorrentSession session = TorrentSession.create(
-                metadata, tracker, tempDir, fakeRemotePeerId(), 6881, listener, null);
+                metadata, tracker, tempDir, fakeLocalPeerId(), 6881, listener, null);
         try {
             session.start();
             awaitCompletedPieceCount(session, 2);
@@ -1673,7 +1679,7 @@ class TorrentSessionTest {
         RecordingListener listener = new RecordingListener();
 
         TorrentSession session = TorrentSession.create(
-                metadata, tracker, tempDir, fakeRemotePeerId(), 6881, listener, null);
+                metadata, tracker, tempDir, fakeLocalPeerId(), 6881, listener, null);
         session.start();
         session.stop();
         session.stop();
@@ -1736,7 +1742,7 @@ class TorrentSessionTest {
         RecordingListener listener = new RecordingListener();
 
         TorrentSession session = TorrentSession.create(
-                metadata, tracker, tempDir, fakeRemotePeerId(), 6881, listener, null);
+                metadata, tracker, tempDir, fakeLocalPeerId(), 6881, listener, null);
         try {
             session.start();
             awaitCompletedPieceCount(session, 1);
@@ -1776,7 +1782,7 @@ class TorrentSessionTest {
         RecordingListener listener = new RecordingListener();
 
         TorrentSession session = TorrentSession.restoreAsync(
-                metadata, tracker, tempDir, fakeRemotePeerId(), 6881, listener, null, true);
+                metadata, tracker, tempDir, fakeLocalPeerId(), 6881, listener, null, true);
         // Must be visible right away, before verification (a real re-hash) has any chance to finish -
         // that's the whole point of restoreAsync() over a blocking restore().
         assertEquals(TorrentState.VERIFYING, session.state());
@@ -1807,7 +1813,7 @@ class TorrentSessionTest {
         RecordingListener listener = new RecordingListener();
 
         TorrentSession session = TorrentSession.restoreAsync(
-                metadata, tracker, tempDir, fakeRemotePeerId(), 6881, listener, null, false);
+                metadata, tracker, tempDir, fakeLocalPeerId(), 6881, listener, null, false);
         assertEquals(TorrentState.VERIFYING, session.state());
 
         awaitState(session, TorrentState.STOPPED);
@@ -1828,7 +1834,7 @@ class TorrentSessionTest {
         RecordingListener listener = new RecordingListener();
 
         TorrentSession session = TorrentSession.restoreAsync(
-                metadata, tracker, tempDir, fakeRemotePeerId(), 6881, listener, null, true);
+                metadata, tracker, tempDir, fakeLocalPeerId(), 6881, listener, null, true);
 
         awaitState(session, TorrentState.DOWNLOADING);
         assertEquals(0, session.completedPieceCount());
@@ -1850,7 +1856,7 @@ class TorrentSessionTest {
         RecordingListener listener = new RecordingListener();
         Semaphore verificationLimiter = new Semaphore(0);
 
-        TorrentSession session = TorrentSession.restoreAsync(metadata, tracker, tempDir, fakeRemotePeerId(), 6881,
+        TorrentSession session = TorrentSession.restoreAsync(metadata, tracker, tempDir, fakeLocalPeerId(), 6881,
                 listener, null, RateLimiters.unlimited(), FileHandlePool.unbounded(), verificationLimiter, true);
         assertEquals(TorrentState.VERIFYING, session.state());
 
@@ -1888,7 +1894,7 @@ class TorrentSessionTest {
     private static TorrentSession restoreWithPriorities(TorrentMetadata metadata, FakeTrackerClient tracker,
                                                          Path downloadDirectory, RecordingListener listener,
                                                          FilePriorities priorities) throws IOException {
-        return TorrentSession.restoreAsync(metadata, tracker, downloadDirectory, fakeRemotePeerId(), 6881,
+        return TorrentSession.restoreAsync(metadata, tracker, downloadDirectory, fakeLocalPeerId(), 6881,
                 listener, null, RateLimiters.unlimited(), FileHandlePool.unbounded(),
                 new Semaphore(Integer.MAX_VALUE), () -> EncryptionMode.DISABLED, SeedingLimitOverride.INHERIT,
                 Instant.now(), () -> 300L, false, true, TorrentSession.PersistedLifetimeStats.NONE,
@@ -2016,7 +2022,7 @@ class TorrentSessionTest {
     void anUnblockedKnownPeerIsConnectedTo(@TempDir Path tempDir) throws Exception {
         PeerAddress peer = startLoopbackPeerServer(3000);
         TorrentSession session = TorrentSession.create(singlePieceMetadata(fill(20, 1)), new FakeTrackerClient(),
-                tempDir, fakeRemotePeerId(), 6881, new RecordingListener(), null);
+                tempDir, fakeLocalPeerId(), 6881, new RecordingListener(), null);
         session.setIpFilter(new TestIpFilter());
         session.start();
         try {
@@ -2034,7 +2040,7 @@ class TorrentSessionTest {
         TestIpFilter filter = new TestIpFilter();
         filter.blockAll = true;
         TorrentSession session = TorrentSession.create(singlePieceMetadata(fill(20, 1)), new FakeTrackerClient(),
-                tempDir, fakeRemotePeerId(), 6881, new RecordingListener(), null);
+                tempDir, fakeLocalPeerId(), 6881, new RecordingListener(), null);
         session.setIpFilter(filter);
         session.start();
         try {
@@ -2067,7 +2073,7 @@ class TorrentSessionTest {
         fakePeer.start();
         TestIpFilter filter = new TestIpFilter();
         TorrentSession session = TorrentSession.create(metadata, new FakeTrackerClient(), tempDir,
-                fakeRemotePeerId(), 6881, new RecordingListener(), null);
+                fakeLocalPeerId(), 6881, new RecordingListener(), null);
         session.setIpFilter(filter);
         session.start();
         try {
@@ -2097,7 +2103,7 @@ class TorrentSessionTest {
         TestIpFilter filter = new TestIpFilter();
         filter.blockAll = true;
         TorrentSession session = TorrentSession.create(metadata, new FakeTrackerClient(), tempDir,
-                fakeRemotePeerId(), 6881, new RecordingListener(), null);
+                fakeLocalPeerId(), 6881, new RecordingListener(), null);
         session.setIpFilter(filter);
         session.start();
         try (ServerSocket listener = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
@@ -2124,7 +2130,7 @@ class TorrentSessionTest {
         FakeTrackerClient tracker = new FakeTrackerClient();
         tracker.failure = new RuntimeException("tracker down");
         TorrentSession session = TorrentSession.create(singlePieceMetadata(fill(20, 1)), tracker, tempDir,
-                fakeRemotePeerId(), 6881, new RecordingListener(), null);
+                fakeLocalPeerId(), 6881, new RecordingListener(), null);
         session.setStartRetryInitialMillisForTesting(50);
         try {
             session.start();
@@ -2146,7 +2152,7 @@ class TorrentSessionTest {
         FakeTrackerClient tracker = new FakeTrackerClient();
         tracker.failure = new RuntimeException("tracker down");
         TorrentSession session = TorrentSession.create(singlePieceMetadata(fill(20, 1)), tracker, tempDir,
-                fakeRemotePeerId(), 6881, new RecordingListener(), null);
+                fakeLocalPeerId(), 6881, new RecordingListener(), null);
         session.setStartRetryInitialMillisForTesting(20);
         session.start();
 
@@ -2176,7 +2182,7 @@ class TorrentSessionTest {
         FakeTrackerClient tracker = new FakeTrackerClient();
         tracker.failure = new RuntimeException("proxy rejected the credentials");
         TorrentSession session = TorrentSession.create(singlePieceMetadata(fill(20, 1)), tracker, tempDir,
-                fakeRemotePeerId(), 6881, new RecordingListener(), null);
+                fakeLocalPeerId(), 6881, new RecordingListener(), null);
         session.setStartRetryInitialMillisForTesting(60_000);
         try {
             session.start();
@@ -2198,7 +2204,7 @@ class TorrentSessionTest {
     void retryStartNowIsANoOpUnlessTheTorrentIsInTheRetryableErrorState(@TempDir Path tempDir) throws Exception {
         FakeTrackerClient tracker = new FakeTrackerClient();
         TorrentSession session = TorrentSession.create(singlePieceMetadata(fill(20, 1)), tracker, tempDir,
-                fakeRemotePeerId(), 6881, new RecordingListener(), null);
+                fakeLocalPeerId(), 6881, new RecordingListener(), null);
         try {
             session.retryStartNow(); // STOPPED - nothing to do
             session.start();
@@ -2233,7 +2239,7 @@ class TorrentSessionTest {
             return new TrackerResponse(3600, null, 0, 0, List.of(), null, null);
         };
         TorrentSession session = TorrentSession.create(singlePieceMetadata(fill(20, 1)), slowOnStopped, tempDir,
-                fakeRemotePeerId(), 6881, new RecordingListener(), null);
+                fakeLocalPeerId(), 6881, new RecordingListener(), null);
         try {
             session.start();
 
@@ -2267,7 +2273,7 @@ class TorrentSessionTest {
             return new TrackerResponse(3600, null, 0, 0, List.of(), null, null);
         };
         TorrentSession session = TorrentSession.create(singlePieceMetadata(fill(20, 1)), slowOnStopped, tempDir,
-                fakeRemotePeerId(), 6881, new RecordingListener(), null);
+                fakeLocalPeerId(), 6881, new RecordingListener(), null);
         session.start();
         session.stop();
 
@@ -2293,7 +2299,7 @@ class TorrentSessionTest {
         Files.write(tempDir.resolve("file.bin"), content);
         RecordingListener listener = new RecordingListener();
         TorrentSession session = TorrentSession.restoreAsync(singlePieceMetadata(content), new FakeTrackerClient(),
-                tempDir, fakeRemotePeerId(), 6881, listener, null, true);
+                tempDir, fakeLocalPeerId(), 6881, listener, null, true);
         try {
             awaitState(session, TorrentState.SEEDING);
             listener.stateChanges.clear();
@@ -2315,7 +2321,7 @@ class TorrentSessionTest {
         byte[] content = fill(20, 1);
         Files.write(tempDir.resolve("file.bin"), content);
         TorrentSession session = TorrentSession.restoreAsync(singlePieceMetadata(content), new FakeTrackerClient(),
-                tempDir, fakeRemotePeerId(), 6881, new RecordingListener(), null, true);
+                tempDir, fakeLocalPeerId(), 6881, new RecordingListener(), null, true);
         try {
             awaitState(session, TorrentState.SEEDING);
             Files.write(tempDir.resolve("file.bin"), fill(20, 7));
@@ -2337,7 +2343,7 @@ class TorrentSessionTest {
         FakeTrackerClient tracker = new FakeTrackerClient();
         RecordingListener listener = new RecordingListener();
         TorrentSession session = TorrentSession.restoreAsync(singlePieceMetadata(content), tracker,
-                tempDir, fakeRemotePeerId(), 6881, listener, null, false);
+                tempDir, fakeLocalPeerId(), 6881, listener, null, false);
         awaitState(session, TorrentState.STOPPED);
         listener.stateChanges.clear();
 
@@ -2357,7 +2363,7 @@ class TorrentSessionTest {
     void reannounceNowAnnouncesImmediatelyAndOnlyWhileRunning(@TempDir Path tempDir) throws Exception {
         FakeTrackerClient tracker = new FakeTrackerClient();
         TorrentSession session = TorrentSession.create(singlePieceMetadata(fill(20, 1)), tracker, tempDir,
-                fakeRemotePeerId(), 6881, new RecordingListener(), null);
+                fakeLocalPeerId(), 6881, new RecordingListener(), null);
         assertFalse(session.reannounceNow(), "not running yet");
         session.start();
         try {

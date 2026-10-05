@@ -178,13 +178,16 @@ public class HealthService {
     private Check incomingCheck() {
         boolean listening = torrentEngine.serviceStatuses().stream()
                 .anyMatch(s -> s.name().equals("peerServer") && s.state() == TorrentEngine.ServiceState.RUNNING);
-        return incomingCheck(listening, torrentEngine.incomingConnectionsSeen());
+        return incomingCheck(listening, torrentEngine.incomingConnectionsSeen(),
+                torrentEngine.incomingConnectionsAccepted(), torrentEngine.incomingConnectionsActive());
     }
 
     /** Evidence, not a probe: nothing here can test the port from outside, but a peer having
      * connected to us proves it is open. None yet proves nothing - a quiet swarm looks the same
-     * as a closed port - so that case is information, not a failure. */
-    static Check incomingCheck(boolean listening, long seen) {
+     * as a closed port - so that case is information, not a failure. Once there is evidence, the
+     * message gives all three numbers: seen alone reads as healthy even when almost none of
+     * those peers were kept. */
+    static Check incomingCheck(boolean listening, long seen, long accepted, int active) {
         if (!listening) {
             return new Check("incoming", State.DISABLED, "Not accepting incoming connections");
         }
@@ -192,8 +195,8 @@ public class HealthService {
             return new Check("incoming", State.INFO, "None received since start. If this stays at none "
                     + "while torrents are active, the listen port is probably not forwarded.");
         }
-        return new Check("incoming", State.OK,
-                seen + (seen == 1 ? " incoming connection" : " incoming connections") + " since start");
+        return new Check("incoming", State.OK, String.format(Locale.ROOT,
+                "%,d connected now. Since start: %,d received, %,d accepted", active, seen, accepted));
     }
 
     private Check proxyCheck() {

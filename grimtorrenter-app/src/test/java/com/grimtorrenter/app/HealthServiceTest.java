@@ -46,11 +46,12 @@ class HealthServiceTest {
 
     @Test
     void noIncomingConnectionsYetIsInformationNotAFailure() {
-        assertEquals(State.DISABLED, HealthService.incomingCheck(false, 0).state());
-        assertEquals(State.INFO, HealthService.incomingCheck(true, 0).state());
-        assertEquals(State.OK, HealthService.incomingCheck(true, 1).state());
-        assertEquals("1 incoming connection since start", HealthService.incomingCheck(true, 1).message());
-        assertEquals("3 incoming connections since start", HealthService.incomingCheck(true, 3).message());
+        assertEquals(State.DISABLED, HealthService.incomingCheck(false, 0, 0, 0).state());
+        assertEquals(State.INFO, HealthService.incomingCheck(true, 0, 0, 0).state());
+        // Reached but not kept still proves the port is open.
+        assertEquals(State.OK, HealthService.incomingCheck(true, 1, 0, 0).state());
+        assertEquals("9 connected now. Since start: 53,812 received, 1,204 accepted",
+                HealthService.incomingCheck(true, 53812, 1204, 9).message());
     }
 
     @Test

@@ -1182,6 +1182,15 @@ complete**, per the phased scope in [[0009-phased-scope]]:
   README's licence section, and a *Source* link in the UI footer so a network user can get the
   code (the licence's section 13). No per-file headers. The footer link is not yet built or seen.
 
+- **Incoming connections: three numbers and debug logging (2026-10-03)** — with the port
+  forwarded, the Health row read tens of thousands "since start" while about nine inbound peers
+  were connected. The row now says how many are connected now, how many were received and how
+  many a torrent accepted; the backend still writes the message, so the frontend is unchanged.
+  `PeerServer` and `TorrentSession` log each refused inbound connection and why at DEBUG (off by
+  default; two commented lines in `application.properties`). Not yet built or run. Open: why
+  roughly four inbound connections a second arrive and so few stay - needs that log from the
+  container. ([[0086-health-page-and-healthcheck]]'s 2026-10-03 addendum)
+
 **Not yet built** (the rest of Phase 3):
 
 - Multiple/day-of-week-specific rate-limit schedule rules — the one remaining natural addition
@@ -1271,8 +1280,27 @@ torrent's files were opened once and held open for its whole lifetime, even whil
   them never having sent anything. A peer that closed straight after its handshake was reported
   as disconnected before the session had registered it, then registered anyway and never
   removed. Real sockets stayed within the cap; the count, the Peers tab and memory did not.
-  `TorrentSession.adopt()` now drops a connection that is already closed. Not yet built, tested
-  or run. See [[0017-torrent-session]]'s fourth dated correction.
+  `TorrentSession.adopt()` now drops a connection that is already closed. Test-verified (the
+  build and all unit tests pass, 2026-10-03); on the container, two hours of seeding left 2, 5 and 5 peers
+  listed with no dead entries, where the old build gained several an hour. See [[0017-torrent-session]]'s fourth dated correction.
+- **Inbound peers were being refused by a session's own outbound dials (2026-10-05)** — found
+  from the new inbound debug log on the real container: about 1,500 inbound connections, 3 kept,
+  286 refused as "at the connection limit of 30" while the torrents held 1-11 peers. Outbound
+  attempts held connection slots while dialling, mostly to dead addresses. Slots now count
+  established connections only; attempts have their own bound of 16. Connections to our own
+  address are also dropped at both ends. Test-verified (the build and all unit tests pass,
+  2026-10-05, after giving `TorrentSessionTest`'s sessions a peer id distinct from their fake
+  peers'); on the container, 2,033 of 2,410 inbound connections were accepted in the first ten
+  minutes, against 3 of about 1,500 before. Open: only 24 were connected at that moment, so
+  accepted peers leave within seconds - not yet known why. See
+  [[0017-torrent-session]]'s 2026-10-05 revision.
+- **Protocol encryption never worked with other clients; fixed (2026-10-05)** — the
+  Diffie-Hellman prime was RFC 2409 Oakley Group 1's, not MSE's own, which differs in its last
+  68 bits. Self-consistent, so every unit test and GrimTorrenter-to-GrimTorrenter connection
+  worked, while every encrypted handshake with a real peer failed (415 inbound failures in a
+  ten-minute container log; outbound attempts always fell back to plaintext). Constant corrected
+  against libtorrent's source and its tail pinned in `DiffieHellmanTest`. Not yet built, tested
+  or run. ([[0052-message-stream-encryption]]'s 2026-10-05 correction)
 
 ## Known gaps / TODO
 

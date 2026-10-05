@@ -21,6 +21,17 @@ class DiffieHellmanTest {
         assertEquals(768, DiffieHellman.P.bitLength());
     }
 
+    /** The bit-length check above and every agreement test below pass for *any* 768-bit prime,
+     * which is how the wrong one (RFC 2409 Oakley Group 1's, ending ...3620FFFFFFFFFFFFFFFF)
+     * shipped and failed against every real client. MSE's prime ends differently - pinned here
+     * from libtorrent's pe_crypto.cpp, not from this project's own constant. */
+    @Test
+    void primeIsMsesOwnAndNotOakleyGroupOne() {
+        String hex = DiffieHellman.P.toString(16).toUpperCase();
+        assertEquals("C4C6628B80DC1CD1", hex.substring(32, 48));
+        assertEquals("A63A36210000000000090563", hex.substring(hex.length() - 24));
+    }
+
     @Test
     void bothSidesAgreeOnTheSameSharedSecret() {
         DiffieHellman a = new DiffieHellman(random);

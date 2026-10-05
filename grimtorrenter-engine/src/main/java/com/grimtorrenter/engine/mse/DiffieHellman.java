@@ -12,16 +12,18 @@ import java.security.SecureRandom;
  */
 public final class DiffieHellman {
 
-    /** RFC 2409 Oakley Group 1's 768-bit MODP prime - MSE's specified P. Verified against
-     * RFC 2409 section 6.1 directly (a first attempt at this constant accidentally pasted
-     * RFC 3526 Group 14's 2048-bit prime past a shared prefix - the two primes share a long
-     * common prefix by construction, which is exactly why that mistake wasn't visually
-     * obvious - so this value's bit length is asserted in DiffieHellmanTest rather than
-     * trusted on sight). */
+    /** MSE's specified 768-bit prime. It shares all but its last 68 bits with RFC 2409's Oakley
+     * Group 1 prime and is not that prime: MSE's ends ...A63A3621 00000000 00090563, Oakley's
+     * ...A63A3620 FFFFFFFF FFFFFFFF. Until 2026-10-05 this constant was the Oakley value, which
+     * is self-consistent - two GrimTorrenter instances, and this project's own tests, agreed
+     * on a shared secret - but no other client did, so every encrypted handshake with a real
+     * peer failed at the first hash and fell back to plaintext (or, with encryption required,
+     * failed outright). Checked against libtorrent's pe_crypto.cpp; the tail is pinned in
+     * DiffieHellmanTest. See design_docs/0052's 2026-10-05 correction. */
     public static final BigInteger P = new BigInteger(
             "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A0"
             + "8798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A63"
-            + "A3620FFFFFFFFFFFFFFFF",
+            + "A36210000000000090563",
             16);
 
     /** MSE's specified generator. */

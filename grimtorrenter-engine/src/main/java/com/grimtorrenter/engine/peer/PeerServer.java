@@ -117,18 +117,20 @@ public final class PeerServer implements AutoCloseable {
         IpFilter filter = ipFilter;
         if (filter.isBlocked(socket.getInetAddress())) {
             filter.recordBlocked();
-            closeQuietly(socket);
+            reject(socket, "address is on the blocklist");
             return;
         }
+        HeadRecorder received = null;
         try {
             socket.setSoTimeout(HANDSHAKE_TIMEOUT_MS);
             EncryptionMode mode = encryptionMode.get();
 
-            BufferedInputStream peekable = new BufferedInputStream(socket.getInputStream());
+            received = new HeadRecorder(socket.getInputStream());
+            BufferedInputStream peekable = new BufferedInputStream(received);
             peekable.mark(1);
             int firstByte = peekable.read();
             if (firstByte < 0) {
-                closeQuietly(socket);
+                reject(socket, "closed by the peer before sending anything");
                 return;
             }
             peekable.reset();
@@ -140,7 +142,7 @@ public final class PeerServer implements AutoCloseable {
 
             if (firstByte == PLAINTEXT_HANDSHAKE_FIRST_BYTE) {
                 if (mode == EncryptionMode.REQUIRED) {
-                    closeQuietly(socket);
+                    reject(socket, "plaintext handshake while encryption is required");
                     return;
                 }
                 handshake = PeerWireCodec.readHandshake(peekable);
@@ -148,7 +150,7 @@ public final class PeerServer implements AutoCloseable {
                 infoHash = handshake.infoHash();
             } else {
                 if (mode == EncryptionMode.DISABLED) {
-                    closeQuietly(socket);
+                    reject(socket, "encrypted handshake while encryption is disabled");
                     return;
                 }
                 MseInboundResult negotiated = MseHandshake.negotiateInbound(peekable, out, activeInfoHashes.get(),
@@ -157,7 +159,7 @@ public final class PeerServer implements AutoCloseable {
                 out = negotiated.out();
                 handshake = PeerWireCodec.readHandshake(in);
                 if (!handshake.infoHash().equals(negotiated.infoHash())) {
-                    closeQuietly(socket);
+                    reject(socket, "handshake info hash differs from the one negotiated");
                     return;
                 }
                 infoHash = negotiated.infoHash();
@@ -165,13 +167,67 @@ public final class PeerServer implements AutoCloseable {
 
             Optional<IncomingConnectionHandler> handler = handlerLookup.apply(infoHash);
             if (handler.isEmpty()) {
-                closeQuietly(socket);
+                reject(socket, "no torrent with info hash " + infoHash);
                 return;
             }
+            LOG.log(System.Logger.Level.DEBUG, "Inbound connection from " + socket.getRemoteSocketAddress()
+                    + " for " + infoHash + (firstByte == PLAINTEXT_HANDSHAKE_FIRST_BYTE ? " (plaintext)" : " (encrypted)"));
             handler.get().accept(socket, in, out, handshake);
         } catch (IOException | RuntimeException e) {
-            closeQuietly(socket);
+            reject(socket, "handshake failed: " + e + (received == null ? "" : " - " + received.describe()));
         }
+    }
+
+    /** Remembers how many bytes a connecting peer sent and what the first few were, for the
+     * DEBUG line when its handshake fails - enough to tell an encrypted handshake (random
+     * bytes) from some other protocol knocking on the port. Bounded: HEAD_BYTES per connection,
+     * for the length of the handshake only. */
+    private static final class HeadRecorder extends java.io.FilterInputStream {
+        private static final int HEAD_BYTES = 16;
+        private final byte[] head = new byte[HEAD_BYTES];
+        private long total;
+
+        HeadRecorder(InputStream in) {
+            super(in);
+        }
+
+        @Override
+        public int read() throws IOException {
+            int b = super.read();
+            if (b >= 0) {
+                if (total < HEAD_BYTES) {
+                    head[(int) total] = (byte) b;
+                }
+                total++;
+            }
+            return b;
+        }
+
+        @Override
+        public int read(byte[] buffer, int offset, int length) throws IOException {
+            int n = super.read(buffer, offset, length);
+            for (int i = 0; i < n; i++) {
+                if (total < HEAD_BYTES) {
+                    head[(int) total] = buffer[offset + i];
+                }
+                total++;
+            }
+            return n;
+        }
+
+        String describe() {
+            int shown = (int) Math.min(total, HEAD_BYTES);
+            return total + " bytes received, starting " + java.util.HexFormat.of().formatHex(head, 0, shown);
+        }
+    }
+
+    /** Closes a connection this server is turning away, saying why at DEBUG - without it there
+     * is no way to tell ordinary churn from the same peers being refused over and over. What
+     * the session does with a connection it was handed is logged there, not here. */
+    private static void reject(Socket socket, String reason) {
+        LOG.log(System.Logger.Level.DEBUG, "Inbound connection from " + socket.getRemoteSocketAddress()
+                + " closed: " + reason);
+        closeQuietly(socket);
     }
 
     private static void closeQuietly(Socket socket) {

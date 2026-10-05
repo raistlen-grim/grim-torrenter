@@ -58,6 +58,33 @@ protocol directly rather than wrapping a library.
   [[0051-stability-as-a-standing-consideration]] cares about avoiding; a dependency-free
   implementation behaves identically on every JVM).
 
+### Correction (2026-10-05): the DH prime was the wrong one, and encryption never worked with other clients
+
+Everything this document says about the prime being "RFC 2409 Oakley Group 1's" is wrong. MSE
+specifies its own 768-bit prime, which shares all but the last 68 bits with Oakley Group 1's:
+MSE's ends `...A63A3621 00000000 00090563`, Oakley's `...A63A3620 FFFFFFFF FFFFFFFF`.
+`DiffieHellman.P` held the Oakley value from the start.
+
+A wrong prime is self-consistent. Both ends of every unit test, and two GrimTorrenter instances
+talking to each other, derive the same shared secret - so the tests passed and the feature
+looked finished. No other client agrees, so against real peers: every inbound encrypted
+handshake failed to find `HASH('req1', S)` ("no MSE synchronization point found"), every
+outbound one failed the same way from the peer's side and (in the default PREFERRED mode) fell
+back to a second, plaintext connection, and REQUIRED mode could not connect to anyone but another
+GrimTorrenter. Found from a real container's inbound debug log: 415 encrypted handshakes failed
+in ten minutes and the only 4 that succeeded were the app connecting to itself. An independent
+initiator written from the spec *also* succeeded against the container - because it was written
+with the same wrong prime, which is what finally pointed at the constant. Confirmed against
+libtorrent's `pe_crypto.cpp`.
+
+Fixed by correcting the constant. `DiffieHellmanTest` now pins the prime's tail from that
+external source; the previous guard (bit length) and the agreement tests hold for any 768-bit
+prime and could not have caught this. Lesson for this document's own "verified against the
+spec" claims: a protocol constant needs checking against another implementation's bytes, and a
+round-trip test between two copies of the same code proves nothing about interoperability.
+Stability: no change in cost; outbound connections in PREFERRED mode should now succeed on the
+first attempt where they previously always paid for a failed handshake and a reconnect.
+
 ### A real bug caught mid-implementation: the DH prime constant
 
 `DiffieHellman.P`'s first draft accidentally pasted RFC 3526 Group 14's 2048-bit prime past a

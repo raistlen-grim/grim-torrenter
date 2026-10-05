@@ -925,19 +925,46 @@ public final class TorrentEngine {
         return incomingConnectionsSeen.get();
     }
 
+    /** How many of those a torrent then kept - the rest named a torrent we don't have, one that
+     * is stopped or at its connection limit, a blocked address, or closed straight after the
+     * handshake. Seen-but-not-accepted growing fast is the signal worth a look. */
+    private final java.util.concurrent.atomic.AtomicLong incomingConnectionsAccepted =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    public long incomingConnectionsAccepted() {
+        return incomingConnectionsAccepted.get();
+    }
+
+    /** Inbound peer connections open right now, across every torrent. */
+    public int incomingConnectionsActive() {
+        int count = 0;
+        for (TorrentSession session : sessions.values()) {
+            count += session.incomingPeerCount();
+        }
+        return count;
+    }
+
     /** The one place that bridges PeerServer's generic, TorrentSession-unaware lookup
      * (see IncomingConnectionHandler's own Javadoc on why it stays that way) to this
      * engine's actual session map. */
     private Optional<IncomingConnectionHandler> findIncomingConnectionHandler(InfoHash infoHash) {
         incomingConnectionsSeen.incrementAndGet();
-        return Optional.ofNullable(sessions.get(infoHash)).map(session -> session::acceptIncomingConnection);
+        return Optional.ofNullable(sessions.get(infoHash)).map(session -> (socket, in, out, handshake) -> {
+            if (session.acceptIncomingConnection(socket, in, out, handshake)) {
+                incomingConnectionsAccepted.incrementAndGet();
+            }
+        });
     }
 
     /** The µTP counterpart to findIncomingConnectionHandler() above (design_docs/0074's slice
      * 3) - same bridging role, for UtpPeerAcceptor instead of PeerServer. */
     private Optional<UtpIncomingConnectionHandler> findIncomingUtpConnectionHandler(InfoHash infoHash) {
         incomingConnectionsSeen.incrementAndGet();
-        return Optional.ofNullable(sessions.get(infoHash)).map(session -> session::acceptIncomingUtpConnection);
+        return Optional.ofNullable(sessions.get(infoHash)).map(session -> (utpSocket, handshake) -> {
+            if (session.acceptIncomingUtpConnection(utpSocket, handshake)) {
+                incomingConnectionsAccepted.incrementAndGet();
+            }
+        });
     }
 
     private LsdService createLsdService(int torrentListenPort, EventStore eventStore,

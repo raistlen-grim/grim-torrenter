@@ -88,6 +88,9 @@ public final class TorrentSession implements AutoCloseable {
      * change what a given session is constructed with. See connectionSlots's own Javadoc for
      * why this is resolved once at construction rather than being live like a RateLimiter. */
     private static final int DEFAULT_MAX_CONNECTIONS = 30;
+    /** Upper bound on simultaneous outbound attempts per session (or maxConnections, if that is
+     * smaller) - see outboundAttemptSlots. */
+    private static final int MAX_PENDING_OUTBOUND = 16;
     /** Per-connection request pipeline bounds - the actual depth is sized from that peer's own
      * recent download rate (pipelineDepthFor()), so a fast peer isn't capped at MIN blocks per
      * round trip. MAX stays well under what common clients accept queued from one peer.
@@ -285,32 +288,33 @@ public final class TorrentSession implements AutoCloseable {
      * pruned) - accepted at this project's real-world swarm-size scale, not a new category of
      * growth this introduces. */
     private final Set<PeerAddress> failedAddresses = ConcurrentHashMap.newKeySet();
-    /** Bounds concurrent connection attempts *plus* established connections to
-     * maxConnections, atomically - not a size-based check like fillConnections() used to
-     * rely on alone. Necessary specifically because of the 2026-09-06 refill-on-failure
-     * revision below: connections.size() only counts *established* connections, not attempts
-     * still in flight, so several failures resolving within milliseconds of each other (a
-     * "connection refused" is near-instant, unlike a 10-20s timeout) could each independently
-     * see the same "N slots free" and each spawn up to N more attempts - an uncontrolled
-     * cascade, not the small, bounded overshoot fillConnections()'s own older comment already
-     * accepted. A real production `OutOfMemoryError` (reported 2026-09-06, right after this
-     * revision shipped) is exactly that cascade: each PREFERRED-mode attempt does a real MSE
-     * Diffie-Hellman handshake attempt first, so an unbounded burst of concurrent attempts is
-     * a genuine memory/thread spike, not just cosmetic overshoot. One permit per attempt,
-     * acquired before attemptConnect() ever starts and held for as long as that attempt is
-     * either in flight or (on success) the resulting connection stays established - released
-     * on failure (attemptConnect()'s own catch block) or on disconnect
-     * (PeerListener.onDisconnected()). See design_docs/0017's own 2026-09-06 revision.
+    /** Bounds *established* connections, inbound and outbound together, to maxConnections -
+     * one permit per connection, taken once its handshake has completed and held until it
+     * disconnects. Until 2026-10-05 an outbound attempt took its permit before dialling, so a
+     * session with a large candidate pool sat with nearly every permit held by dials to dead
+     * addresses and refused the live peers connecting in ("at the connection limit of 30" with
+     * 1-11 peers actually connected, on a real container). Attempts are now bounded separately
+     * by outboundAttemptSlots. See design_docs/0017's 2026-10-05 revision, and its 2026-09-06
+     * one for the unbounded-attempt cascade (a real OutOfMemoryError) that made an atomic bound
+     * necessary in the first place.
      *
      * <p>Sized from maxConnections, resolved once at construction (design_docs/0072) - unlike
      * a RateLimiter, a Semaphore's permit count can't be live-resized, so a changed global
      * default or per-torrent override only takes effect the next time this session is
      * constructed (a restart or remove-and-re-add), not on a plain pause/resume of the same
-     * object. Assigned in the constructor body, not as a field initializer - it depends on the
-     * maxConnections constructor parameter, which (being a plain instance field, not a static
-     * constant like this class's other such values) isn't available yet when field
-     * initializers run, before the constructor body. */
+     * object. */
     private final Semaphore connectionSlots;
+    /** The connections currently holding a connectionSlots permit - what makes a release happen
+     * exactly once, whichever of adopt() and onDisconnected() gets to a dead connection first,
+     * and never for a connection that was closed without ever being given one. */
+    private final Set<PeerConnection> slotHolders = ConcurrentHashMap.newKeySet();
+    /** Bounds outbound attempts still in flight (dialling or mid-handshake) - the atomic bound
+     * the 2026-09-06 cascade needs, now separate from connectionSlots so pending dials can't
+     * crowd out inbound peers. One permit per attempt, taken in fillConnections() before the
+     * attempt's thread starts and released as soon as connect() returns or throws. Worst case
+     * per session is therefore maxConnections established plus this many attempts. */
+    private final Semaphore outboundAttemptSlots;
+    private final int maxPendingOutbound;
     /** Resolved once at construction (design_docs/0072) - see connectionSlots's own Javadoc for
      * why this can't be live-updated the way RateLimiter's limit can. */
     private final int maxConnections;
@@ -427,6 +431,8 @@ public final class TorrentSession implements AutoCloseable {
         this.torrentLimitOverride = torrentLimitOverride;
         this.maxConnections = maxConnections;
         this.connectionSlots = new Semaphore(maxConnections);
+        this.maxPendingOutbound = Math.min(maxConnections, MAX_PENDING_OUTBOUND);
+        this.outboundAttemptSlots = new Semaphore(maxPendingOutbound);
         this.state = initialState;
         this.addedAt = addedAt;
         this.dhtReannounceIntervalSeconds = dhtReannounceIntervalSeconds;
@@ -1477,18 +1483,22 @@ public final class TorrentSession implements AutoCloseable {
     }
 
     /**
-     * connectionSlots (a Semaphore, not a size check) is what bounds *total* concurrency -
-     * see its own field Javadoc for why a plain maxConnections - connections.size() check
-     * stopped being safe once attemptConnect()/onDisconnected() started calling this
-     * reactively. inFlightAddresses.add()'s own atomic return value is what stops two
-     * concurrent calls from both claiming the *same* candidate - see its own field Javadoc.
-     * The .limit(maxConnections) below is purely a cheap upper bound on how much of
-     * knownAddresses this one call ever needs to scan; tryAcquire() is what actually stops
-     * the loop once slots run out, every single call, regardless of how many other threads are
-     * calling this concurrently.
+     * Starts outbound attempts for the room that is left: free connectionSlots permits minus
+     * the attempts already in flight, so a full complement of successful dials can't overshoot
+     * the cap. That subtraction is a read of two counters, not atomic - concurrent calls can
+     * each see the same room - but outboundAttemptSlots.tryAcquire() is what actually bounds
+     * how many attempts exist, every call, however many threads race here, and an attempt that
+     * succeeds into a full session is simply closed again (attemptConnect()).
+     * inFlightAddresses.add()'s own atomic return value is what stops two concurrent calls from
+     * both claiming the *same* candidate - see its own field Javadoc.
      */
     private void fillConnections() {
         if (state != TorrentState.DOWNLOADING && state != TorrentState.SEEDING) {
+            return;
+        }
+        int pending = maxPendingOutbound - outboundAttemptSlots.availablePermits();
+        int wanted = connectionSlots.availablePermits() - pending;
+        if (wanted <= 0) {
             return;
         }
         List<PeerAddress> candidates = knownAddresses.keySet().stream()
@@ -1496,7 +1506,7 @@ public final class TorrentSession implements AutoCloseable {
                 .filter(address -> !inFlightAddresses.contains(address))
                 .filter(address -> !ipFilter.isBlocked(address.address()))
                 .filter(address -> connections.stream().noneMatch(c -> c.remoteAddress().equals(address)))
-                .limit(maxConnections)
+                .limit(wanted)
                 .toList();
         for (PeerAddress address : candidates) {
             if (!inFlightAddresses.add(address)) {
@@ -1504,7 +1514,7 @@ public final class TorrentSession implements AutoCloseable {
                 // already being attempted, skip without touching a slot.
                 continue;
             }
-            if (!connectionSlots.tryAcquire()) {
+            if (!outboundAttemptSlots.tryAcquire()) {
                 inFlightAddresses.remove(address);
                 break;
             }
@@ -1514,35 +1524,18 @@ public final class TorrentSession implements AutoCloseable {
 
     /** No retry backoff for a failed address within one fillConnections() batch - permanently
      * excluded instead (failedAddresses), not retried later this session at all. On failure,
-     * releases this attempt's connectionSlots permit and calls fillConnections() again so a
-     * fresh candidate fills the slot this one would have taken - previously, only four
-     * external triggers (start()/reannounce()/discoverPeersViaDht()/addKnownPeers()) ever
-     * refilled connections, so a burst of fast failures (the common case - most tracker/DHT-
-     * supplied addresses are unreachable at any given moment) left the session under-connected
-     * until the next one of those, up to dhtReannounceIntervalSeconds (default 300s) away. See
-     * design_docs/0036's own 2026-09-06 revision - and connectionSlots's own Javadoc for why
-     * the release-then-refill pair is safe against concurrent stampeding where a plain
-     * connections.size() check was not. */
+     * releases this attempt's outboundAttemptSlots permit and calls fillConnections() again so a
+     * fresh candidate takes its place - most tracker/DHT-supplied addresses are unreachable at
+     * any given moment, so without that a burst of fast failures leaves the session
+     * under-connected until the next external trigger (design_docs/0036's 2026-09-06
+     * revision). On success the attempt permit is swapped for a connectionSlots one; if inbound
+     * peers have filled the session while this dial was pending, the new connection is closed
+     * rather than kept over the cap. */
     private void attemptConnect(PeerAddress address) {
+        PeerConnection connection;
         try {
             PeerSource source = knownAddresses.getOrDefault(address, PeerSource.UNKNOWN);
-            PeerConnection connection = connect(address, source);
-            if (!adopt(connection)) {
-                // Reached, shook hands, then dropped us before we'd even registered it. Its
-                // permit is already back (onDisconnected()); treated like a failed attempt -
-                // excluded for the session, in-flight claim kept - so it isn't re-dialled on
-                // every refill.
-                failedAddresses.add(address);
-                return;
-            }
-            // Now covered by the connections-based filter in fillConnections() instead -
-            // removing the inFlightAddresses claim just avoids that set growing forever with
-            // entries that no other check ever needed again.
-            inFlightAddresses.remove(address);
-            onPeerConnected(connection);
-            // This attempt's connectionSlots permit deliberately stays held - it now represents
-            // the established connection itself, released only on disconnect (see
-            // PeerListener.onDisconnected()).
+            connection = connect(address, source);
         } catch (IOException | RuntimeException e) {
             // Most tracker-provided addresses are unreachable - this is the common case, not exceptional -
             // but silently swallowing every failure left no way to tell that apart from a systemic
@@ -1552,7 +1545,7 @@ public final class TorrentSession implements AutoCloseable {
                     + metadata.infoHash() + " failed: " + e);
             failedAddresses.add(address);
             // Deliberately NOT inFlightAddresses.remove(address) here (unlike the success path
-            // above) - see design_docs/0017's own dated addendum for the real duplicate-attempt
+            // below) - see design_docs/0017's own dated addendum for the real duplicate-attempt
             // race this used to open: releasing the in-flight claim the instant after marking an
             // address failed let a concurrent fillConnections() call, whose own read of
             // failedAddresses happened to be stale (ran before this add() became visible to it),
@@ -1563,15 +1556,41 @@ public final class TorrentSession implements AutoCloseable {
             // cost of a redundant entry in a set that already grows unboundedly per session for
             // the same accepted reason failedAddresses itself does (see that field's own
             // Javadoc).
-            connectionSlots.release();
+            outboundAttemptSlots.release();
             fillConnections();
+            return;
         }
+        outboundAttemptSlots.release();
+        if (connection.remotePeerId().equals(ourPeerId)) {
+            // Our own public address came back from a tracker, DHT or PEX and we dialled it.
+            // Never again this session; close() runs onDisconnected(), which refills.
+            LOG.log(System.Logger.Level.DEBUG, "Connection to " + address + " for " + metadata.infoHash()
+                    + " is to ourselves - dropped");
+            failedAddresses.add(address);
+            connection.close();
+            return;
+        }
+        if (!connectionSlots.tryAcquire()) {
+            // Full - inbound peers took the room while this dial was pending. Not a failure of
+            // the address, so it stays eligible for a later refill.
+            inFlightAddresses.remove(address);
+            connection.close();
+            return;
+        }
+        if (!adopt(connection)) {
+            // Reached, shook hands, then dropped us before we'd even registered it. Treated
+            // like a failed attempt - excluded for the session, in-flight claim kept - so it
+            // isn't re-dialled on every refill.
+            failedAddresses.add(address);
+            return;
+        }
+        // Now covered by the connections-based filter in fillConnections() instead -
+        // removing the inFlightAddresses claim just avoids that set growing forever with
+        // entries that no other check ever needed again.
+        inFlightAddresses.remove(address);
+        onPeerConnected(connection);
     }
 
-    /** design_docs/0074's slice 4 - µTP first, TCP fallback on timeout (confirmed with the
-     * user - not a race, see that doc's own Alternatives-considered section). A µTP failure is
-     * swallowed and logged here, not rethrown - attemptConnect()'s own catch block only ever
-     * needs to see the final (TCP) outcome, exactly as it did before this slice existed. */
     private PeerConnection connect(PeerAddress address, PeerSource source) throws IOException {
         if (utpEnabled) {
             try {
@@ -1604,23 +1623,34 @@ public final class TorrentSession implements AutoCloseable {
         }
     }
 
-    /** Registers a freshly handshaken connection, unless it has already died. PeerConnection
-     * starts its read loop (and sends the extended handshake) before the factory method returns,
-     * so a peer that closes straight after its handshake fires onDisconnected() - a no-op
-     * remove, the permit released - before the caller gets here. Adding it regardless left a
-     * dead connection in the set for the rest of the session, holding no permit: connectedPeers
-     * and the Peers tab climbed past maxConnections (80 listed against a cap of 30 on a seeding
-     * torrent after 13 hours, 2026-10-03) and each one was never collected. Add first, then
-     * check: closed is set before onDisconnected() runs, so whichever side loses the race still
-     * removes it, and the permit is only ever released by onDisconnected(). See
-     * design_docs/0017's 2026-10-03 correction. */
+    /** Registers a freshly handshaken connection whose connectionSlots permit the caller has
+     * just acquired - unless it has already died, or the session stopped while it was being
+     * set up, in which case the permit is given back and false returned. PeerConnection starts
+     * its read loop (and sends the extended handshake) before the factory method returns, so a
+     * peer that closes straight after its handshake fires onDisconnected() before the caller
+     * gets here; adding it regardless left dead connections in the set for the rest of the
+     * session (80 listed against a cap of 30 on a seeding torrent after 13 hours, 2026-10-03).
+     * Add first, then check: closed is set before onDisconnected() runs, so whichever side
+     * loses the race still removes it, and slotHolders.remove() lets exactly one of them
+     * release the permit. See design_docs/0017's 2026-10-03 and 2026-10-05 corrections. */
     private boolean adopt(PeerConnection connection) {
+        slotHolders.add(connection);
         connections.add(connection);
+        if (state != TorrentState.DOWNLOADING && state != TorrentState.SEEDING) {
+            connection.close();
+        }
         if (connection.isClosed()) {
             connections.remove(connection);
+            releaseSlot(connection);
             return false;
         }
         return true;
+    }
+
+    private void releaseSlot(PeerConnection connection) {
+        if (slotHolders.remove(connection)) {
+            connectionSlots.release();
+        }
     }
 
     private void onPeerConnected(PeerConnection connection) {
@@ -1640,25 +1670,33 @@ public final class TorrentSession implements AutoCloseable {
      * IncomingConnectionHandler method reference. Closes socket itself, rather than
      * throwing, when this session isn't in a state to want new connections (not currently
      * running) or is already at its connection cap - PeerServer's own job ends at routing,
-     * not deciding whether a session wants what it's been offered. See design_docs/0038. */
-    public void acceptIncomingConnection(Socket socket, InputStream in, OutputStream out, Handshake remoteHandshake)
+     * not deciding whether a session wants what it's been offered. See design_docs/0038.
+     * Returns whether the connection was kept - only so TorrentEngine can count the ones that
+     * were (design_docs/0086). */
+    public boolean acceptIncomingConnection(Socket socket, InputStream in, OutputStream out, Handshake remoteHandshake)
             throws IOException {
         if (state != TorrentState.DOWNLOADING && state != TorrentState.SEEDING) {
+            logInboundRefused(socket, "torrent is " + state);
             socket.close();
-            return;
+            return false;
         }
         if (blocked(socket.getInetAddress())) {
+            logInboundRefused(socket, "address is blocked");
             socket.close();
-            return;
+            return false;
+        }
+        if (remoteHandshake.peerId().equals(ourPeerId)) {
+            logInboundRefused(socket, "it is our own connection to ourselves");
+            socket.close();
+            return false;
         }
         // connectionSlots, not a connections.size() check - inbound and outbound connections
-        // share the same maxConnections budget, and only the semaphore accounts for outbound
-        // attempts still in flight (see connectionSlots's own Javadoc). A size check here
-        // would let inbound and outbound connections each independently race past the real
-        // cap, unaware of each other.
+        // share the same maxConnections budget, and a size check here would let the two each
+        // independently race past the real cap, unaware of each other.
         if (!connectionSlots.tryAcquire()) {
+            logInboundRefused(socket, "at the connection limit of " + maxConnections);
             socket.close();
-            return;
+            return false;
         }
         PeerConnection connection;
         try {
@@ -1668,9 +1706,20 @@ public final class TorrentSession implements AutoCloseable {
             connectionSlots.release();
             throw e;
         }
-        if (adopt(connection)) {
-            onPeerConnected(connection);
+        if (!adopt(connection)) {
+            logInboundRefused(socket, "peer closed straight after the handshake");
+            return false;
         }
+        onPeerConnected(connection);
+        return true;
+    }
+
+    /** DEBUG - the session's half of PeerServer's own per-connection logging: why a connection
+     * that named this torrent was not kept. One that is kept shows up later as onDisconnected()'s
+     * own line. */
+    private void logInboundRefused(Socket socket, String reason) {
+        LOG.log(System.Logger.Level.DEBUG, "Inbound connection from " + socket.getRemoteSocketAddress()
+                + " for " + metadata.infoHash() + " not kept: " + reason);
     }
 
     /** The µTP counterpart to acceptIncomingConnection() (design_docs/0074's slice 3) - same
@@ -1679,18 +1728,22 @@ public final class TorrentSession implements AutoCloseable {
      * routed here by info hash after its own µTP-level handshake completed. Public for the same
      * reason acceptIncomingConnection() is - TorrentEngine hands this directly to UtpPeerAcceptor
      * as a method reference from a different package. */
-    public void acceptIncomingUtpConnection(UtpSocket utpSocket, Handshake remoteHandshake) throws IOException {
+    public boolean acceptIncomingUtpConnection(UtpSocket utpSocket, Handshake remoteHandshake) throws IOException {
         if (state != TorrentState.DOWNLOADING && state != TorrentState.SEEDING) {
             utpSocket.close();
-            return;
+            return false;
         }
         if (blocked(utpSocket.remoteAddress().getAddress())) {
             utpSocket.close();
-            return;
+            return false;
+        }
+        if (remoteHandshake.peerId().equals(ourPeerId)) {
+            utpSocket.close();
+            return false;
         }
         if (!connectionSlots.tryAcquire()) {
             utpSocket.close();
-            return;
+            return false;
         }
         PeerConnection connection;
         try {
@@ -1700,9 +1753,11 @@ public final class TorrentSession implements AutoCloseable {
             connectionSlots.release();
             throw e;
         }
-        if (adopt(connection)) {
-            onPeerConnected(connection);
+        if (!adopt(connection)) {
+            return false;
         }
+        onPeerConnected(connection);
+        return true;
     }
 
     /**
@@ -2111,6 +2166,17 @@ public final class TorrentSession implements AutoCloseable {
         return connections.size();
     }
 
+    /** How many of the connections above the remote peer opened to us (design_docs/0086). */
+    public int incomingPeerCount() {
+        int count = 0;
+        for (PeerConnection connection : connections) {
+            if (connection.incoming()) {
+                count++;
+            }
+        }
+        return count;
+    }
+
     /** What TorrentEngine loads from (or defaults for a brand-new torrent to) this torrent's
      * lifetime-stats marker, and hands to create()/restoreAsync() - see design_docs/0064/0065.
      * NONE is the all-zero baseline every genuinely new torrent starts from. */
@@ -2456,13 +2522,13 @@ public final class TorrentSession implements AutoCloseable {
                     + (cause == null ? "closed locally" : cause));
             connections.remove(connection);
             inFlightBlocks.releaseAll(connection);
-            // Releases this connection's own connectionSlots permit, held since attemptConnect()/
-            // acceptIncomingConnection() first succeeded - then backfills the slot it just freed.
-            // Deliberately not added to failedAddresses: this peer was reachable and connected
-            // successfully once, so there's no reason to treat it as dead going forward (unlike
-            // attemptConnect()'s own catch block, which never got that far). See
-            // design_docs/0017's own 2026-09-06 revision.
-            connectionSlots.release();
+            // Releases this connection's connectionSlots permit if it holds one (it doesn't if
+            // it was closed before adopt(), e.g. a dial that landed in a full session) - then
+            // backfills. Deliberately not added to failedAddresses: this peer was reachable and
+            // connected successfully once, so there's no reason to treat it as dead going
+            // forward (unlike attemptConnect()'s own catch block, which never got that far).
+            // See design_docs/0017's own 2026-09-06 revision.
+            releaseSlot(connection);
             fillConnections();
         }
     }
