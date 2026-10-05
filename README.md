@@ -105,6 +105,9 @@ Please don't report these as bugs.
 
 - **IPv4 only.** No IPv6 peers, and the blocklist takes IPv4 ranges only.
 - **BitTorrent v1 only.** No v2 or hybrid torrents.
+- **No automatic port forwarding.** There is no UPnP or NAT-PMP, so the BitTorrent port has to
+  be forwarded on your router by hand. Until it is, the Health page shows no incoming
+  connections; downloads still work.
 - **Private trackers that whitelist clients will reject it.** It identifies itself honestly as
   GrimTorrenter, which no tracker knows yet.
 - **Pieces are requested in order**, not rarest-first.

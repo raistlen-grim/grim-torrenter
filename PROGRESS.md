@@ -1266,6 +1266,13 @@ torrent's files were opened once and held open for its whole lifetime, even whil
   `inFlightAddresses` claim on failure at all - `failedAddresses` already excludes it from every
   future candidate snapshot permanently, so there was never a correctness need to free that slot
   too. See [[0017-torrent-session]]'s own third dated correction.
+- **Fixed dead connections piling up in a session's connection set (2026-10-03)**, found on the
+  real container: a seeding torrent showed 80 connected peers against a cap of 30, nearly all of
+  them never having sent anything. A peer that closed straight after its handshake was reported
+  as disconnected before the session had registered it, then registered anyway and never
+  removed. Real sockets stayed within the cap; the count, the Peers tab and memory did not.
+  `TorrentSession.adopt()` now drops a connection that is already closed. Not yet built, tested
+  or run. See [[0017-torrent-session]]'s fourth dated correction.
 
 ## Known gaps / TODO
 

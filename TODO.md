@@ -119,6 +119,12 @@ than something that'd change a decision someone makes.
   public release (2026-10-02). It was picked without checking BEP 20's table or the larger lists
   other clients use to name peers. If taken, change `ClientIdentity.PEER_ID_CLIENT_CODE`. See
   `design_docs/0084`'s open item.
+- **Automatic port mapping (UPnP / NAT-PMP / PCP)** (2026-10-03) - there is none, so the listen
+  port must be forwarded on the router by hand; found when the Health page showed no incoming
+  connections after 13 hours on a correctly configured container. Post-beta, and limited value in
+  the default deployment: on Docker's bridge network the router discovery traffic doesn't cross
+  the bridge and the container would ask for a forward to its internal address, so this only
+  helps with host networking or outside Docker. Listed in the README's known limitations.
 - Notification service (emails, or something else yet to be defined)
 - Run a user-configured script automatically when a torrent completes
 - ~~UI bug: refreshing the page while the torrent-detail side panel is open

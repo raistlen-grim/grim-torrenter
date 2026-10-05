@@ -1527,7 +1527,14 @@ public final class TorrentSession implements AutoCloseable {
         try {
             PeerSource source = knownAddresses.getOrDefault(address, PeerSource.UNKNOWN);
             PeerConnection connection = connect(address, source);
-            connections.add(connection);
+            if (!adopt(connection)) {
+                // Reached, shook hands, then dropped us before we'd even registered it. Its
+                // permit is already back (onDisconnected()); treated like a failed attempt -
+                // excluded for the session, in-flight claim kept - so it isn't re-dialled on
+                // every refill.
+                failedAddresses.add(address);
+                return;
+            }
             // Now covered by the connections-based filter in fillConnections() instead -
             // removing the inFlightAddresses claim just avoids that set growing forever with
             // entries that no other check ever needed again.
@@ -1597,6 +1604,25 @@ public final class TorrentSession implements AutoCloseable {
         }
     }
 
+    /** Registers a freshly handshaken connection, unless it has already died. PeerConnection
+     * starts its read loop (and sends the extended handshake) before the factory method returns,
+     * so a peer that closes straight after its handshake fires onDisconnected() - a no-op
+     * remove, the permit released - before the caller gets here. Adding it regardless left a
+     * dead connection in the set for the rest of the session, holding no permit: connectedPeers
+     * and the Peers tab climbed past maxConnections (80 listed against a cap of 30 on a seeding
+     * torrent after 13 hours, 2026-10-03) and each one was never collected. Add first, then
+     * check: closed is set before onDisconnected() runs, so whichever side loses the race still
+     * removes it, and the permit is only ever released by onDisconnected(). See
+     * design_docs/0017's 2026-10-03 correction. */
+    private boolean adopt(PeerConnection connection) {
+        connections.add(connection);
+        if (connection.isClosed()) {
+            connections.remove(connection);
+            return false;
+        }
+        return true;
+    }
+
     private void onPeerConnected(PeerConnection connection) {
         // ourListenPort doubles as our DHT node's UDP port too (see design_docs/0028), so
         // this is the one port value every peer needs telling about regardless of DHT
@@ -1642,8 +1668,9 @@ public final class TorrentSession implements AutoCloseable {
             connectionSlots.release();
             throw e;
         }
-        connections.add(connection);
-        onPeerConnected(connection);
+        if (adopt(connection)) {
+            onPeerConnected(connection);
+        }
     }
 
     /** The µTP counterpart to acceptIncomingConnection() (design_docs/0074's slice 3) - same
@@ -1673,8 +1700,9 @@ public final class TorrentSession implements AutoCloseable {
             connectionSlots.release();
             throw e;
         }
-        connections.add(connection);
-        onPeerConnected(connection);
+        if (adopt(connection)) {
+            onPeerConnected(connection);
+        }
     }
 
     /**

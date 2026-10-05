@@ -189,6 +189,30 @@ growth note above). This closes the race structurally rather than narrowing its 
 further: an address can never again be simultaneously "not yet visible as failed" and
 "available for reclaim."
 
+**Fourth correction (2026-10-03): dead connections were being registered and never removed.**
+Found on a real container: a seeding torrent listed 80 connections against a cap of 30 after 13
+hours, 75 of them having never sent a bitfield or moved a byte. `PeerConnection`'s factory
+methods start the read loop and send the extended handshake *before* returning, so a peer that
+closes straight after its handshake (common: it is at its own cap, or already connected to us)
+fires `onDisconnected()` while the session hasn't added the connection yet - the `remove()` is
+a no-op and the `connectionSlots` permit is released. `attemptConnect()` and both inbound
+accept paths then added the already-dead connection to `connections`, where nothing would ever
+remove it. The semaphore stayed correct (real sockets never exceeded the cap, which is why this
+went unnoticed), but `connections` - and so `connectedPeers`, the Peers tab, and every loop
+over connections - grew without bound for the life of the session, each entry pinning a
+`PeerConnection` and its buffers.
+
+**Fixed with `adopt()`**: add, then check `isClosed()`, and remove again if it is. Add-then-check
+rather than check-then-add because `closed` is set before `onDisconnected()` runs, so whichever
+side loses the race still removes the entry; the permit is still only ever released by
+`onDisconnected()`, never here. On the outbound path such an address also goes into
+`failedAddresses` (with its `inFlightAddresses` claim kept, per the third correction), which
+keeps the behaviour the bug gave by accident - a peer that drops us at the handshake is not
+re-dialled on every refill. Considered and not done: starting the read loop only after the
+session has registered the connection, which removes the window instead of tolerating it but
+changes `PeerConnection`'s construction contract for every caller. No regression test - the
+window is between two statements on one thread and has no seam to hold it open.
+
 **Requesting blocks without double-requesting from the same connection.**
 `PieceManager` only tracks "received," not "requested" (by design, per
 [[0016-piece-and-storage]]), which means `selectNextBlock` alone will keep
