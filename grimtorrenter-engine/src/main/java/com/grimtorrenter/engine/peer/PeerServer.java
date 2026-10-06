@@ -48,10 +48,15 @@ public final class PeerServer implements AutoCloseable {
 
     private static final System.Logger LOG = System.getLogger(PeerServer.class.getName());
     private static final int HANDSHAKE_TIMEOUT_MS = 10_000;
-    /** The plaintext handshake's first byte - pstrlen for "BitTorrent protocol" (19 ASCII
-     * characters). Anything else at this position is assumed to be the start of an MSE
-     * negotiation's Diffie-Hellman public key instead. */
-    private static final int PLAINTEXT_HANDSHAKE_FIRST_BYTE = 19;
+    /** How a plaintext handshake starts: pstrlen (19) followed by "BitTorrent protocol". Anything
+     * else is assumed to be the start of an MSE negotiation's Diffie-Hellman public key. All 20
+     * bytes are compared, not just the first: a DH key is random, so one in 256 starts with 19,
+     * and judging by that byte alone sent those encrypted peers down the plaintext path to fail
+     * (seen on a real container, 2026-10-06). Either kind of peer sends well over 20 bytes
+     * before expecting a reply, so waiting for them costs nothing. */
+    private static final byte[] PLAINTEXT_HANDSHAKE_PREFIX =
+            ((char) Handshake.PROTOCOL_NAME.length() + Handshake.PROTOCOL_NAME)
+                    .getBytes(java.nio.charset.StandardCharsets.US_ASCII);
     private static final SecureRandom MSE_RANDOM = new SecureRandom();
 
     private final ServerSocket serverSocket;
@@ -127,20 +132,21 @@ public final class PeerServer implements AutoCloseable {
 
             received = new HeadRecorder(socket.getInputStream());
             BufferedInputStream peekable = new BufferedInputStream(received);
-            peekable.mark(1);
-            int firstByte = peekable.read();
-            if (firstByte < 0) {
+            peekable.mark(PLAINTEXT_HANDSHAKE_PREFIX.length);
+            byte[] prefix = peekable.readNBytes(PLAINTEXT_HANDSHAKE_PREFIX.length);
+            if (prefix.length == 0) {
                 reject(socket, "closed by the peer before sending anything");
                 return;
             }
             peekable.reset();
+            boolean plaintext = java.util.Arrays.equals(prefix, PLAINTEXT_HANDSHAKE_PREFIX);
 
             InputStream in;
             OutputStream out = socket.getOutputStream();
             Handshake handshake;
             InfoHash infoHash;
 
-            if (firstByte == PLAINTEXT_HANDSHAKE_FIRST_BYTE) {
+            if (plaintext) {
                 if (mode == EncryptionMode.REQUIRED) {
                     reject(socket, "plaintext handshake while encryption is required");
                     return;
@@ -171,7 +177,7 @@ public final class PeerServer implements AutoCloseable {
                 return;
             }
             LOG.log(System.Logger.Level.DEBUG, "Inbound connection from " + socket.getRemoteSocketAddress()
-                    + " for " + infoHash + (firstByte == PLAINTEXT_HANDSHAKE_FIRST_BYTE ? " (plaintext)" : " (encrypted)"));
+                    + " for " + infoHash + (plaintext ? " (plaintext)" : " (encrypted)"));
             handler.get().accept(socket, in, out, handshake);
         } catch (IOException | RuntimeException e) {
             reject(socket, "handshake failed: " + e + (received == null ? "" : " - " + received.describe()));

@@ -42,9 +42,13 @@ public final class PeerWireCodec {
 
     public static Handshake readHandshake(InputStream in) throws IOException {
         int pstrlen = readByteOrThrow(in);
-        String pstr = new String(readFully(in, pstrlen), StandardCharsets.US_ASCII);
+        byte[] pstrBytes = readFully(in, pstrlen);
+        String pstr = new String(pstrBytes, StandardCharsets.US_ASCII);
         if (!Handshake.PROTOCOL_NAME.equals(pstr)) {
-            throw new PeerWireException("Unexpected protocol name: '" + pstr + "'");
+            // Hex, not the bytes themselves - they come straight from the peer and end up in
+            // logs, where raw control characters have no business being.
+            throw new PeerWireException("Unexpected protocol name (hex): "
+                    + java.util.HexFormat.of().formatHex(pstrBytes));
         }
         byte[] reserved = readFully(in, Handshake.RESERVED_LENGTH);
         InfoHash infoHash = InfoHash.of(readFully(in, InfoHash.LENGTH_BYTES));

@@ -1299,8 +1299,18 @@ torrent's files were opened once and held open for its whole lifetime, even whil
   68 bits. Self-consistent, so every unit test and GrimTorrenter-to-GrimTorrenter connection
   worked, while every encrypted handshake with a real peer failed (415 inbound failures in a
   ten-minute container log; outbound attempts always fell back to plaintext). Constant corrected
-  against libtorrent's source and its tail pinned in `DiffieHellmanTest`. Not yet built, tested
-  or run. ([[0052-message-stream-encryption]]'s 2026-10-05 correction)
+  against libtorrent's source and its tail pinned in `DiffieHellmanTest`. Test-verified (the
+  build and all unit tests pass, 2026-10-06); on the container an independent initiator using the
+  correct prime completes the encrypted handshake and gets a BitTorrent handshake back, where it
+  failed against the previous build, and the container log shows 181 inbound encrypted handshakes
+  from real peers reaching a torrent (against 4, all self-connections, before). ([[0052-message-stream-encryption]]'s 2026-10-05 correction)
+- **Two small inbound fixes from the same log (2026-10-06)** — `PeerServer` told plaintext from
+  encrypted by the first byte alone, so the one encrypted handshake in 256 whose random key
+  starts with 19 was read as plaintext and failed; it now compares all 20 bytes of the plaintext
+  prefix. And `PeerWireCodec`'s "unexpected protocol name" error put the peer's raw bytes into
+  the log; it now reports them as hex. Test-verified (the build and all unit tests pass,
+  2026-10-06); on the container an encrypted handshake whose key starts with byte 19 now
+  completes.
 
 ## Known gaps / TODO
 
