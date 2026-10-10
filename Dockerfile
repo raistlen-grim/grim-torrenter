@@ -24,6 +24,8 @@ RUN mvn -B -pl grimtorrenter-app -am package -DskipTests
 
 # ---- Runtime ----
 FROM eclipse-temurin:25-jre-alpine AS runtime
+# Ties the published package on ghcr.io to its repository (design_docs/0087).
+LABEL org.opencontainers.image.source="https://github.com/raistlen-grim/grim-torrenter"
 # su-exec: lets the entrypoint drop from root to PUID:PGID (see docker/entrypoint.sh).
 RUN apk add --no-cache su-exec
 WORKDIR /app

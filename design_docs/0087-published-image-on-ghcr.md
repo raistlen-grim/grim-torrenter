@@ -23,6 +23,8 @@ that only needs to run a container.
   is the default so a tester's upgrade is `docker compose pull`; a version number pins a build.
   The version tag should be the version the build itself reports
   ([[0084-client-identification]]), so a bug report's version names an image.
+- **The image carries an `org.opencontainers.image.source` label** naming the repository, which
+  is what makes GitHub show the package on the repository's page and link back from it.
 - **Publishing is done by hand for now** (`docker build`, `docker push`; the commands are in the
   README's development section). One architecture: whatever the publishing machine is.
 

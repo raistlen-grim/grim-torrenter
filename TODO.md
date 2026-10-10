@@ -409,8 +409,8 @@ with 2,300 seeders sat at zero peers behind a VPN once its candidates had each f
 A VPN without port forwarding (NordVPN, for one) means no incoming connections, ever. Faster
 dialling and the retry above make that case workable; still open:
 
-- The Health page's "no incoming connections" hint and the README should mention a VPN, not
-  only an unforwarded port.
+- ~~The Health page's "no incoming connections" hint and the README should mention a VPN, not
+  only an unforwarded port.~~ **Done (2026-10-10).**
 - Using a forwarded port from a VPN that offers one (Proton VPN, PIA, AirVPN): the port is
   usually assigned by the provider (NAT-PMP or its own API), so the listen port would have to be
   changeable while running. In Docker the common setup is a VPN container such as gluetun that

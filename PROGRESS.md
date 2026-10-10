@@ -1199,6 +1199,10 @@ complete**, per the phased scope in [[0009-phased-scope]]:
   hand for now, one architecture. Not yet pushed or pulled; the package has to be made public
   on GitHub after the first push. ([[0087-published-image-on-ghcr]])
 
+- **VPN wording (2026-10-10)** — the Health page's "no incoming connections" hint now names a
+  VPN that doesn't forward ports alongside an unforwarded port, and the README says the same in
+  its first-start steps and known limitations. Wording only; not yet built or seen.
+
 **Not yet built** (the rest of Phase 3):
 
 - Multiple/day-of-week-specific rate-limit schedule rules — the one remaining natural addition
@@ -1400,8 +1404,8 @@ with stable ids and multi-label Any/All filtering ([[0077-labels]]), an IP block
    back asynchronously). Worth revisiting if the shared model's soft politeness cost (some
    trackers polled more often than their own stated interval) turns out to matter in practice.
 2. **Working behind a VPN** — faster dialling and retrying failed addresses are done
-   (2026-10-06); left are the Health-page/README wording, using a VPN's forwarded port, and hole
-   punching. See `TODO.md`'s "Working behind a VPN".
+   (2026-10-06) and so is the Health-page/README wording (2026-10-10); left are using a VPN's
+   forwarded port, and hole punching. See `TODO.md`'s "Working behind a VPN".
 3. Smaller/unscoped `TODO.md` items: a notification service, running a user-configured script
    automatically on torrent completion, and UI themes.
 4. The pending-action-vs-2s-snapshot-lag gap noted above, if it proves to matter in practice.

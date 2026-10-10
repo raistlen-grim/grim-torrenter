@@ -56,7 +56,8 @@ Every line is optional; these are the defaults.
    marked *Failed* comes with the fix.
 2. **Forward the BitTorrent port** on your router to this machine, TCP and UDP. Without it you
    can still download, but fewer peers can reach you. Some networks throttle port 6881; if DHT
-   stays empty, try another port.
+   stays empty, try another port. If this machine's traffic goes through a VPN, forwarding the
+   port on your router does nothing: see [Known limitations](#known-limitations).
 3. **Set a password before exposing it beyond your own network.** Settings → Security: set a
    password, then turn on *Require a password*. It is off by default, and while it is off anyone
    who can reach the page has full control.
@@ -111,6 +112,12 @@ Please don't report these as bugs.
 - **No automatic port forwarding.** There is no UPnP or NAT-PMP, so the BitTorrent port has to
   be forwarded on your router by hand. Until it is, the Health page shows no incoming
   connections; downloads still work.
+- **Behind a VPN, incoming connections usually don't work.** Peers would have to reach you
+  through the VPN, and most VPNs don't forward ports, so the Health page shows no incoming
+  connections however your router is set up. Downloads still work, with fewer peers and a
+  slower start. A port forwarded by the VPN provider works only if it is a fixed number you can
+  set as `GRIMTORRENTER_LISTEN_PORT`; a port the provider assigns and changes can't be picked up
+  automatically.
 - **Private trackers that whitelist clients will reject it.** It identifies itself honestly as
   GrimTorrenter, which no tracker knows yet.
 - **Pieces are requested in order**, not rarest-first.

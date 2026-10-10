@@ -193,7 +193,8 @@ public class HealthService {
         }
         if (seen == 0) {
             return new Check("incoming", State.INFO, "None received since start. If this stays at none "
-                    + "while torrents are active, the listen port is probably not forwarded.");
+                    + "while torrents are active, the listen port is probably not forwarded, or this "
+                    + "machine is behind a VPN that doesn't forward ports. Downloads still work.");
         }
         return new Check("incoming", State.OK, String.format(Locale.ROOT,
                 "%,d connected now. Since start: %,d received, %,d accepted", active, seen, accepted));

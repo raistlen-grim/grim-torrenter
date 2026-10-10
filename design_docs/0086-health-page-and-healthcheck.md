@@ -30,7 +30,7 @@ States: `OK`, `INFO` (a fact, neither good nor bad), `WARNING` (working, worth a
 | storage | `downloads`, `config` | Created if missing, then: is it a directory this process can write to. FAILED with the path and the fix (host ownership or PUID/PGID) if not. |
 | storage | `watch` | Same check when the watch folder is on; DISABLED when it is off. |
 | storage | `freeSpace` | WARNING under 1 GiB free on the downloads volume, else OK with the figure. |
-| connectivity | `incoming` | OK once any inbound peer connection has reached us since start (the count is shown). INFO, with a hint about port forwarding, while none has. DISABLED when not listening. |
+| connectivity | `incoming` | OK once any inbound peer connection has reached us since start (the count is shown). INFO, with a hint about port forwarding (and, since 2026-10-10, a VPN that doesn't forward ports - the same symptom, found the hard way on 2026-10-06), while none has. DISABLED when not listening. |
 | connectivity | `proxy` | DISABLED with no proxy. Otherwise the result of the existing proxy test: OK, WARNING if it doesn't relay UDP, FAILED if unreachable. |
 | protection | `blocklist` | DISABLED / OK with the range count / WARNING when a refresh failed but the last good list is still enforced / FAILED when enabled with nothing loaded. |
 | protection | `auth` | OK when a password is required. **INFO, not a warning, when it isn't** (confirmed with the user) - off is the default and fine on a private network; the message says to turn it on before exposing the app. |
