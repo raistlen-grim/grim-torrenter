@@ -735,15 +735,16 @@ class TorrentSessionTest {
     }
 
     /** The connection-refill fix (design_docs/0017's own 2026-09-06 revision,
-     * design_docs/0036's matching addendum): a failed address must never be retried again
-     * this session, even though the tracker keeps re-offering it on every reannounce - proof
-     * the new failedAddresses set actually excludes it from fillConnections()'s candidate
-     * selection, not just from the one fillConnections() call immediately following its own
-     * failure. badServer accepts the TCP connection (so a real attempt genuinely happens,
+     * design_docs/0036's matching addendum): a failed address must not be dialled again while
+     * its backoff is running, even though the tracker keeps re-offering it on every reannounce
+     * - proof failedAddresses actually excludes it from fillConnections()'s candidate selection,
+     * not just from the one fillConnections() call immediately following its own failure. (The
+     * retry once the backoff is over is covered by FailedAddressesTest - the first backoff is
+     * minutes long.) badServer accepts the TCP connection (so a real attempt genuinely happens,
      * counted precisely) but closes immediately without completing the peer-wire handshake,
      * failing attemptConnect() the same way an unresponsive real peer would. */
     @Test
-    void failedAddressIsNeverRetriedEvenWhenTheTrackerKeepsOfferingIt(@TempDir Path tempDir) throws Exception {
+    void failedAddressIsNotRetriedDuringItsBackoffEvenWhenTheTrackerKeepsOfferingIt(@TempDir Path tempDir) throws Exception {
         TorrentMetadata metadata = singlePieceMetadata(fill(20, 1));
 
         ServerSocket badServer = new ServerSocket(0, 5, InetAddress.getLoopbackAddress());
@@ -795,10 +796,11 @@ class TorrentSessionTest {
      * inFlightAddresses, claimed atomically at candidate-selection time - see both fields'
      * own Javadoc). Each fake server loops accepting connections and counts them by port,
      * closing each one immediately without completing the handshake (failing attemptConnect())
-     * - proves both properties in one pass: peak concurrent attempts never exceeds
-     * MAX_CONNECTIONS (30), and every one of the 60 candidates is attempted *exactly once*,
-     * never zero (every candidate eventually reached) and never more than once (no duplicate/
-     * wasted attempts at an address already claimed or already permanently failed). See
+     * - proves both properties in one pass: peak concurrent attempts never exceeds the
+     * session's attempt bound (64 since design_docs/0017's 2026-10-06 revision), and every one
+     * of the 60 candidates is attempted *exactly once*, never zero (every candidate eventually
+     * reached) and never more than once (no duplicate/wasted attempts at an address already
+     * claimed or already failed and still backing off). See
      * design_docs/0017's own 2026-09-06 revision. */
     @Test
     void neverDuplicatesOrExceedsMaxConnectionsEvenUnderABurstOfFailures(@TempDir Path tempDir) throws Exception {
@@ -851,8 +853,8 @@ class TorrentSessionTest {
             // fillConnections() refill cascades as it takes.
             Thread.sleep(4000);
 
-            assertTrue(peakOpen.get() <= 30,
-                    "peak concurrent attempts was " + peakOpen.get() + ", expected <= MAX_CONNECTIONS (30)");
+            assertTrue(peakOpen.get() <= 64,
+                    "peak concurrent attempts was " + peakOpen.get() + ", expected <= MAX_PENDING_OUTBOUND (64)");
             for (Map.Entry<Integer, AtomicInteger> entry : attemptsByPort.entrySet()) {
                 assertEquals(1, entry.getValue().get(),
                         "port " + entry.getKey() + " was attempted " + entry.getValue().get() + " time(s), expected exactly 1");

@@ -22,16 +22,18 @@ BitTorrent protocol is implemented directly in Java rather than wrapping an exis
 
 ## Quick start
 
-You need Docker with the compose plugin.
+You need Docker with the compose plugin. The image is published at
+`ghcr.io/raistlen-grim/grim-torrenter`, so there is nothing to build: you only need the compose
+file.
 
 ```sh
-git clone https://github.com/raistlen-grim/grim-torrenter.git
-cd grim-torrenter
-cp .env.example .env      # then edit .env - see below
-docker compose up -d --build
+mkdir grimtorrenter && cd grimtorrenter
+curl -fsSLO https://raw.githubusercontent.com/raistlen-grim/grim-torrenter/main/docker-compose.yml
+curl -fsSL -o .env https://raw.githubusercontent.com/raistlen-grim/grim-torrenter/main/.env.example
+docker compose up -d      # edit .env first if the defaults below don't suit
 ```
 
-Open <http://localhost:8080>. The first build takes a few minutes.
+Open <http://localhost:8080>.
 
 ### Settings in `.env`
 
@@ -39,6 +41,7 @@ Every line is optional; these are the defaults.
 
 | Variable | Default | What it is |
 |---|---|---|
+| `GRIMTORRENTER_TAG` | `latest` | Which published build to run. Set a version number to stay on one build. |
 | `PUID` / `PGID` | `1000` / `1000` | User and group id the app runs as. Use the ids of the host user that owns the folders below (`id -u`, `id -g`). |
 | `GRIMTORRENTER_HTTP_PORT` | `8080` | Where the web UI is reachable on the host. |
 | `GRIMTORRENTER_LISTEN_PORT` | `6881` | BitTorrent port, TCP and UDP. |
@@ -140,9 +143,11 @@ Open an issue at <https://github.com/raistlen-grim/grim-torrenter/issues> with:
 ## Upgrading
 
 ```sh
-git pull
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 ```
+
+If you set `GRIMTORRENTER_TAG` to a version number, change it to the new one first.
 
 Your torrents and settings live in the config folder and are picked up again on start, and
 downloaded data is re-verified. Between test builds this is not guaranteed: a new build may
@@ -160,6 +165,22 @@ cd frontend && npm ci && npm start        # UI on :4200, proxying /api and /ws t
 ```
 
 In dev mode the BitTorrent port is 7881 rather than 6881.
+
+To run a container built from your working tree instead of the published image, add the build
+file (or set `COMPOSE_FILE` in `.env`, see `.env.example`):
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+```
+
+To publish a build (needs a GitHub token with the `write:packages` scope):
+
+```sh
+docker login ghcr.io -u raistlen-grim
+docker build -t ghcr.io/raistlen-grim/grim-torrenter:<version> \
+             -t ghcr.io/raistlen-grim/grim-torrenter:latest .
+docker push --all-tags ghcr.io/raistlen-grim/grim-torrenter
+```
 
 Design decisions are recorded one per file in [`design_docs/`](design_docs/); `PROGRESS.md` is
 the running status and `TODO.md` the backlog.

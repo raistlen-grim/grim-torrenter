@@ -279,7 +279,8 @@ pool:
     (`neverDuplicatesOrExceedsMaxConnectionsEvenUnderABurstOfFailures`) and strengthened to
     assert every one of 60 candidates is attempted *exactly* once, not just that the peak
     stays under 30. See `design_docs/0017`'s own second same-day correction.
-  - **Retry a failed peer after a cooldown** - raised and deliberately deferred while scoping
+  - **Retry a failed peer after a cooldown** (**done 2026-10-06**, see the section at the end of
+    this file) - raised and deliberately deferred while scoping
     the fix above: `failedAddresses` exclusion is currently permanent for the whole session,
     never retried, confirmed with the user as the simpler option over a
     timestamp-per-address/expiry mechanism. Real swarms do have transient failures (NAT
@@ -393,9 +394,27 @@ then revisit this as a follow-up rather than bundling both into one change.
 
 ## Retry failed peer addresses after a backoff (2026-09-21)
 
-`TorrentSession.failedAddresses` excludes an address for the rest of the session once a connect
+~~`TorrentSession.failedAddresses` excludes an address for the rest of the session once a connect
 attempt fails (`design_docs/0017`, `0036`). That is deliberate - it stops time being spent
 re-trying peers that already failed, so the slot goes to a different candidate - and is left
 as is. Possible refinement if the candidate pool ever runs dry on a long-lived torrent: allow a
 retry after a long, growing backoff (e.g. 30 min+), only when no fresh candidates remain.
-Not a commitment; revisit with evidence.
+Not a commitment; revisit with evidence.~~ **Done (2026-10-06)** - the evidence arrived: a torrent
+with 2,300 seeders sat at zero peers behind a VPN once its candidates had each failed once. A
+5-minute backoff doubling to 2 hours, untried candidates always first. See `design_docs/0017`'s
+2026-10-06 revision.
+
+## Working behind a VPN (2026-10-06)
+
+A VPN without port forwarding (NordVPN, for one) means no incoming connections, ever. Faster
+dialling and the retry above make that case workable; still open:
+
+- The Health page's "no incoming connections" hint and the README should mention a VPN, not
+  only an unforwarded port.
+- Using a forwarded port from a VPN that offers one (Proton VPN, PIA, AirVPN): the port is
+  usually assigned by the provider (NAT-PMP or its own API), so the listen port would have to be
+  changeable while running. In Docker the common setup is a VPN container such as gluetun that
+  obtains the port and hands it over - much smaller than a built-in NAT-PMP client. Overlaps the
+  automatic port mapping item above.
+- BEP 55 hole punching, so two firewalled peers can connect. Large; post-beta.
+- Re-announcing early when a torrent has few peers, within what each tracker allows.

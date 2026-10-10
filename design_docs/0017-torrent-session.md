@@ -250,6 +250,85 @@ torrent, talking to itself). Both ends now compare the remote peer id with our o
 side refuses before taking a slot, the outbound side closes and puts the address in
 `failedAddresses`. The peer id is per process, so this can't match another install.
 
+**Revision (2026-10-06): `NUM_WANT` raised from 50 to 200.** Two new, well-seeded torrents
+(about 2,300 seeders each) sat at 1 and 9 connected peers for many minutes. A direct probe of
+one swarm from the same network settled why: of 691 addresses four trackers returned, 12
+completed a plain TCP handshake, 636 timed out and 38 refused - under 2% reachable, nearly
+everyone being behind NAT. At 50 per tracker the session had 100-200 unique candidates, so two
+to four usable peers, and since `failedAddresses` is permanent it then ran dry. The same
+trackers return 200 when asked (libtorrent's default), which this now requests. Not a setting:
+there is no reason for a user to lower it. Resource behaviour: `knownAddresses` and
+`failedAddresses` were already unbounded for the session's lifetime (DHT and PEX feed them
+without a cap); this grows them about four times faster from trackers, at a few dozen bytes
+per address - up to roughly 2,000 new entries per announce cycle with ten trackers, in
+practice far fewer since trackers overlap heavily. Simultaneous dials are unchanged, still
+bounded by `outboundAttemptSlots` (16). A 200-peer UDP response is 1,220 bytes, inside
+`UdpTrackerClient`'s 2,048-byte receive buffer; a hostile tracker can't make it larger than
+that buffer.
+
+**Revision (2026-10-06): faster dialling, and failed addresses retried after a backoff.** The
+cause of that day's poor downloads turned out to be the host's VPN: with no forwarded port, no
+incoming connection could arrive, and in a swarm where under 2% of addresses accept an outbound
+connection, incoming is where most peers come from. Many users run a torrent client behind a
+VPN that offers no port forwarding, so the outbound-only case has to work acceptably by itself.
+Two things made it slow.
+
+*Dial rate.* A dead address holds its attempt for up to 12 s (2 s of µTP, then 10 s of TCP), and
+attempts were capped at the smaller of 16 and the free connection slots - about 80 addresses a
+minute, so one or two new peers a minute. Now:
+
+- `MAX_PENDING_OUTBOUND` is 64 while downloading (about 320 addresses a minute) and 16 while
+  seeding, where no download is waiting on more peers and interested peers mostly dial in.
+- `fillConnections()` starts `ATTEMPTS_PER_FREE_SLOT` (4) attempts per free slot instead of one,
+  up to that bound, because most fail. An attempt that succeeds after the session has filled is
+  closed, as before; in a swarm where most addresses do answer that means a few
+  connect-then-close exchanges whenever a slot frees up. Accepted.
+- `fillConnections()` also runs every 60 s on the session scheduler, so the retries below
+  happen even when no tracker, DHT or PEX batch arrives to trigger it.
+
+The TCP connect timeout (10 s) is unchanged: slots were the limit, not time, and a shorter
+timeout would start missing slow but reachable peers.
+
+*Retry.* `failedAddresses` was a permanent set (the 2026-09-06 design, kept on 2026-09-21), so a
+session that had tried every candidate once sat at zero peers until something new arrived -
+seen on a torrent with 2,300 seeders. It is now a `FailedAddresses` map: a failed address is
+excluded for 5 minutes, doubling with each further failure up to 2 hours, and the count is
+cleared when the address connects. Addresses never tried always go first; ones whose backoff
+has ended fill only the room left over, longest-waiting first. Our own address stays excluded
+for good.
+
+This reopens the duplicate-attempt race the third correction above closed by keeping the
+`inFlightAddresses` claim forever on failure - a retry needs the claim released. It is closed a
+different way: an attempt records its outcome (the failure, or the established connection)
+*before* releasing its claim, and `fillConnections()` re-checks both *after* winning a claim.
+A concurrent call working from a stale candidate list can win the claim but then sees the
+recorded outcome and skips. That also closes the same race on the success path, which the old
+scheme did not cover.
+
+Resource behaviour:
+
+- **Threads and sockets:** at most `maxConnections` established plus 64 attempts per
+  downloading session (16 per seeding one), each attempt one virtual thread and one socket,
+  still bounded atomically by `outboundAttemptSlots` however many threads race to refill. There
+  is no engine-wide bound on attempts: 20 torrents downloading at once can have 1,280 dials in
+  flight. That was already true at 16 each (320); an engine-wide limiter, like the one magnet
+  fetches have, is the fix if a file-descriptor limit is ever hit.
+- **Memory:** `FailedAddresses` holds one small entry per address ever failed and is never
+  pruned, like `knownAddresses`.
+- **Hostile angle:** a tracker or PEX peer feeding in unreachable addresses costs one attempt
+  each, then at most about 16 retries a day per address at the 2-hour cap, and only when no
+  untried candidate is waiting.
+- **Locking:** none added; `FailedAddresses` is a `ConcurrentHashMap`.
+
+Tests: `FailedAddressesTest` covers the backoff, cap, clearing and ordering with explicit
+timestamps. `TorrentSession` has no injectable clock, so the retry itself is not exercised
+through a real session (the first backoff is five minutes); the existing burst test still
+asserts every candidate is attempted exactly once, now against the bound of 64.
+
+Considered and left out: µTP and TCP attempted in parallel instead of in sequence (saves 2 s
+per dead address, costs two sockets each); re-announcing early when peers are scarce; BEP 55
+hole punching, the real answer for two firewalled peers, which is a much larger piece of work.
+
 **Requesting blocks without double-requesting from the same connection.**
 `PieceManager` only tracks "received," not "requested" (by design, per
 [[0016-piece-and-storage]]), which means `selectNextBlock` alone will keep

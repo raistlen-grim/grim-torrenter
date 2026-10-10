@@ -1,12 +1,14 @@
-# Convenience wrapper around `docker build -t grimtorrenter .` + `docker run` (see
-# design_docs/0003 - still one container, compose is just running it).
+# Runs the published image (see design_docs/0003 - still one container, compose is just
+# running it - and design_docs/0087 for where the image comes from). This file is all a
+# deployment needs; it does not need the source tree. To build the image from source instead,
+# add docker-compose.build.yml - see that file.
 #
 # Nothing in this file is specific to one machine: every path, port and id comes from a
 # variable with a working default. To change any of them, copy .env.example to .env (which
 # compose reads automatically and git ignores) and edit it there. See design_docs/0085.
 services:
   grimtorrenter:
-    build: .
+    image: "ghcr.io/raistlen-grim/grim-torrenter:${GRIMTORRENTER_TAG:-latest}"
     container_name: grimtorrenter
     restart: unless-stopped
     environment:

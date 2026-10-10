@@ -1191,6 +1191,14 @@ complete**, per the phased scope in [[0009-phased-scope]]:
   roughly four inbound connections a second arrive and so few stay - needs that log from the
   container. ([[0086-health-page-and-healthcheck]]'s 2026-10-03 addendum)
 
+- **Published image on ghcr.io (2026-10-10)** — so another machine can pull the app instead of
+  cloning and building it. `docker-compose.yml` now names
+  `ghcr.io/raistlen-grim/grim-torrenter:${GRIMTORRENTER_TAG:-latest}` and no longer builds;
+  building from source is a second file, `docker-compose.build.yml` (or `COMPOSE_FILE` in
+  `.env`). The README's quick start, upgrade and development sections follow. Publishing is by
+  hand for now, one architecture. Not yet pushed or pulled; the package has to be made public
+  on GitHub after the first push. ([[0087-published-image-on-ghcr]])
+
 **Not yet built** (the rest of Phase 3):
 
 - Multiple/day-of-week-specific rate-limit schedule rules — the one remaining natural addition
@@ -1311,6 +1319,31 @@ torrent's files were opened once and held open for its whole lifetime, even whil
   the log; it now reports them as hex. Test-verified (the build and all unit tests pass,
   2026-10-06); on the container an encrypted handshake whose key starts with byte 19 now
   completes.
+- **Trackers asked for 200 peers, not 50 (2026-10-06)** — two new torrents with about 2,300
+  seeders each sat at 1 and 9 connected peers. Probing one swarm directly showed why: 12 of 691
+  tracker-supplied addresses completed a TCP handshake (under 2%; the rest are behind NAT), so 50
+  per tracker left two to four usable peers and the list then ran dry. `NUM_WANT` is now 200,
+  which the same trackers return when asked. Protocol encryption was suspected first and ruled
+  out. Run locally in dev mode only (1 peer each before, 7 and 10 after); not yet deployed. The
+  bigger cause that day was the network, not the app: the container's host was connected to a
+  VPN, so no incoming connection could reach the forwarded port. With the VPN off, incoming
+  connections resumed within a minute and both torrents reached 26-29 peers and several MB/s.
+  The minute-long "stalls" seen meanwhile were gaps with no connected peer unchoking us (a
+  thread dump during one showed every peer read loop idle, nothing blocked), not a request-path
+  fault.
+  ([[0017-torrent-session]]'s 2026-10-06 revision)
+- **Usable without incoming connections: faster dialling, failed addresses retried
+  (2026-10-06)** — follows from the VPN finding above; a VPN with no port forwarding leaves a
+  client outbound-only for good. A downloading session now runs up to 64 connection attempts at
+  once (16 before, and 16 still while seeding) and starts four per free slot, so it gets through
+  about 320 addresses a minute instead of 80. A failed address is no longer excluded for the
+  whole session: it is retried after 5 minutes, doubling to 2 hours, after any untried
+  candidates (new `FailedAddresses`, with its own unit tests). The duplicate-attempt race the
+  old permanent exclusion guarded against is closed by recording an attempt's outcome before
+  releasing its claim and re-checking after winning one. No engine-wide bound on attempts -
+  stated in the doc. Test-verified (the build and all unit tests pass, 2026-10-10); not yet run
+  on the container. ([[0017-torrent-session]]'s second
+  2026-10-06 revision)
 
 ## Known gaps / TODO
 
@@ -1366,10 +1399,9 @@ with stable ids and multi-label Any/All filtering ([[0077-labels]]), an IP block
    substantially bigger scope (`MultiTrackerClient` would need to own scheduling and push peers
    back asynchronously). Worth revisiting if the shared model's soft politeness cost (some
    trackers polled more often than their own stated interval) turns out to matter in practice.
-2. **Retrying a failed peer address after a cooldown** — `failedAddresses` exclusion is
-   currently permanent for the whole session; deferred as the simpler option when the
-   connection-refill fix landed (2026-09-06), worth revisiting if evidence shows transient
-   failures (NAT timing, a briefly-offline peer) actually cost real peer count in practice.
+2. **Working behind a VPN** — faster dialling and retrying failed addresses are done
+   (2026-10-06); left are the Health-page/README wording, using a VPN's forwarded port, and hole
+   punching. See `TODO.md`'s "Working behind a VPN".
 3. Smaller/unscoped `TODO.md` items: a notification service, running a user-configured script
    automatically on torrent completion, and UI themes.
 4. The pending-action-vs-2s-snapshot-lag gap noted above, if it proves to matter in practice.

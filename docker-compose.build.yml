@@ -1,0 +1,14 @@
+# Adds building the image from this source tree to docker-compose.yml, instead of pulling the
+# published one (see design_docs/0087). Use both files together:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+#
+# or put this line in .env so plain `docker compose` commands always use both:
+#
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml
+#
+# The result is tagged with the same name as the published image, so it is also what
+# `docker compose push` would upload.
+services:
+  grimtorrenter:
+    build: .
