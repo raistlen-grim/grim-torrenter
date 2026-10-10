@@ -25,8 +25,8 @@ build was running, so a tester's bug report couldn't either.
   module's build - still no runtime dependency. If the resource is missing or unfiltered (an IDE
   run that skipped Maven's filtering) the version is `0.0.0-dev` rather than a startup failure.
 - **Everything derives from it:**
-  - peer id prefix `-GT` + one character each for major, minor, patch + `0-` (0-9, then A-Z for
-    10-35, capped at Z) - `-GT0100-` for 0.1.0, unchanged from before;
+  - peer id prefix `-GM` + one character each for major, minor, patch + `0-` (0-9, then A-Z for
+    10-35, capped at Z) - `-GM0100-` for 0.1.0 (the code was `GT` until 2026-10-10, see below);
   - `User-Agent: GrimTorrenter/<major.minor.patch>` for tracker announces, proxied fetches and
     the blocklist download (which previously sent no version);
   - `v: "GrimTorrenter <major.minor.patch>"` in the extended handshake - new on the wire.
@@ -36,13 +36,28 @@ build was running, so a tester's bug report couldn't either.
   fetched once per page load. Like the rest of `/api`, it requires a login when authentication
   is on, so the version is not disclosed to an unauthenticated caller.
 
-## Open item: is `GT` free?
+## The client code: `GM`, changed from `GT` (2026-10-10)
 
-`GT` was picked when the engine was first written and has **not been checked against the lists
-of Azureus-style client codes in use** (BEP 20's own table, and the larger tables libtorrent and
-other clients carry for naming peers). A clash would not break anything - the code is advisory -
-but other clients would mislabel us. To do before a public release: check, and change
-`ClientIdentity.PEER_ID_CLIENT_CODE` if it is taken. Also tracked in TODO.md.
+`GT` was picked when the engine was first written, without checking it. Checked on 2026-10-10:
+
+- **Not in any published table**: BEP 20, the theory.org specification wiki, and the tables
+  libtorrent, Transmission, BiglyBT and webtorrent's `bittorrent-peerid` carry for naming peers.
+  The `G` codes those list are `GS` (GSTorrent), `GR` (GetRight) and `G3` (G3 Torrent).
+- **In use all the same**: the Go library `anacrolix/torrent` sends `-GT0003-` by default
+  (`version.DefaultBep20Prefix`), and so does every application built on it that doesn't
+  override it. It registers nowhere, which is why the tables miss it.
+
+A clash breaks nothing - the code is advisory - but this client could not have been told apart
+from that library's by peer id alone: a tracker whitelist or ban on `-GT` would cover both, and
+so would any per-client statistic.
+
+**Changed to `GM`** (`ClientIdentity.PEER_ID_CLIENT_CODE`), chosen by the user. `GM` is in none
+of the tables above, nor in the Haskell `bittorrent` package's, and web searches for it as a
+peer id prefix found nothing. That is weaker than it sounds: the same checks would have passed
+`GT`. An unregistered use somewhere can't be ruled out, only not found.
+
+The one published build before the change, image `0.9.0` as first pushed, identifies as
+`-GT0900-`.
 
 ## Not changed
 

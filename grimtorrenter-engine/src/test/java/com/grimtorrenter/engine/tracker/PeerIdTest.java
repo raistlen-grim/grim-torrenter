@@ -18,7 +18,7 @@ class PeerIdTest {
         byte[] prefix = new byte[8];
         System.arraycopy(id.bytes(), 0, prefix, 0, 8);
         assertEquals(ClientIdentity.peerIdPrefix(), new String(prefix, StandardCharsets.US_ASCII));
-        assertEquals("-GT", ClientIdentity.peerIdPrefix().substring(0, 3));
+        assertEquals("-GM", ClientIdentity.peerIdPrefix().substring(0, 3));
     }
 
     @Test

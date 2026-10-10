@@ -115,10 +115,10 @@ than something that'd change a decision someone makes.
   test-verified end to end, `mvn test` passing cleanly on the first run for slices 3-5. The
   Peers tab's "Connection type" (TCP/µTP) column follow-up is also now done - see that item
   above.
-- **Check that the peer id client code `GT` is not already used by another client** before a
-  public release (2026-10-02). It was picked without checking BEP 20's table or the larger lists
-  other clients use to name peers. If taken, change `ClientIdentity.PEER_ID_CLIENT_CODE`. See
-  `design_docs/0084`'s open item.
+- ~~**Check that the peer id client code `GT` is not already used by another client** before a
+  public release (2026-10-02).~~ **Done (2026-10-10):** it was - the Go library
+  `anacrolix/torrent` sends `-GT0003-` by default, though no published table lists it. Changed
+  to `GM`. See `design_docs/0084`.
 - **Automatic port mapping (UPnP / NAT-PMP / PCP)** (2026-10-03) - there is none, so the listen
   port must be forwarded on the router by hand; found when the Health page showed no incoming
   connections after 13 hours on a correctly configured container. Post-beta, and limited value in

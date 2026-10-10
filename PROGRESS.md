@@ -1137,12 +1137,13 @@ complete**, per the phased scope in [[0009-phased-scope]]:
 
 - **Client identification from one source (2026-10-02)** — first step of preparing the app for
   outside testers. A new engine `ClientIdentity` takes the version from the Maven build (resource
-  filtering) and everything else derives from it: the peer id prefix (`-GT0100-`), the User-Agent
+  filtering) and everything else derives from it: the peer id prefix (`-GT0100-` then, `-GM` since 2026-10-10), the User-Agent
   for trackers, proxied fetches and the blocklist, and a new `v` field in the BEP 10 extended
   handshake so other clients can name this one. `GET /api/system/version` reports the build and
-  the UI footer shows it. Open: `GT` has not been checked against the client codes already in use
-  (logged in `TODO.md`). Test-verified (the build and all unit tests pass, 2026-10-02);
-  the footer version not yet confirmed in the browser. ([[0084-client-identification]])
+  the UI footer shows it. The client code was checked on 2026-10-10: `GT` turned out to be the
+  default of the Go library `anacrolix/torrent`, so it is now `GM` (`-GM0900-` for 0.9.0); not yet
+  built or tested. Test-verified (the build and all unit tests pass, 2026-10-02);
+  the footer version confirmed in the browser by the user on the published 0.9.0 image (2026-10-10). ([[0084-client-identification]])
 
 - **Container fixes for outside testers (2026-10-02)** — three things a first run would trip on.
   The built image listened on 7881 (a dev-network workaround in `application.properties`) while
@@ -1151,7 +1152,10 @@ complete**, per the phased scope in [[0009-phased-scope]]:
   `.env.example`, with personal values in a git-ignored `.env`. And the container no longer runs
   as root: a `PUID`/`PGID` entrypoint (default 1000:1000, `0:0` for the old behaviour) drops
   privileges, takes ownership of the config directory only, and warns if downloads or watch
-  aren't writable instead of re-owning them. Not yet built or run.
+  aren't writable instead of re-owning them. Run for real on the published 0.9.0 image
+  (2026-10-10): health `OK`, running as uid 1000, downloads and config writable, incoming
+  connections arriving on the mapped port. Not tried: the warning for an unwritable folder, and
+  `PUID=0`/`PGID=0`.
   ([[0085-container-user-and-portable-compose]])
 
 - **Health page and container health check (2026-10-02)** — the Services page grows into a
@@ -1180,7 +1184,8 @@ complete**, per the phased scope in [[0009-phased-scope]]:
   Version 3 only, not "or any later version". Added: `LICENSE` (the official text, taken from the
   SPDX licence list), licence metadata in the parent `pom.xml` and `frontend/package.json`, the
   README's licence section, and a *Source* link in the UI footer so a network user can get the
-  code (the licence's section 13). No per-file headers. The footer link is not yet built or seen.
+  code (the licence's section 13). No per-file headers. The footer link confirmed in the browser by the user on the published
+  0.9.0 image (2026-10-10): it opens the repository.
 
 - **Incoming connections: three numbers and debug logging (2026-10-03)** — with the port
   forwarded, the Health row read tens of thousands "since start" while about nine inbound peers

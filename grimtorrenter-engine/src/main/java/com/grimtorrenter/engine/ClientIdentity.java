@@ -15,9 +15,9 @@ public final class ClientIdentity {
 
     public static final String NAME = "GrimTorrenter";
 
-    /** BEP 20 Azureus-style two-letter client code. Chosen without a registry check - see
-     * design_docs/0084's open item before treating it as settled. */
-    static final String PEER_ID_CLIENT_CODE = "GT";
+    /** BEP 20 Azureus-style two-letter client code. Was "GT" until 2026-10-10, which turned out
+     * to be another library's default - see design_docs/0084 for what was checked. */
+    static final String PEER_ID_CLIENT_CODE = "GM";
 
     /** Used when the resource is missing or was never filtered (some IDE run configurations
      * copy resources without running Maven's filtering) - identifiable as "not a real build"
@@ -52,7 +52,7 @@ public final class ClientIdentity {
         return NAME + "/" + numericVersion();
     }
 
-    /** "-GT0100-" for 0.1.0 - the 8-byte Azureus-style prefix of our peer id. */
+    /** "-GM0100-" for 0.1.0 - the 8-byte Azureus-style prefix of our peer id. */
     public static String peerIdPrefix() {
         return peerIdPrefixFor(VERSION);
     }

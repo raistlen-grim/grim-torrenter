@@ -7,7 +7,7 @@
   <parent>
     <groupId>com.grimtorrenter</groupId>
     <artifactId>grimtorrenter</artifactId>
-    <version>0.9.0</version>
+    <version>0.9.1</version>
   </parent>
 
   <artifactId>grimtorrenter-app</artifactId>

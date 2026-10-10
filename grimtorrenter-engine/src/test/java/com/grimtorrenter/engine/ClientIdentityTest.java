@@ -11,10 +11,10 @@ class ClientIdentityTest {
 
     @Test
     void peerIdPrefixEncodesOneCharacterPerVersionComponent() {
-        assertEquals("-GT0100-", ClientIdentity.peerIdPrefixFor("0.1.0-SNAPSHOT"));
-        assertEquals("-GT1230-", ClientIdentity.peerIdPrefixFor("1.2.3"));
-        assertEquals("-GT1C30-", ClientIdentity.peerIdPrefixFor("1.12.3"));
-        assertEquals("-GTZ000-", ClientIdentity.peerIdPrefixFor("99.0.0"));
+        assertEquals("-GM0100-", ClientIdentity.peerIdPrefixFor("0.1.0-SNAPSHOT"));
+        assertEquals("-GM1230-", ClientIdentity.peerIdPrefixFor("1.2.3"));
+        assertEquals("-GM1C30-", ClientIdentity.peerIdPrefixFor("1.12.3"));
+        assertEquals("-GMZ000-", ClientIdentity.peerIdPrefixFor("99.0.0"));
     }
 
     @Test

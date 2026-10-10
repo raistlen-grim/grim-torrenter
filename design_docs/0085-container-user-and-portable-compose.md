@@ -73,7 +73,8 @@ the app for other people to run.
 
 ## Verification
 
-Not yet built or run. The script passes a shell syntax check only. To confirm: the image
-builds; with default ids the JVM runs as 1000:1000 and new files on the volumes have that owner;
-the warning appears for an unwritable downloads directory; `PUID=0 PGID=0` behaves as before;
-incoming connections work on 6881 with no extra configuration.
+Run for real on the published 0.9.0 image (2026-10-10, see [[0087-published-image-on-ghcr]]): the
+image builds; the Health page reports uid 1000 and writable downloads and config directories;
+incoming connections arrive on the mapped port with no extra configuration. Not yet tried: the
+warning for an unwritable downloads directory, `PUID=0 PGID=0`, and the ownership of new files
+checked on the host.
