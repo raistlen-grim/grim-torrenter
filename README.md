@@ -22,32 +22,85 @@ BitTorrent protocol is implemented directly in Java rather than wrapping an exis
 
 ## Quick start
 
-You need Docker with the compose plugin. The image is published at
-`ghcr.io/raistlen-grim/grim-torrenter`, so there is nothing to build: you only need the compose
-file.
+The image is published at `ghcr.io/raistlen-grim/grim-torrenter`, so there is nothing to build.
+Make a folder for it, create the three data folders, then start it with either plain Docker or
+Docker Compose. Both examples run the same thing.
 
 ```sh
 mkdir grimtorrenter && cd grimtorrenter
-curl -fsSLO https://raw.githubusercontent.com/raistlen-grim/grim-torrenter/main/docker-compose.yml
-curl -fsSL -o .env https://raw.githubusercontent.com/raistlen-grim/grim-torrenter/main/.env.example
-docker compose up -d      # edit .env first if the defaults below don't suit
+mkdir -p data/downloads data/config data/watch
 ```
 
-Open <http://localhost:8080>.
+Create the data folders yourself, as above. If Docker has to create them they end up owned by
+root, and the app, which does not run as root, can't write to them.
 
-### Settings in `.env`
+### With Docker
 
-Every line is optional; these are the defaults.
+```sh
+docker run -d \
+  --name grimtorrenter \
+  --restart unless-stopped \
+  -e PUID=1000 \
+  -e PGID=1000 \
+  -e GRIMTORRENTER_LISTEN_PORT=6881 \
+  -p 8080:8080 \
+  -p 6881:6881/tcp \
+  -p 6881:6881/udp \
+  -v "$(pwd)/data/downloads:/app/downloads" \
+  -v "$(pwd)/data/config:/app/config" \
+  -v "$(pwd)/data/watch:/app/watch" \
+  ghcr.io/raistlen-grim/grim-torrenter:latest
+```
 
-| Variable | Default | What it is |
+### With Docker Compose
+
+Save this as `docker-compose.yml` in the same folder:
+
+```yaml
+services:
+  grimtorrenter:
+    image: ghcr.io/raistlen-grim/grim-torrenter:latest
+    container_name: grimtorrenter
+    restart: unless-stopped
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      GRIMTORRENTER_LISTEN_PORT: "6881"
+    ports:
+      - "8080:8080"
+      - "6881:6881/tcp"
+      - "6881:6881/udp"
+    volumes:
+      - ./data/downloads:/app/downloads
+      - ./data/config:/app/config
+      - ./data/watch:/app/watch
+```
+
+then start it:
+
+```sh
+docker compose up -d
+```
+
+Either way, open <http://localhost:8080>.
+
+### What to change
+
+Both examples run as they stand. These are the values you may want to change, and why; they
+are the same in each.
+
+| Value | Change it when | Why |
 |---|---|---|
-| `GRIMTORRENTER_TAG` | `latest` | Which published build to run. Set a version number to stay on one build. |
-| `PUID` / `PGID` | `1000` / `1000` | User and group id the app runs as. Use the ids of the host user that owns the folders below (`id -u`, `id -g`). |
-| `GRIMTORRENTER_HTTP_PORT` | `8080` | Where the web UI is reachable on the host. |
-| `GRIMTORRENTER_LISTEN_PORT` | `6881` | BitTorrent port, TCP and UDP. |
-| `GRIMTORRENTER_DOWNLOADS` | `./data/downloads` | Downloaded data. |
-| `GRIMTORRENTER_CONFIG` | `./data/config` | Settings and the app's own state. Keep this to keep your torrents across upgrades. |
-| `GRIMTORRENTER_WATCH` | `./data/watch` | Watch folder (off until enabled in Settings). |
+| `PUID` / `PGID` | Your user's ids aren't 1000 (`id -u` and `id -g` tell you). | The app runs as this user and group, so the files it downloads belong to you rather than to root, and it can write to folders you own. |
+| `data/downloads` | You want downloads somewhere else, such as a media disk. | Where downloaded data goes. Change only the part before the colon; that is the folder on your machine. |
+| `data/config` | You keep app settings in one place. | The app's settings and its record of your torrents. Keep this folder to keep your torrents across upgrades. |
+| `data/watch` | You want to use the watch folder. | A `.torrent` or `.magnet` file dropped here is added automatically, once the watch folder is switched on in Settings. |
+| `8080:8080` | Port 8080 is already in use on your machine. | Where the web UI is reached. Change only the first number: `8087:8080` puts it on <http://localhost:8087>. |
+| `6881`, all five | Your network throttles 6881, or the port is taken. | The BitTorrent port. `GRIMTORRENTER_LISTEN_PORT` is the port the app tells other peers to connect to, and the two `6881:6881` port mappings are what lets them in, so every one of the five must be the same number. |
+| `:latest` | You want to stay on one build. | `latest` moves to the newest build each time you pull. A version number, as shown at the bottom of the UI (`:0.9.0`), stays put until you change it. |
+
+If you cloned the repository instead, its `docker-compose.yml` is the Compose example with each
+of these values read from a `.env` file; `.env.example` lists them.
 
 ### After the first start
 
@@ -116,7 +169,7 @@ Please don't report these as bugs.
   through the VPN, and most VPNs don't forward ports, so the Health page shows no incoming
   connections however your router is set up. Downloads still work, with fewer peers and a
   slower start. A port forwarded by the VPN provider works only if it is a fixed number you can
-  set as `GRIMTORRENTER_LISTEN_PORT`; a port the provider assigns and changes can't be picked up
+  set as the BitTorrent port; a port the provider assigns and changes can't be picked up
   automatically.
 - **Private trackers that whitelist clients will reject it.** It identifies itself honestly as
   GrimTorrenter, which no tracker knows yet.
@@ -142,19 +195,30 @@ Open an issue at <https://github.com/raistlen-grim/grim-torrenter/issues> with:
 - the container log from around the time it happened:
 
   ```sh
-  docker compose logs --since 30m grimtorrenter
+  docker logs --since 30m grimtorrenter
   ```
 
   The log can contain tracker addresses and peer IP addresses. Read it through before posting.
 
 ## Upgrading
 
+With Docker Compose:
+
 ```sh
 docker compose pull
 docker compose up -d
 ```
 
-If you set `GRIMTORRENTER_TAG` to a version number, change it to the new one first.
+With plain Docker, fetch the new image, remove the old container and run the same `docker run`
+command again. Your data is in the `data` folders, not in the container, so removing it loses
+nothing.
+
+```sh
+docker pull ghcr.io/raistlen-grim/grim-torrenter:latest
+docker stop grimtorrenter && docker rm grimtorrenter
+```
+
+If you named a version number rather than `latest`, change it to the new one first.
 
 Your torrents and settings live in the config folder and are picked up again on start, and
 downloaded data is re-verified. Between test builds this is not guaranteed: a new build may

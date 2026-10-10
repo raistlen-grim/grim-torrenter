@@ -34,9 +34,15 @@ that only needs to run a container.
   `COMPOSE_FILE` set in its `.env` to keep building locally.
 - A new package on ghcr.io starts private. It has to be made public once, in the package's
   settings on GitHub, before anyone else can pull it without logging in.
-- The README's quick start fetches `docker-compose.yml` and `.env.example` from the `main`
-  branch, so the repository has to be public and those two files on `main` have to work with
-  the image tagged `latest`.
+- **The README's quick start shows two worked examples, `docker run` and a compose file, with
+  literal values** (revised 2026-10-10, the same day; it first fetched `docker-compose.yml` and
+  `.env.example` from `main` with `curl`). A tester copies one, changes the few values a table
+  explains, and needs neither the repository nor a `.env`. Both examples create the data
+  folders first: a bind-mount source Docker has to create is owned by root, which the
+  unprivileged app can't write to ([[0085-container-user-and-portable-compose]]). The
+  repository's own `docker-compose.yml` keeps its `${VARIABLE:-default}` form for people who
+  clone. The cost is three copies of the same ports, volumes and environment: a change has to
+  be made in the README's two examples and in the compose file.
 - The image is a distribution of the program under its licence (AGPL-3.0). The *Source* link in
   the UI footer already points at the repository; a published image should be built from a
   commit that is pushed there.
@@ -64,6 +70,7 @@ format error" rather than degrading.
 
 ## Verification
 
-Not yet pushed or pulled. To confirm: the image pushes; the package is public; on a machine
-with only `docker-compose.yml`, `docker compose up -d` pulls and starts it; the two-file form
-still builds from source.
+`0.9.0` and `latest` pushed (2026-10-10, linux/amd64) and the package made public; an anonymous
+request to the registry returns both tags. Not yet confirmed: on a machine with only the
+README, each of its two examples pulls and starts it; the two-file form still
+builds from source.

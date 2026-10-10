@@ -1196,8 +1196,10 @@ complete**, per the phased scope in [[0009-phased-scope]]:
   `ghcr.io/raistlen-grim/grim-torrenter:${GRIMTORRENTER_TAG:-latest}` and no longer builds;
   building from source is a second file, `docker-compose.build.yml` (or `COMPOSE_FILE` in
   `.env`). The README's quick start, upgrade and development sections follow. Publishing is by
-  hand for now, one architecture. Not yet pushed or pulled; the package has to be made public
-  on GitHub after the first push. ([[0087-published-image-on-ghcr]])
+  hand for now, one architecture. `0.9.0` and `latest` are pushed (linux/amd64) and the package
+  is public; an anonymous request to the registry returns both. The README's quick start now
+  shows a `docker run` example and a compose example inline, with a table of what to change
+  and why, rather than fetching a file. Not yet pulled and started on a second machine. ([[0087-published-image-on-ghcr]])
 
 - **VPN wording (2026-10-10)** — the Health page's "no incoming connections" hint now names a
   VPN that doesn't forward ports alongside an unforwarded port, and the README says the same in
