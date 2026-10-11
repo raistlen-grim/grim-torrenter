@@ -36,7 +36,13 @@ public record TorrentView(
         /** Ids of the labels on this torrent - ids, not names; the names come from GET
          * /api/labels (and the "labels" WebSocket message), so a rename never changes a torrent
          * row. Empty for a pending magnet. See design_docs/0077. */
-        List<String> labelIds
+        List<String> labelIds,
+        /** True while files this torrent wants are absent from disk and it is waiting to be told
+         * what to do: state is ERROR (or STOPPED if paused meanwhile) and lastError says so. A
+         * recheck downloads them again; removing the torrent is the other way out. A flag as
+         * well as the message so a client can offer those two choices without reading text. See
+         * design_docs/0088. */
+        boolean missingFiles
 ) {
     /** bytesReceived (raw, includes not-yet-verified data - see
      * TorrentSession.bytesReceived()) is separate from bytesDownloaded (verified-complete
@@ -91,7 +97,8 @@ public record TorrentView(
                 session.timeActiveMillis(),
                 session.completedAtEpochMillis(),
                 session.wastedBytes(),
-                session.labelIds());
+                session.labelIds(),
+                session.missingFiles());
     }
 
     /** A magnet still fetching metadata, rendered through the exact same DTO shape a resolved
@@ -124,6 +131,7 @@ public record TorrentView(
                 0,
                 0,
                 0,
-                List.of());
+                List.of(),
+                false);
     }
 }

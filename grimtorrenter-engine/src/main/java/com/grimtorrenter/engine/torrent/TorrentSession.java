@@ -33,6 +33,7 @@ import com.grimtorrenter.engine.piece.PieceManager;
 import com.grimtorrenter.engine.piece.PieceState;
 import com.grimtorrenter.engine.ratelimit.RateLimiters;
 import com.grimtorrenter.engine.storage.FileHandlePool;
+import com.grimtorrenter.engine.storage.StorageException;
 import com.grimtorrenter.engine.storage.TorrentStorage;
 import com.grimtorrenter.engine.tracker.NoOpTrackerClient;
 import com.grimtorrenter.engine.tracker.PeerAddress;
@@ -395,6 +396,14 @@ public final class TorrentSession implements AutoCloseable {
      * trying with backoff. Cleared by stop(), by a successful start, and by fail(). See
      * design_docs/0036's 2026-09-20 addendum. */
     private volatile boolean startFailedRetryable;
+    /** True while files this torrent wants are known to be absent from disk and nothing has
+     * been put back: found at restore, or by a recheck. The session sits in ERROR with a message
+     * saying so and touches neither the disk nor the network until recheck() is called again,
+     * which is the user saying "download them again". See design_docs/0088. */
+    private volatile boolean missingFiles;
+    /** Whether the recheck that clears missingFiles should go on to start the torrent - the
+     * running/paused intent it had, kept up to date by start()/stop() while it waits. */
+    private volatile boolean resumeWhenFilesReturn;
     private volatile boolean startRetryActive;
     /** Identifies the current verification pass - bumped by each recheck() so an earlier,
      * abandoned pass can tell it has been superseded. See verifyThenSettle(). */
@@ -915,8 +924,52 @@ public final class TorrentSession implements AutoCloseable {
                                                boolean utpEnabled,
                                                Supplier<Integer> utpConnectTimeoutSeconds,
                                                FilePriorities filePriorities) throws IOException {
-        TorrentStorage storage = TorrentStorage.create(metadata, downloadDirectory, fileHandlePool);
+        return restoreAsync(metadata, trackerClient, downloadDirectory, ourPeerId, ourListenPort, listener,
+                dhtNode, rateLimiters, fileHandlePool, pieceVerificationLimiter, encryptionMode,
+                seedingLimitOverride, addedAt, dhtReannounceIntervalSeconds, lsdActive, autoStart,
+                persistedLifetimeStats, torrentLimitOverride, maxConnections, utpEnabled,
+                utpConnectTimeoutSeconds, filePriorities, false);
+    }
+
+    /** reportMissingFiles is for a torrent this engine already had (a restart): if any file it
+     * wants is gone from disk, the session comes back in ERROR saying so, with nothing recreated
+     * and nothing downloaded, instead of quietly fetching it all again - see missingFiles and
+     * design_docs/0088. False (every lower-arity overload) keeps the older behaviour of putting
+     * absent files back and verifying, which is what re-adding a torrent over a partly present
+     * directory wants. */
+    public static TorrentSession restoreAsync(TorrentMetadata metadata, TrackerClient trackerClient,
+                                               Path downloadDirectory, PeerId ourPeerId, int ourListenPort,
+                                               TorrentSessionListener listener, DhtNode dhtNode,
+                                               RateLimiters rateLimiters, FileHandlePool fileHandlePool,
+                                               Semaphore pieceVerificationLimiter,
+                                               Supplier<EncryptionMode> encryptionMode,
+                                               SeedingLimitOverride seedingLimitOverride,
+                                               Instant addedAt,
+                                               Supplier<Long> dhtReannounceIntervalSeconds,
+                                               boolean lsdActive,
+                                               boolean autoStart,
+                                               PersistedLifetimeStats persistedLifetimeStats,
+                                               TorrentLimitOverride torrentLimitOverride,
+                                               int maxConnections,
+                                               boolean utpEnabled,
+                                               Supplier<Integer> utpConnectTimeoutSeconds,
+                                               FilePriorities filePriorities,
+                                               boolean reportMissingFiles) throws IOException {
+        TorrentStorage storage = TorrentStorage.open(metadata, downloadDirectory, fileHandlePool);
         PieceManager pieceManager = new PieceManager(metadata, filePriorities);
+        List<Integer> missing = reportMissingFiles ? missingWantedFiles(storage, filePriorities) : List.of();
+        if (!missing.isEmpty()) {
+            // Constructed STOPPED and then moved to ERROR, rather than constructed in ERROR, so
+            // the listener sees the transition like any other failure and records it.
+            TorrentSession session = new TorrentSession(metadata, trackerClient, storage, pieceManager,
+                    ourPeerId, ourListenPort, listener, dhtNode, rateLimiters, pieceVerificationLimiter,
+                    encryptionMode, seedingLimitOverride, TorrentState.STOPPED, addedAt,
+                    dhtReannounceIntervalSeconds, lsdActive, persistedLifetimeStats,
+                    torrentLimitOverride, maxConnections, utpEnabled, utpConnectTimeoutSeconds);
+            session.enterMissingFiles(missing.size(), autoStart);
+            return session;
+        }
+        storage.allocate();
         TorrentSession session = new TorrentSession(metadata, trackerClient, storage, pieceManager,
                 ourPeerId, ourListenPort, listener, dhtNode, rateLimiters, pieceVerificationLimiter,
                 encryptionMode, seedingLimitOverride, TorrentState.VERIFYING, addedAt,
@@ -924,6 +977,27 @@ public final class TorrentSession implements AutoCloseable {
                 torrentLimitOverride, maxConnections, utpEnabled, utpConnectTimeoutSeconds);
         Thread.ofVirtual().start(() -> session.verifyThenSettle(autoStart, session.verificationRun.get()));
         return session;
+    }
+
+    /** Files with a priority other than SKIP that are not on disk. A skipped file is left out on
+     * purpose: deleting one you chose not to download is a reasonable thing to do, and its
+     * absence costs nothing until a piece that overlaps it is written. */
+    private static List<Integer> missingWantedFiles(TorrentStorage storage, FilePriorities filePriorities) {
+        return storage.missingFiles().stream().filter(i -> filePriorities.get(i).isWanted()).toList();
+    }
+
+    private synchronized void enterMissingFiles(int missingCount, boolean resumeWhenFilesReturn) {
+        int total = metadata.files().size();
+        String what = total == 1 ? "The file is"
+                : missingCount == total ? "The files are"
+                : missingCount + " of " + total + " files are";
+        this.missingFiles = true;
+        this.resumeWhenFilesReturn = resumeWhenFilesReturn;
+        this.startFailedRetryable = false;
+        this.lastError = new StorageException(what + " missing from the downloads folder. "
+                + "Force a recheck to download again, or remove the torrent.");
+        LOG.log(System.Logger.Level.WARNING, "Torrent " + metadata.infoHash() + ": " + lastError.getMessage());
+        setState(TorrentState.ERROR);
     }
 
     /**
@@ -986,13 +1060,45 @@ public final class TorrentSession implements AutoCloseable {
      * back to running if it was in any state other than STOPPED when this was called - a paused
      * torrent stays paused. Returns immediately; false (and does nothing) if a verification pass
      * is already running. See design_docs/0082.
+     *
+     * <p>Files the torrent wants that are gone from disk are reported, not recreated: the first
+     * recheck that finds any leaves the session in ERROR saying so, and a recheck made in that
+     * state is what recreates them and verifies, after which they download again. See
+     * design_docs/0088.
      */
     public synchronized boolean recheck() {
         if (state == TorrentState.VERIFYING) {
             return false;
         }
-        boolean resumeAfter = state != TorrentState.STOPPED;
+        boolean resumeAfter = missingFiles ? resumeWhenFilesReturn : state != TorrentState.STOPPED;
+        if (!missingFiles) {
+            // First report, never recreate: a file deleted while the torrent was loaded is the
+            // same situation as one found missing at restore. The next recheck is the go-ahead.
+            List<Integer> missing = missingWantedFiles(storage, pieceManager.filePriorities());
+            if (!missing.isEmpty()) {
+                stop();
+                // A handle still cached for a deleted file would go on reading the old data.
+                closeStorage();
+                pieceManager.resetCompletion();
+                enterMissingFiles(missing.size(), resumeAfter);
+                return true;
+            }
+        }
         stop();
+        if (missingFiles) {
+            try {
+                closeStorage();
+                storage.allocate();
+            } catch (IOException e) {
+                // Still missing, now with the reason they couldn't be put back.
+                resumeWhenFilesReturn = resumeAfter;
+                lastError = e;
+                setState(TorrentState.ERROR);
+                return true;
+            }
+            missingFiles = false;
+            lastError = null;
+        }
         pieceManager.resetCompletion();
         int run = verificationRun.incrementAndGet();
         setState(TorrentState.VERIFYING);
@@ -1037,6 +1143,16 @@ public final class TorrentSession implements AutoCloseable {
      * job for every non-private torrent regardless of tracker kind, via the periodic
      * discoverPeersViaDht() task below. */
     public synchronized void start() {
+        if (missingFiles) {
+            // Nothing on disk to write to, and starting must not be what puts it back - only an
+            // explicit recheck does that. The request is remembered, and a session that had
+            // been paused goes back to showing why it can't run. See design_docs/0088.
+            resumeWhenFilesReturn = true;
+            if (state == TorrentState.STOPPED) {
+                setState(TorrentState.ERROR);
+            }
+            return;
+        }
         if (state != TorrentState.STOPPED && !(state == TorrentState.ERROR && startFailedRetryable)) {
             return;
         }
@@ -1233,6 +1349,13 @@ public final class TorrentSession implements AutoCloseable {
             return;
         }
         startFailedRetryable = false;
+        if (missingFiles) {
+            // A pause while the files are missing: record the intent and go quiet. It never
+            // announced STARTED, so there is no STOPPED to send either.
+            resumeWhenFilesReturn = false;
+            setState(TorrentState.STOPPED);
+            return;
+        }
         // Totals captured now, before the connections they're read from are torn down.
         TrackerRequest stopped = new TrackerRequest(metadata.infoHash(), ourPeerId, ourListenPort,
                 bytesUploaded(), bytesDownloaded(), bytesRemaining(), TrackerEvent.STOPPED, 0);
@@ -2153,6 +2276,11 @@ public final class TorrentSession implements AutoCloseable {
 
     public Throwable lastError() {
         return lastError;
+    }
+
+    /** See the field's own Javadoc. */
+    public boolean missingFiles() {
+        return missingFiles;
     }
 
     /** Null when unknown - see this field's own Javadoc. */

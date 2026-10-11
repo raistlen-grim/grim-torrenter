@@ -1210,6 +1210,16 @@ complete**, per the phased scope in [[0009-phased-scope]]:
   VPN that doesn't forward ports alongside an unforwarded port, and the README says the same in
   its first-start steps and known limitations. Wording only; not yet built or seen.
 
+- **Missing files are reported, not downloaded again (2026-10-10)** — found on the first
+  published build: two torrents whose data had been deleted from the command line came back
+  after a restart and quietly started downloading again, because the config folder is the
+  record of which torrents exist. A torrent restored with files it wants gone from disk now
+  comes back in `ERROR` saying so (`TorrentView.missingFiles`), with nothing recreated or
+  downloaded; *Force recheck* is the go-ahead to download again, Resume is deliberately not. A
+  recheck that finds a file deleted ends in the same state instead of a raw I/O error. Skipped
+  files don't count. Backend only; the UI shows it through the existing error text. Not yet
+  built, tested or run. ([[0088-missing-files-are-reported]])
+
 **Not yet built** (the rest of Phase 3):
 
 - Multiple/day-of-week-specific rate-limit schedule rules — the one remaining natural addition

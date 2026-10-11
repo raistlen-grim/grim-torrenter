@@ -64,6 +64,10 @@ a surfaced "files missing" error. Real clients (qBittorrent) detect and surface 
 distinct state - worth doing if it proves to matter in practice, but not built here: it's a new
 UX affordance beyond what was asked, not a consequence of this change's actual correctness.
 
+**Revised 2026-10-10:** it did prove to matter - see [[0088-missing-files-are-reported]]. A
+torrent restored with wanted files gone is now reported as such and left alone until the user
+forces a recheck; the silent re-download described above no longer happens.
+
 ## Path resolution: `resolveDownloadDirectory` rewritten around the config-side record
 
 Today's version scans candidate directory names (`name`, `name-2`, ...) and reads each
@@ -151,7 +155,7 @@ instead of redownloading) - purely updating *where* those facts are checked on d
 - **No hostile-peer angle**: path resolution and marker I/O are driven entirely by local state
   (torrent metadata's own declared name, this engine's own prior records) - no peer/tracker
   input reaches this path.
-- **Accepted drift risk**: covered above - a manually-deleted download path silently triggers a
+- **Accepted drift risk** (no longer accepted - see [[0088-missing-files-are-reported]]): covered above - a manually-deleted download path silently triggers a
   full re-download rather than surfacing an error. Explicitly accepted, not a regression
   relative to a guarantee this codebase previously made (today's colocated markers would
   simply vanish along with a manually-deleted folder instead, which is arguably *more* silent,

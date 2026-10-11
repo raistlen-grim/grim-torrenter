@@ -15,6 +15,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -128,6 +129,48 @@ class TorrentStorageTest {
         try (TorrentStorage storage = TorrentStorage.create(metadata, tempDir)) {
             assertThrows(StorageException.class, () -> storage.read(100, 1));
             assertThrows(StorageException.class, () -> storage.write(150, new byte[]{1}));
+        }
+    }
+
+    private static MultiFileTorrent twoFileMetadata() {
+        return new MultiFileTorrent("torrent-dir",
+                List.of(new TorrentFile(List.of("a.bin"), 100), new TorrentFile(List.of("sub", "b.bin"), 100)),
+                100, fakePieceHashes(2), InfoHash.of(fill(20, 6)), null, List.of());
+    }
+
+    /** design_docs/0088: looking must not create anything - that is what lets a restore notice
+     * deleted files instead of quietly putting empty ones back. */
+    @Test
+    void openCreatesNothingAndReportsEveryFileMissingUntilAllocated(@TempDir Path tempDir) throws IOException {
+        try (TorrentStorage storage = TorrentStorage.open(twoFileMetadata(), tempDir, FileHandlePool.unbounded())) {
+            assertEquals(List.of(0, 1), storage.missingFiles());
+            assertFalse(Files.exists(tempDir.resolve("torrent-dir")));
+
+            storage.allocate();
+
+            assertEquals(List.of(), storage.missingFiles());
+            assertEquals(100, Files.size(tempDir.resolve("torrent-dir").resolve("sub").resolve("b.bin")));
+        }
+    }
+
+    @Test
+    void missingFilesNamesOnlyTheFilesThatAreGone(@TempDir Path tempDir) throws IOException {
+        try (TorrentStorage storage = TorrentStorage.create(twoFileMetadata(), tempDir)) {
+            Files.delete(tempDir.resolve("torrent-dir").resolve("sub").resolve("b.bin"));
+
+            assertEquals(List.of(1), storage.missingFiles());
+        }
+    }
+
+    @Test
+    void allocateLeavesDataAlreadyOnDiskAlone(@TempDir Path tempDir) throws IOException {
+        try (TorrentStorage storage = TorrentStorage.create(twoFileMetadata(), tempDir)) {
+            byte[] data = fill(100, 9);
+            storage.write(0, data);
+
+            storage.allocate();
+
+            assertArrayEquals(data, storage.read(0, 100));
         }
     }
 }

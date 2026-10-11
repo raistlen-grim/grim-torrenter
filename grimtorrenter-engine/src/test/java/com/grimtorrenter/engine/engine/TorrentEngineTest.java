@@ -680,6 +680,37 @@ class TorrentEngineTest {
         awaitState(restored, TorrentState.STOPPED);
     }
 
+    /** design_docs/0088: deleting a torrent's data from the downloads folder by hand does not
+     * remove the torrent, so after a restart it must say the files are gone - not put an empty
+     * file back and download everything again. A recheck is what brings it back. */
+    @Test
+    void restoreOfATorrentWhoseDataWasDeletedReportsMissingFilesUntilRechecked(@TempDir Path tempDir)
+            throws IOException, InterruptedException {
+        String announceUrl = startFakeTrackerServer();
+        byte[] torrentBytes = torrentBytes("file.bin", fill(20, 5), announceUrl);
+
+        TorrentEngine firstEngine = new TorrentEngine(tempDir, 6881, new NoOpListener());
+        TorrentSession original = firstEngine.addTorrent(torrentBytes).session();
+        InfoHash infoHash = original.metadata().infoHash();
+        original.stop();
+        Files.delete(tempDir.resolve("file.bin"));
+
+        TorrentEngine secondEngine = new TorrentEngine(tempDir, 6881, new NoOpListener());
+        secondEngine.restore();
+
+        TorrentSession restored = secondEngine.getTorrent(infoHash).orElseThrow();
+        assertEquals(TorrentState.ERROR, restored.state());
+        assertTrue(restored.missingFiles());
+        assertFalse(Files.exists(tempDir.resolve("file.bin")));
+
+        assertTrue(secondEngine.recheckTorrent(infoHash));
+
+        awaitState(restored, TorrentState.DOWNLOADING);
+        assertFalse(restored.missingFiles());
+        assertTrue(Files.exists(tempDir.resolve("file.bin")));
+        restored.stop();
+    }
+
     @Test
     void restoreSkipsDirectoriesWithoutATorrentFileMarker(@TempDir Path tempDir) throws IOException {
         // restore() scans configDirectory's torrents subdirectory, not the download

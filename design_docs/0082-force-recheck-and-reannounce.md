@@ -83,8 +83,10 @@ No confirmation dialog for recheck - it interrupts the torrent but destroys noth
 - **Pausing mid-recheck** (possible through the API; the UI disables pause while verifying)
   abandons the pass, as at restore time. Pieces not yet re-verified count as missing and would be
   downloaded again on resume. Rechecking again, or a restart, puts it right.
-- **A file that no longer exists** makes the pass fail with an I/O error and the torrent goes to
-  `ERROR`: files are only created when the session is, not on demand. A restart recreates them.
+- ~~**A file that no longer exists** makes the pass fail with an I/O error and the torrent goes to
+  `ERROR`: files are only created when the session is, not on demand. A restart recreates them.~~
+  Replaced 2026-10-10 by [[0088-missing-files-are-reported]]: the recheck reports the files as
+  missing, and a second recheck recreates them and downloads again.
 - **No new `COMPLETED` event** when a rechecked torrent finishes again, and `completedAtEpochMillis`
   keeps its original value - the same suppression that stops a restart re-recording completion
   ([[0055-library-events]]).

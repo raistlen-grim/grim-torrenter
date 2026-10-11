@@ -2385,6 +2385,156 @@ class TorrentSessionTest {
         assertFalse(session.reannounceNow(), "stopped");
     }
 
+    /** restoreAsync() the way TorrentEngine.restore() calls it: for a torrent it already had, so
+     * files gone from disk are reported rather than recreated. See design_docs/0088. */
+    private static TorrentSession restoreReportingMissingFiles(TorrentMetadata metadata, FakeTrackerClient tracker,
+                                                                Path downloadDirectory, RecordingListener listener,
+                                                                FilePriorities priorities, boolean autoStart)
+            throws IOException {
+        return TorrentSession.restoreAsync(metadata, tracker, downloadDirectory, fakeLocalPeerId(), 6881,
+                listener, null, RateLimiters.unlimited(), FileHandlePool.unbounded(),
+                new Semaphore(Integer.MAX_VALUE), () -> EncryptionMode.DISABLED, SeedingLimitOverride.INHERIT,
+                Instant.now(), () -> 300L, false, autoStart, TorrentSession.PersistedLifetimeStats.NONE,
+                TorrentLimitOverride.INHERIT, 30, false, () -> 2, priorities, true);
+    }
+
+    /** design_docs/0088: the reason for the feature - a torrent whose data was deleted by hand
+     * comes back saying so, and neither puts empty files back nor starts downloading again. */
+    @Test
+    void restoreWithItsFileDeletedReportsMissingFilesAndRecreatesAndAnnouncesNothing(@TempDir Path tempDir)
+            throws Exception {
+        TorrentMetadata metadata = singlePieceMetadata(fill(20, 1));
+        FakeTrackerClient tracker = new FakeTrackerClient();
+        RecordingListener listener = new RecordingListener();
+
+        TorrentSession session = restoreReportingMissingFiles(metadata, tracker, tempDir, listener,
+                FilePriorities.allMedium(1), true);
+
+        assertEquals(TorrentState.ERROR, session.state());
+        assertTrue(session.missingFiles());
+        assertTrue(session.lastError().getMessage().startsWith("The file is missing from the downloads folder"),
+                session.lastError().getMessage());
+        assertEquals(List.of(TorrentState.ERROR), listener.stateChanges);
+
+        // Resume is not the go-ahead - only a recheck is.
+        session.start();
+        Thread.sleep(100);
+
+        assertEquals(TorrentState.ERROR, session.state());
+        assertFalse(Files.exists(tempDir.resolve("file.bin")));
+        assertTrue(tracker.requests.isEmpty());
+    }
+
+    /** design_docs/0088: a recheck in that state is the user saying "download it again". */
+    @Test
+    void recheckOfATorrentWithMissingFilesRecreatesThemAndDownloadsAgain(@TempDir Path tempDir) throws Exception {
+        TorrentMetadata metadata = singlePieceMetadata(fill(20, 1));
+        TorrentSession session = restoreReportingMissingFiles(metadata, new FakeTrackerClient(), tempDir,
+                new RecordingListener(), FilePriorities.allMedium(1), true);
+        try {
+            assertTrue(session.recheck());
+
+            awaitState(session, TorrentState.DOWNLOADING);
+            assertFalse(session.missingFiles());
+            assertNull(session.lastError());
+            assertEquals(20, Files.size(tempDir.resolve("file.bin")));
+            assertEquals(0, session.completedPieceCount());
+        } finally {
+            session.stop();
+        }
+    }
+
+    /** design_docs/0088: the torrent keeps the running/paused intent it had - one that was paused
+     * when its files went missing is rechecked but not started, and pausing while it waits
+     * counts the same. */
+    @Test
+    void aPausedTorrentWithMissingFilesIsNotStartedByTheRecheck(@TempDir Path tempDir) throws Exception {
+        TorrentMetadata metadata = singlePieceMetadata(fill(20, 1));
+        FakeTrackerClient tracker = new FakeTrackerClient();
+        TorrentSession session = restoreReportingMissingFiles(metadata, tracker, tempDir,
+                new RecordingListener(), FilePriorities.allMedium(1), false);
+        assertEquals(TorrentState.ERROR, session.state());
+
+        assertTrue(session.recheck());
+
+        awaitState(session, TorrentState.STOPPED);
+        Thread.sleep(100);
+        assertEquals(TorrentState.STOPPED, session.state());
+        assertFalse(session.missingFiles());
+        assertTrue(Files.exists(tempDir.resolve("file.bin")));
+        assertTrue(tracker.requests.isEmpty(), "a paused torrent's recheck must not announce anything");
+
+        TorrentSession pausedWhileWaiting = restoreReportingMissingFiles(
+                new SingleFileTorrent("other.bin", 20, 20, new PieceHashes(sha1(fill(20, 2))),
+                        InfoHash.of(fill(20, 10)), null, List.of()),
+                tracker, tempDir, new RecordingListener(), FilePriorities.allMedium(1), true);
+        pausedWhileWaiting.stop();
+        assertEquals(TorrentState.STOPPED, pausedWhileWaiting.state());
+        assertTrue(pausedWhileWaiting.missingFiles());
+
+        assertTrue(pausedWhileWaiting.recheck());
+
+        awaitState(pausedWhileWaiting, TorrentState.STOPPED);
+        Thread.sleep(100);
+        assertEquals(TorrentState.STOPPED, pausedWhileWaiting.state());
+        assertTrue(tracker.requests.isEmpty());
+    }
+
+    /** design_docs/0088: only files the torrent wants count. One of two wanted files gone is
+     * reported with a count; the same file gone while skipped is not reported at all. */
+    @Test
+    void onlyWantedFilesCountAsMissing(@TempDir Path tempDir) throws Exception {
+        byte[] content = fill(20, 3);
+        TorrentMetadata metadata = straddlingBoundaryMultiFileMetadata(content);
+        Path dir = tempDir.resolve("multi");
+        Files.createDirectories(dir);
+        Files.write(dir.resolve("a.bin"), Arrays.copyOfRange(content, 0, 10));
+
+        TorrentSession bothWanted = restoreReportingMissingFiles(metadata, new FakeTrackerClient(), tempDir,
+                new RecordingListener(), FilePriorities.allMedium(2), false);
+        assertTrue(bothWanted.missingFiles());
+        assertTrue(bothWanted.lastError().getMessage().startsWith("1 of 2 files are missing"),
+                bothWanted.lastError().getMessage());
+        assertFalse(Files.exists(dir.resolve("b.bin")));
+
+        TorrentSession secondSkipped = restoreReportingMissingFiles(metadata, new FakeTrackerClient(), tempDir,
+                new RecordingListener(), new FilePriorities(List.of(FilePriority.MEDIUM, FilePriority.SKIP)), false);
+        awaitState(secondSkipped, TorrentState.STOPPED);
+        assertFalse(secondSkipped.missingFiles());
+        assertEquals(1, secondSkipped.completedPieceCount(), "piece 0 lies wholly inside the file still on disk");
+    }
+
+    /** design_docs/0088: a file deleted while the torrent is loaded gets the same treatment when
+     * a recheck finds it - reported first, recreated only by the recheck after that. Replaces
+     * the old outcome, a raw I/O error. */
+    @Test
+    void recheckThatFindsAFileDeletedReportsItAndOnlyTheNextRecheckDownloadsAgain(@TempDir Path tempDir)
+            throws Exception {
+        byte[] content = fill(20, 1);
+        Files.write(tempDir.resolve("file.bin"), content);
+        TorrentSession session = TorrentSession.restoreAsync(singlePieceMetadata(content), new FakeTrackerClient(),
+                tempDir, fakeLocalPeerId(), 6881, new RecordingListener(), null, true);
+        try {
+            awaitState(session, TorrentState.SEEDING);
+            Files.delete(tempDir.resolve("file.bin"));
+
+            assertTrue(session.recheck());
+
+            assertEquals(TorrentState.ERROR, session.state());
+            assertTrue(session.missingFiles());
+            assertEquals(0, session.completedPieceCount());
+            assertFalse(Files.exists(tempDir.resolve("file.bin")));
+
+            assertTrue(session.recheck());
+
+            awaitState(session, TorrentState.DOWNLOADING);
+            assertFalse(session.missingFiles());
+            assertEquals(0, session.completedPieceCount(), "the recreated file is empty, not the old data");
+        } finally {
+            session.stop();
+        }
+    }
+
     private static void awaitState(TorrentSession session, TorrentState expected) throws InterruptedException {
         long deadline = System.currentTimeMillis() + 5000;
         while (session.state() != expected && System.currentTimeMillis() < deadline) {

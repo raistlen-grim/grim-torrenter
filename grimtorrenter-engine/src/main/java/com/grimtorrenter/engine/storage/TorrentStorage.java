@@ -48,13 +48,20 @@ public final class TorrentStorage implements Closeable {
 
     public static TorrentStorage create(TorrentMetadata metadata, Path baseDirectory, FileHandlePool pool)
             throws IOException {
+        TorrentStorage storage = open(metadata, baseDirectory, pool);
+        storage.allocate();
+        return storage;
+    }
+
+    /** Works out where every file lives without touching the disk - nothing is created. For a
+     * caller that needs to look before it allocates: restoring a torrent whose files may have
+     * been deleted (missingFiles()), where create()'s pre-allocation would quietly put empty
+     * files back. Call allocate() before the first read()/write(). See design_docs/0088. */
+    public static TorrentStorage open(TorrentMetadata metadata, Path baseDirectory, FileHandlePool pool) {
         List<FileSlice> slices = new ArrayList<>();
         switch (metadata) {
-            case SingleFileTorrent single -> {
-                Files.createDirectories(baseDirectory);
-                Path filePath = baseDirectory.resolve(single.name());
-                slices.add(preallocate(filePath, 0, single.length()));
-            }
+            case SingleFileTorrent single ->
+                    slices.add(new FileSlice(0, single.length(), baseDirectory.resolve(single.name())));
             case MultiFileTorrent multi -> {
                 Path torrentDir = baseDirectory.resolve(multi.name());
                 long offset = 0;
@@ -63,8 +70,7 @@ public final class TorrentStorage implements Closeable {
                     for (String segment : file.pathSegments()) {
                         filePath = filePath.resolve(segment);
                     }
-                    Files.createDirectories(filePath.getParent());
-                    slices.add(preallocate(filePath, offset, file.length()));
+                    slices.add(new FileSlice(offset, file.length(), filePath));
                     offset += file.length();
                 }
             }
@@ -72,16 +78,35 @@ public final class TorrentStorage implements Closeable {
         return new TorrentStorage(slices, pool);
     }
 
-    /** setLength pre-allocates (sparse on most filesystems) so writes at any offset are valid
+    /** Indexes (in the torrent's own file order) of the files that don't exist on disk. Every
+     * file is created when a torrent is added, so one that is absent later was removed by
+     * something else - or the directory it lives in is not there at all, such as a disk that
+     * isn't mounted. */
+    public List<Integer> missingFiles() {
+        List<Integer> missing = new ArrayList<>();
+        for (int i = 0; i < slices.size(); i++) {
+            if (!Files.isRegularFile(slices.get(i).path())) {
+                missing.add(i);
+            }
+        }
+        return missing;
+    }
+
+    /** Creates every file and its parent directories and sets each to its full length. Safe to
+     * repeat: a file already at its length is left as it is, data included.
+     *
+     * <p>setLength pre-allocates (sparse on most filesystems) so writes at any offset are valid
      * immediately - blocks arrive out of order from different peers, not sequentially. Opens
      * its own short-lived RandomAccessFile rather than going through the pool - this runs
-     * once at construction, before there's anything worth caching, and has no reason to leave
-     * anything open afterward. */
-    private static FileSlice preallocate(Path path, long startOffset, long length) throws IOException {
-        try (RandomAccessFile raf = new RandomAccessFile(path.toFile(), "rw")) {
-            raf.setLength(length);
+     * before there's anything worth caching, and has no reason to leave anything open
+     * afterward. */
+    public void allocate() throws IOException {
+        for (FileSlice slice : slices) {
+            Files.createDirectories(slice.path().getParent());
+            try (RandomAccessFile raf = new RandomAccessFile(slice.path().toFile(), "rw")) {
+                raf.setLength(slice.length());
+            }
         }
-        return new FileSlice(startOffset, length, path);
     }
 
     public void write(long offset, byte[] data) throws IOException {

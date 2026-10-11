@@ -1703,7 +1703,9 @@ public final class TorrentEngine {
      * and re-registers each one. See design_docs/0026/0065: every restored session is
      * registered - and therefore visible to callers - immediately in TorrentSession's
      * VERIFYING state, before its on-disk data has actually been re-hashed; the re-hash and
-     * any resulting auto-start happen in the background. A directory that fails to restore
+     * any resulting auto-start happen in the background. The exception is a torrent whose
+     * files are missing from disk: it is registered in ERROR, saying so, and nothing is
+     * recreated or downloaded until the user asks (design_docs/0088). A directory that fails to restore
      * (corrupt .torrent bytes, no usable tracker, a missing download-path marker, ...) is
      * logged and skipped rather than aborting the rest of the scan.
      */
@@ -1756,7 +1758,10 @@ public final class TorrentEngine {
                     perTorrentRateLimiters, fileHandlePool, pieceVerificationLimiter, encryptionMode,
                     seedingLimitOverride, addedAt, dhtReannounceIntervalSeconds, lsdService != null, running,
                     persistedLifetimeStats, torrentLimitOverride, effectiveMaxConnections,
-                    effectiveUtpEnabled(), utpConnectTimeoutSeconds, filePriorities);
+                    effectiveUtpEnabled(), utpConnectTimeoutSeconds, filePriorities,
+                    // A torrent we already had: files gone from disk are reported, not quietly
+                    // downloaded again. See design_docs/0088.
+                    true);
             sessionRef.set(session);
             session.setLabelIds(readLabelIdsMarker(configTorrentDirectory));
             session.setIpFilter(blocklist);

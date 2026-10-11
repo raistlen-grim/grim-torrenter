@@ -178,8 +178,10 @@ Please don't report these as bugs.
   slow. Pausing is immediate.
 - **You can't choose files, labels or a location when adding**, and a torrent's data can't be
   moved afterwards. Set file priorities from the Files tab once it's added.
-- **A recheck fails with an error if a file has been deleted from disk.** Restarting the
-  container recreates the file and re-verifies.
+- **Deleting a torrent's files from the downloads folder doesn't remove the torrent.** After a
+  restart or a recheck it shows an error saying the files are missing, and downloads nothing.
+  Remove it from the list, or use *Force recheck* to download the files again. A file deleted
+  while its torrent is running isn't noticed until then.
 - **The UI is laid out for a desktop browser.** It is not adapted to phones.
 - **With a SOCKS5 proxy, DHT, µTP, local discovery and incoming connections are switched off**
   by default, so nothing bypasses the proxy. Changing that needs a restart.
