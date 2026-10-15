@@ -131,6 +131,7 @@ const HEALTH_CHECK_DISPLAY: Record<string, { label: string; icon: string }> = {
   watch: { label: 'Watch folder', icon: 'pi-folder-open' },
   freeSpace: { label: 'Free space', icon: 'pi-database' },
   incoming: { label: 'Incoming connections', icon: 'pi-sign-in' },
+  trackers: { label: 'Trackers', icon: 'pi-megaphone' },
   proxy: { label: 'Proxy', icon: 'pi-globe' },
   blocklist: { label: 'IP blocklist', icon: 'pi-ban' },
   auth: { label: 'Password', icon: 'pi-lock' },

@@ -10,8 +10,10 @@ import com.grimtorrenter.engine.tracker.PeerId;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayOutputStream;
 import java.net.InetAddress;
 import java.net.Socket;
+import java.net.SocketException;
 import java.security.SecureRandom;
 import java.util.Optional;
 import java.util.Set;
@@ -159,7 +161,12 @@ class PeerServerTest {
     }
 
     /** REQUIRED mode rejects anything that peeks as a plaintext handshake outright, rather
-     * than routing it through - see design_docs/0052. */
+     * than routing it through - see design_docs/0052.
+     *
+     * <p>The server decides from the first 20 bytes and closes straight away, so the handshake
+     * goes out in one write - written piece by piece, a later piece could hit the closed socket
+     * and fail with a broken pipe. Closing with the rest of the handshake still unread makes the
+     * server's side send a reset, so a reset counts as rejected as much as end-of-stream does. */
     @Test
     void requiredEncryptionRejectsAPlaintextConnectionAttempt() throws Exception {
         InfoHash knownHash = infoHashOf(1);
@@ -169,9 +176,15 @@ class PeerServerTest {
                 () -> EncryptionMode.REQUIRED, () -> Set.of(knownHash));
 
         try (Socket client = new Socket(InetAddress.getLoopbackAddress(), server.port())) {
-            PeerWireCodec.writeHandshake(client.getOutputStream(), Handshake.of(knownHash, peerIdOf(50)));
+            ByteArrayOutputStream handshake = new ByteArrayOutputStream();
+            PeerWireCodec.writeHandshake(handshake, Handshake.of(knownHash, peerIdOf(50)));
+            client.getOutputStream().write(handshake.toByteArray());
 
-            assertEquals(-1, client.getInputStream().read());
+            try {
+                assertEquals(-1, client.getInputStream().read());
+            } catch (SocketException reset) {
+                // Rejected with a reset - see above.
+            }
         }
     }
 }

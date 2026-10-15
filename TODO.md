@@ -418,3 +418,12 @@ dialling and the retry above make that case workable; still open:
   automatic port mapping item above.
 - BEP 55 hole punching, so two firewalled peers can connect. Large; post-beta.
 - Re-announcing early when a torrent has few peers, within what each tracker allows.
+- **A VPN on the Docker host can cut the container off entirely** (found 2026-10-15). With NordVPN
+  connected on the server, the container on Docker's default bridge network reached nothing (every
+  tracker failed, no peers), while the host itself reached ordinary websites - forwarded traffic
+  from the bridge was not getting through the VPN. `network_mode: host` fixed it: the same Ubuntu
+  ISO then had 24 peers (21 from DHT, 3 from PEX, all outbound) and 155 MB within about two minutes,
+  with the Health page correctly showing no incoming connections. Meanwhile the app's Health page
+  read `OK` and tracker errors said only "failed". All three follow-ups done the same day
+  (tracker error reasons, a Health trackers check, a README section) - see `design_docs/0089`.
+  Still open: whether a VPN container such as gluetun works as the alternative.

@@ -126,7 +126,7 @@ public final class UdpTrackerClient implements TrackerClient {
             long connectionId = connect(datagrams);
             return sendAnnounce(datagrams, connectionId, request);
         } catch (IOException e) {
-            throw new TrackerException("UDP tracker request to " + announceUrl + " failed", e);
+            throw new TrackerException("UDP tracker request to " + announceUrl + " failed: " + TrackerErrors.reason(e), e);
         } catch (BufferUnderflowException e) {
             throw new TrackerException("UDP tracker " + announceUrl + " sent a malformed (too short) response", e);
         }

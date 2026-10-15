@@ -1141,8 +1141,8 @@ complete**, per the phased scope in [[0009-phased-scope]]:
   for trackers, proxied fetches and the blocklist, and a new `v` field in the BEP 10 extended
   handshake so other clients can name this one. `GET /api/system/version` reports the build and
   the UI footer shows it. The client code was checked on 2026-10-10: `GT` turned out to be the
-  default of the Go library `anacrolix/torrent`, so it is now `GM` (`-GM0900-` for 0.9.0); not yet
-  built or tested. Test-verified (the build and all unit tests pass, 2026-10-02);
+  default of the Go library `anacrolix/torrent`, so it is now `GM`, from 0.9.1 on; the build and
+  all unit tests pass (2026-10-13). Test-verified (the build and all unit tests pass, 2026-10-02);
   the footer version confirmed in the browser by the user on the published 0.9.0 image (2026-10-10). ([[0084-client-identification]])
 
 - **Container fixes for outside testers (2026-10-02)** — three things a first run would trip on.
@@ -1217,8 +1217,28 @@ complete**, per the phased scope in [[0009-phased-scope]]:
   comes back in `ERROR` saying so (`TorrentView.missingFiles`), with nothing recreated or
   downloaded; *Force recheck* is the go-ahead to download again, Resume is deliberately not. A
   recheck that finds a file deleted ends in the same state instead of a raw I/O error. Skipped
-  files don't count. Backend only; the UI shows it through the existing error text. Not yet
-  built, tested or run. ([[0088-missing-files-are-reported]])
+  files don't count. Backend only; the UI shows it through the existing error text.
+  Test-verified (the build and all unit tests pass, 2026-10-13) and deployed as 0.9.2. Seen
+  working there for the recheck path (2026-10-13): a torrent whose folder was deleted, then
+  rechecked, went to `ERROR` with the message and `missingFiles` true, an `ERROR` event was
+  recorded, and nothing was recreated on disk (checked by the user). The check at startup was then
+  confirmed by restarting the container: the same torrent came back in `ERROR` with the flag
+  set and no folder recreated (checked by the user). A second recheck then cleared the state and
+  left the torrent paused at 0 pieces, as it had been paused before, with its folder recreated;
+  resuming it then downloaded normally (both checked by the user). ([[0088-missing-files-are-reported]])
+
+- **Behind a VPN on the Docker host: tracker error reasons, a Health trackers check, README
+  (2026-10-15)** — found by testing with NordVPN connected on the server: the container on
+  Docker's bridge network could reach nothing, yet Health read `OK` and tracker errors said only
+  "failed". Host networking fixed the deployment (the Ubuntu ISO then reached 24 peers, all
+  outbound). In the app: tracker errors now say why (timed out, connection reset, could not
+  resolve, TLS failed...); Health's connectivity group gains a `trackers` row that warns when
+  every one of two or more trackers in use is failing; the incoming row no longer promises that
+  downloads still work; and the README has a "Running behind a VPN" section with the
+  host-networking fix. Test-verified (the build and all unit tests pass, 2026-10-16); not yet
+  deployed. The same run turned up a flaky `PeerServerTest` (the plaintext handshake written in
+  pieces could hit the socket the server had already closed); the test now writes it in one
+  piece and accepts a reset as a rejection. ([[0089-tracker-error-reasons-and-connectivity-check]])
 
 **Not yet built** (the rest of Phase 3):
 

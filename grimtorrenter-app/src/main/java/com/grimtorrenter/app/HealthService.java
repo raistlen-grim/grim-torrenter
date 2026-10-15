@@ -11,6 +11,9 @@ import com.grimtorrenter.engine.events.LibraryEvent;
 import com.grimtorrenter.engine.proxy.Socks5;
 import com.grimtorrenter.engine.settings.Settings;
 import com.grimtorrenter.engine.settings.SettingsStore;
+import com.grimtorrenter.engine.torrent.TorrentSession;
+import com.grimtorrenter.engine.torrent.TorrentState;
+import com.grimtorrenter.engine.tracker.TrackerStatus;
 import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
@@ -24,8 +27,10 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -172,7 +177,7 @@ public class HealthService {
     }
 
     private Group connectivityGroup() {
-        return new Group("connectivity", List.of(incomingCheck(), proxyCheck()));
+        return new Group("connectivity", List.of(incomingCheck(), trackersCheck(), proxyCheck()));
     }
 
     private Check incomingCheck() {
@@ -194,10 +199,75 @@ public class HealthService {
         if (seen == 0) {
             return new Check("incoming", State.INFO, "None received since start. If this stays at none "
                     + "while torrents are active, the listen port is probably not forwarded, or this "
-                    + "machine is behind a VPN that doesn't forward ports. Downloads still work.");
+                    + "machine is behind a VPN that doesn't forward ports. Downloads can still work over "
+                    + "outgoing connections - see Trackers below.");
         }
         return new Check("incoming", State.OK, String.format(Locale.ROOT,
                 "%,d connected now. Since start: %,d received, %,d accepted", active, seen, accepted));
+    }
+
+    private Check trackersCheck() {
+        List<List<TrackerStatus>> running = torrentEngine.listTorrents().stream()
+                .filter(s -> s.state() == TorrentState.DOWNLOADING || s.state() == TorrentState.SEEDING)
+                .map(TorrentSession::trackers)
+                .filter(trackers -> !trackers.isEmpty())
+                .toList();
+        return trackersCheck(running);
+    }
+
+    /** Evidence from what is already happening, like incoming: the trackers of the torrents that
+     * are running right now, each tracker counted once however many torrents share it. One
+     * tracker answering is proof the network lets tracker traffic out. None answering, across two
+     * or more different trackers, is the pattern a firewall or a VPN produces - a single dead
+     * tracker can't be told apart from that, so one alone stays information. A warning rather
+     * than a failure: a set of trackers that have all died for real looks the same, and DHT can
+     * still be finding peers. See design_docs/0089. */
+    static Check trackersCheck(List<List<TrackerStatus>> runningTorrentTrackers) {
+        Map<String, TrackerStatus> byUrl = new LinkedHashMap<>();
+        for (List<TrackerStatus> trackers : runningTorrentTrackers) {
+            for (TrackerStatus tracker : trackers) {
+                byUrl.merge(tracker.url(), tracker, HealthService::moreInformative);
+            }
+        }
+        if (byUrl.isEmpty()) {
+            return new Check("trackers", State.DISABLED, "No running torrent uses a tracker");
+        }
+        long working = byUrl.values().stream().filter(t -> t.state() == TrackerStatus.State.WORKING).count();
+        long failing = byUrl.values().stream().filter(t -> t.state() == TrackerStatus.State.ERROR).count();
+        int total = byUrl.size();
+        if (working > 0) {
+            return new Check("trackers", State.OK, String.format(Locale.ROOT,
+                    "%d of %d answering", working, total));
+        }
+        if (failing < total) {
+            return new Check("trackers", State.INFO, "Waiting for the first announce");
+        }
+        String latest = byUrl.values().stream()
+                .map(TrackerStatus::lastError)
+                .filter(e -> e != null && !e.isBlank())
+                .findFirst()
+                .map(e -> " Latest: " + e)
+                .orElse("");
+        if (total == 1) {
+            return new Check("trackers", State.INFO, "The only tracker in use is not answering." + latest);
+        }
+        return new Check("trackers", State.WARNING, String.format(Locale.ROOT,
+                "None of the %d trackers in use is answering. If this lasts, something on this machine's "
+                        + "network is probably blocking them - a firewall, or a VPN (see the README).", total)
+                + latest);
+    }
+
+    /** WORKING beats ERROR beats UNKNOWN when torrents disagree about a shared tracker. */
+    private static TrackerStatus moreInformative(TrackerStatus a, TrackerStatus b) {
+        return rank(b.state()) > rank(a.state()) ? b : a;
+    }
+
+    private static int rank(TrackerStatus.State state) {
+        return switch (state) {
+            case WORKING -> 2;
+            case ERROR -> 1;
+            case UNKNOWN -> 0;
+        };
     }
 
     private Check proxyCheck() {

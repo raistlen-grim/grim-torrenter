@@ -136,3 +136,6 @@ writable downloads directory; `healthz` answers UP. Not covered: the unwritable-
 end to end (needs a non-root, read-only directory), the proxy probe and its cache, the
 `STORAGE_UNWRITABLE` event, `healthz` without a token while authentication is on, and the page
 itself.
+
+**Addendum (2026-10-15):** the connectivity group gained a `trackers` check, and the incoming
+row's hint no longer says downloads still work - see [[0089-tracker-error-reasons-and-connectivity-check]].

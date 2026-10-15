@@ -63,7 +63,7 @@ class SystemResourceTest {
                 .body("groups.find { it.name == 'storage' }.checks.find { it.name == 'downloads' }.state",
                         org.hamcrest.Matchers.equalTo("OK"))
                 .body("groups.find { it.name == 'connectivity' }.checks.name",
-                        org.hamcrest.Matchers.contains("incoming", "proxy"))
+                        org.hamcrest.Matchers.contains("incoming", "trackers", "proxy"))
                 .body("groups.find { it.name == 'protection' }.checks.name",
                         org.hamcrest.Matchers.contains("blocklist", "auth"))
                 .body("groups.find { it.name == 'build' }.checks.name",

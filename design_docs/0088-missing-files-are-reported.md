@@ -129,4 +129,12 @@ paused while waiting) is rechecked but not started; a missing skipped file is no
 a missing wanted one is counted; a recheck that finds a file deleted reports it and only the
 next one downloads again. `TorrentEngineTest`: a restart after the data was deleted reports
 missing files until rechecked. Not covered: `TorrentView.missingFiles` in the REST payload, the
-recreate-fails path, and the page itself. Not yet built or run.
+recreate-fails path, and the page itself. The build and all unit tests pass (2026-10-13);
+deployed as 0.9.2. Confirmed there for the recheck path: a torrent whose folder was deleted and
+then rechecked went to `ERROR` with the message, `missingFiles` true and an `ERROR` event, and
+nothing was recreated on disk (checked by the user). The
+check at startup was confirmed by restarting the container: the same torrent came back in
+`ERROR` with the flag set and no folder recreated (checked by the user). A second recheck then
+cleared the state and left the torrent paused at 0 pieces, as it had been paused before, with
+its folder recreated; resuming it then downloaded normally (both checked by the user). Not seen
+for real: a torrent that was running going on to download after that recheck.

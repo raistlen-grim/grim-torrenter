@@ -5,6 +5,7 @@ import com.grimtorrenter.app.HealthView.Group;
 import com.grimtorrenter.app.HealthView.State;
 import com.grimtorrenter.engine.blocklist.Blocklist;
 import com.grimtorrenter.engine.engine.TorrentEngine;
+import com.grimtorrenter.engine.tracker.TrackerStatus;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -108,5 +109,41 @@ class HealthServiceTest {
         assertEquals("2d 4h", HealthService.formatDuration(Duration.ofHours(52)));
         assertEquals("512 B", HealthService.formatBytes(512));
         assertEquals("1.5 MB", HealthService.formatBytes(3L << 19));
+    }
+
+    private static TrackerStatus tracker(String url, TrackerStatus.State state, String lastError) {
+        return new TrackerStatus(url, 0, state, null, null, lastError, null, null, null);
+    }
+
+    /** design_docs/0089: every tracker failing across the running torrents is the pattern a
+     * firewall or a VPN produces, and is the one case that warns. */
+    @Test
+    void trackersCheckWarnsOnlyWhenEveryTrackerInUseIsFailing() {
+        TrackerStatus aFailing = tracker("udp://a.example:1337/announce", TrackerStatus.State.ERROR,
+                "UDP tracker udp://a.example:1337/announce did not respond after 2 attempts");
+        TrackerStatus bFailing = tracker("https://b.example/announce", TrackerStatus.State.ERROR,
+                "Tracker request to https://b.example/announce failed: timed out connecting");
+        TrackerStatus bWorking = tracker("https://b.example/announce", TrackerStatus.State.WORKING, null);
+
+        Check allFailing = HealthService.trackersCheck(List.of(List.of(aFailing), List.of(bFailing)));
+        assertEquals(State.WARNING, allFailing.state());
+        assertTrue(allFailing.message().startsWith("None of the 2 trackers in use is answering."), allFailing.message());
+        assertTrue(allFailing.message().contains("Latest: UDP tracker"), allFailing.message());
+
+        // A tracker shared by two torrents counts once, and once working for either counts as working.
+        Check oneWorking = HealthService.trackersCheck(List.of(List.of(aFailing, bFailing), List.of(bWorking)));
+        assertEquals(State.OK, oneWorking.state());
+        assertEquals("1 of 2 answering", oneWorking.message());
+    }
+
+    @Test
+    void trackersCheckStaysInformationWhileItCannotTell() {
+        assertEquals(State.DISABLED, HealthService.trackersCheck(List.of()).state());
+        assertEquals(State.INFO, HealthService.trackersCheck(List.of(List.of(
+                tracker("udp://a.example:1337/announce", TrackerStatus.State.ERROR, "x"),
+                tracker("udp://b.example:1337/announce", TrackerStatus.State.UNKNOWN, null)))).state());
+        // One dead tracker looks the same as a blocked network.
+        assertEquals(State.INFO, HealthService.trackersCheck(List.of(List.of(
+                tracker("udp://a.example:1337/announce", TrackerStatus.State.ERROR, "x")))).state());
     }
 }

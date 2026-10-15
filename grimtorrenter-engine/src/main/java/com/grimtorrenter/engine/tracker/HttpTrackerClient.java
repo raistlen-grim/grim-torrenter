@@ -102,7 +102,7 @@ public final class HttpTrackerClient implements TrackerClient {
             try {
                 response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofByteArray());
             } catch (IOException e) {
-                throw new TrackerException("Tracker request to " + announceUrl + " failed", e);
+                throw new TrackerException("Tracker request to " + announceUrl + " failed: " + TrackerErrors.reason(e), e);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 throw new TrackerException("Tracker request to " + announceUrl + " was interrupted", e);

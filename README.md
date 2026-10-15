@@ -110,7 +110,7 @@ of these values read from a `.env` file; `.env.example` lists them.
 2. **Forward the BitTorrent port** on your router to this machine, TCP and UDP. Without it you
    can still download, but fewer peers can reach you. Some networks throttle port 6881; if DHT
    stays empty, try another port. If this machine's traffic goes through a VPN, forwarding the
-   port on your router does nothing: see [Known limitations](#known-limitations).
+   port on your router does nothing: see [Running behind a VPN](#running-behind-a-vpn).
 3. **Set a password before exposing it beyond your own network.** Settings → Security: set a
    password, then turn on *Require a password*. It is off by default, and while it is off anyone
    who can reach the page has full control.
@@ -127,6 +127,45 @@ sudo chown -R 1000:1000 ./data/downloads
 ```
 
 or set `PUID`/`PGID` to the user that already owns the folder.
+
+### Running behind a VPN
+
+**If the VPN runs on the same machine as Docker, the container may not be able to reach the
+internet at all.** Some VPN clients don't pass on traffic from Docker's own network (NordVPN on
+Linux is one); the machine itself works normally, but every torrent stays at 0 peers. The
+Health page's *Trackers* row warns that none are answering, and the Trackers tab shows them
+timing out. To check, compare the machine with the container:
+
+```sh
+curl -sS -o /dev/null -w "host: %{http_code}\n" https://example.com/
+docker exec grimtorrenter wget -q -T 10 -O /dev/null https://example.com/ && echo "container: ok" || echo "container: failed"
+```
+
+If the host answers and the container fails, run the container on the host's network so its
+traffic goes through the VPN like any other program's. In the Compose file, add
+`network_mode: host` and remove the `ports:` lines. Port mappings don't apply on the host's
+network, so the web UI is on the port the app itself listens on, 8080. To use another, set it
+with `QUARKUS_HTTP_PORT` and point the health check at it too:
+
+```yaml
+    network_mode: host
+    environment:
+      # ... PUID, PGID and GRIMTORRENTER_LISTEN_PORT as before, plus:
+      QUARKUS_HTTP_PORT: "8087"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8087/api/system/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
+```
+
+With plain Docker, use `--network host` in place of the three `-p` options (and
+`-e QUARKUS_HTTP_PORT=8087` if needed). The app then uses ports 8080 (or yours) and 6881 on the
+machine directly, so nothing else there may use them.
+
+Even when it works, a VPN usually means no incoming connections; see
+[Known limitations](#known-limitations).
 
 ### Exposing it to the internet
 
@@ -167,10 +206,11 @@ Please don't report these as bugs.
   connections; downloads still work.
 - **Behind a VPN, incoming connections usually don't work.** Peers would have to reach you
   through the VPN, and most VPNs don't forward ports, so the Health page shows no incoming
-  connections however your router is set up. Downloads still work, with fewer peers and a
-  slower start. A port forwarded by the VPN provider works only if it is a fixed number you can
-  set as the BitTorrent port; a port the provider assigns and changes can't be picked up
-  automatically.
+  connections however your router is set up. Downloads still work over outgoing connections,
+  with fewer peers and a slower start - provided the container can reach the internet at all;
+  see [Running behind a VPN](#running-behind-a-vpn). A port forwarded by the VPN provider works
+  only if it is a fixed number you can set as the BitTorrent port; a port the provider assigns
+  and changes can't be picked up automatically.
 - **Private trackers that whitelist clients will reject it.** It identifies itself honestly as
   GrimTorrenter, which no tracker knows yet.
 - **Pieces are requested in order**, not rarest-first.
