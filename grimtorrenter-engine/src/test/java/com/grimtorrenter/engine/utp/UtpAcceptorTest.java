@@ -115,6 +115,39 @@ class UtpAcceptorTest {
         }
     }
 
+    /** SYNs are free to send (and spoof); each accepted one holds a UtpSocket until the
+     * BitTorrent handshake finishes. Past MAX_PENDING_HANDSHAKES still in progress, further SYNs
+     * are ignored rather than accepted. See design_docs/0092. */
+    @Test
+    @Timeout(value = 15, unit = TimeUnit.SECONDS)
+    void synsBeyondThePendingHandshakeCapAreIgnored() throws Exception {
+        DatagramSocket sharedSocket = new DatagramSocket();
+        java.util.concurrent.CountDownLatch handshakesMayFinish = new java.util.concurrent.CountDownLatch(1);
+        java.util.List<UtpSocket> acceptedSockets = new java.util.concurrent.CopyOnWriteArrayList<>();
+        UtpAcceptor acceptor = new UtpAcceptor(sharedSocket, socket -> {
+            acceptedSockets.add(socket);
+            try {
+                handshakesMayFinish.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        InetSocketAddress from = loopback(9); // discard port - our STATE replies go nowhere
+        try {
+            for (int i = 0; i < UtpAcceptor.MAX_PENDING_HANDSHAKES + 20; i++) {
+                UtpPacket syn = new UtpPacket(UtpPacketType.SYN, 1000 + i, 0, 0, 65536, 1, 0, new byte[0]);
+                acceptor.handlePacket(UtpPacketCodec.encode(syn), from);
+            }
+            assertEquals(UtpAcceptor.MAX_PENDING_HANDSHAKES, acceptor.connectionCount());
+        } finally {
+            handshakesMayFinish.countDown();
+            for (UtpSocket socket : acceptedSockets) {
+                socket.close();
+            }
+            sharedSocket.close();
+        }
+    }
+
     /** Regression test for a real bug (fixed 2026-09-15, see handlePacket()'s own dated note):
      * a SYN that can't be answered (here, because the shared socket is already closed - the
      * same IOException shape a genuine transient network error would produce) used to throw an

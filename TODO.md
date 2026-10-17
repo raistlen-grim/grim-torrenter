@@ -4,6 +4,35 @@ Running list of ideas/requests to come back to later. Not commitments, not scope
 scheduled - just a place to jot something down before it's forgotten. Add items freely;
 nothing here gets acted on until it's explicitly picked up.
 
+## Beta readiness (2026-10-17)
+
+What stands between the current test build (0.9.3) and calling it a beta. Gathered from items
+already tagged pre/post-release elsewhere in this file and from manual checks deferred to a full
+regression pass. Items explicitly marked post-beta (automatic port mapping, BEP 55 hole punching)
+are not listed here.
+
+**Done:**
+- ~~Peer id client code not already used by another client~~ - changed `GT` to `GM`, see
+  `design_docs/0084`.
+
+**Regression pass - built and unit-tested, never verified in a browser:**
+- Failed-first-announce auto-retry (`design_docs/0036`'s 2026-09-20 addendum): a bad proxy with the
+  block switch on plus a restart, then fix the proxy and watch torrents leave ERROR; backoff with
+  no settings change; pause cancels the retry.
+- SOCKS5 proxy (`design_docs/0079`): not yet tried against a real proxy.
+- Authentication (`design_docs/0061`): WebSocket with auth on and a logged-in browser. The server
+  selecting the `bearer` subprotocol has only been confirmed with curl, and the frontend no longer
+  offering the token while auth is off hasn't been seen in a browser.
+- Restyle task 9 copy pass (`design_docs/0032`).
+
+**Open, decide whether it blocks beta:**
+- Does a VPN container such as gluetun work as the alternative to `network_mode: host` behind a
+  host VPN (see "Working behind a VPN" below)? Decides what the README tells VPN users.
+- `.torrent` upload latency - the add request waits on the initial tracker announce (PROGRESS.md
+  "Known gaps"). Feedback and crash-safety are covered; the latency itself isn't.
+- Row action (Pause/Resume/Remove) state lagging up to ~2s behind its spinner clearing
+  (PROGRESS.md "Known gaps", `design_docs/0033`).
+
 ## Peers/Trackers/General detail — qBittorrent-parity backlog (2026-09-10)
 
 Scoped by walking qBittorrent's General/Trackers/Peers screens field-by-field against what

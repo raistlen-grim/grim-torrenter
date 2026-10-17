@@ -4,6 +4,7 @@ import com.grimtorrenter.engine.bencode.BDictionary;
 import com.grimtorrenter.engine.bencode.BInteger;
 import com.grimtorrenter.engine.bencode.BList;
 import com.grimtorrenter.engine.bencode.BString;
+import com.grimtorrenter.engine.bencode.BValue;
 import com.grimtorrenter.engine.bencode.BencodeEncoder;
 import org.junit.jupiter.api.Test;
 
@@ -187,5 +188,59 @@ class MetainfoParserTest {
         byte[] bytes = BencodeEncoder.encode(top);
 
         assertThrows(MetainfoException.class, () -> MetainfoParser.parse(bytes));
+    }
+
+    // --- Path safety: name and path segments become path components on disk (design_docs/0090)
+
+    private static byte[] singleFileTorrentNamed(String name) {
+        BDictionary info = new BDictionary(Map.of(
+                BString.of("name"), BString.of(name),
+                BString.of("piece length"), new BInteger(16384),
+                BString.of("pieces"), BString.of(fakePieceHashes(1)),
+                BString.of("length"), new BInteger(1)));
+        return BencodeEncoder.encode(new BDictionary(Map.of(BString.of("info"), info)));
+    }
+
+    private static byte[] multiFileTorrentWithPath(List<String> segments) {
+        BDictionary file = new BDictionary(Map.of(
+                BString.of("length"), new BInteger(1),
+                BString.of("path"), new BList(segments.stream().<BValue>map(BString::of).toList())));
+        BDictionary info = new BDictionary(Map.of(
+                BString.of("name"), BString.of("my-torrent"),
+                BString.of("piece length"), new BInteger(16384),
+                BString.of("pieces"), BString.of(fakePieceHashes(1)),
+                BString.of("files"), new BList(List.of(file))));
+        return BencodeEncoder.encode(new BDictionary(Map.of(BString.of("info"), info)));
+    }
+
+    @Test
+    void rejectsUnsafeTorrentNames() {
+        for (String name : List.of("", ".", "..", "../escape", "a/b", "a\\b", "/etc/passwd", "nul\0byte")) {
+            byte[] bytes = singleFileTorrentNamed(name);
+            assertThrows(MetainfoException.class, () -> MetainfoParser.parse(bytes), "name: " + name);
+        }
+    }
+
+    @Test
+    void rejectsUnsafePathSegments() {
+        for (List<String> path : List.of(List.of(".."), List.of("..", "..", "etc", "passwd"), List.of("sub", ""),
+                List.of("."), List.of("/abs"), List.of("a\\..\\b"), List.of("sub/dir", "f"))) {
+            byte[] bytes = multiFileTorrentWithPath(path);
+            assertThrows(MetainfoException.class, () -> MetainfoParser.parse(bytes), "path: " + path);
+        }
+    }
+
+    @Test
+    void rejectsEmptyPathList() {
+        byte[] bytes = multiFileTorrentWithPath(List.of());
+        assertThrows(MetainfoException.class, () -> MetainfoParser.parse(bytes));
+    }
+
+    /** Dots are only dangerous as a whole component - ordinary names containing them are fine. */
+    @Test
+    void acceptsNamesThatMerelyContainDots() {
+        assertEquals("..hidden..file..", MetainfoParser.parse(singleFileTorrentNamed("..hidden..file..")).name());
+        assertEquals(List.of(List.of("...", "a..b")), MetainfoParser.parse(multiFileTorrentWithPath(
+                List.of("...", "a..b"))).files().stream().map(TorrentFile::pathSegments).toList());
     }
 }

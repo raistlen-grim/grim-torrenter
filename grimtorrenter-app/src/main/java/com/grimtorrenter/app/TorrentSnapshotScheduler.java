@@ -3,6 +3,7 @@ package com.grimtorrenter.app;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.grimtorrenter.engine.engine.TorrentEngine;
+import com.grimtorrenter.engine.settings.SettingsStore;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -20,6 +21,12 @@ public class TorrentSnapshotScheduler {
     @Inject
     ObjectMapper objectMapper;
 
+    @Inject
+    SettingsStore settingsStore;
+
+    @Inject
+    SessionTokenStore sessionTokenStore;
+
     /** SKIP (not the default PROCEED) so a slow tick - e.g. broadcast() blocked on a
      * connection that never responds - can't overlap with the next one and pile up
      * worker threads. Defense in depth: broadcast() itself is non-blocking now (see its
@@ -28,9 +35,20 @@ public class TorrentSnapshotScheduler {
      *
      * <p>Includes pending magnets (design_docs/0070) alongside resolved torrents - so a
      * *different* already-open client sees one another client just added (or one restored
-     * after a process restart) via this same periodic push, not a separate channel. */
+     * after a process restart) via this same periodic push, not a separate channel.
+     *
+     * <p>First closes any socket whose token is no longer valid (isValid(), not validate(), so
+     * an open tab doesn't keep its own token alive), then skips the rest when nobody is
+     * listening - the usual case for a headless server, and building the snapshot walks every
+     * torrent's pieces. See design_docs/0094. */
     @Scheduled(every = "2s", concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
     void broadcastSnapshot() {
+        if (settingsStore.current().authEnabled()) {
+            TorrentWebSocket.closeConnectionsWhoseTokenFails(sessionTokenStore::isValid);
+        }
+        if (!TorrentWebSocket.hasConnections()) {
+            return;
+        }
         List<TorrentView> views = Stream.concat(
                         torrentEngine.listTorrents().stream().map(TorrentView::from),
                         torrentEngine.listPendingMagnets().stream().map(TorrentView::fromPendingMagnet))

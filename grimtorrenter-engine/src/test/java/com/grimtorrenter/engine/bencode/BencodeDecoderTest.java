@@ -138,6 +138,33 @@ class BencodeDecoderTest {
         assertThrows(BencodeException.class, () -> BencodeDecoder.decode(new byte[0]));
     }
 
+    /** Recursion per nesting level - "llll..." from a peer must fail cleanly, not overflow the
+     * stack. See design_docs/0090. */
+    @Test
+    void rejectsNestingDeeperThanTheLimit() {
+        int depth = BencodeDecoder.MAX_DEPTH + 1;
+        assertThrows(BencodeException.class,
+                () -> BencodeDecoder.decode(bytes("l".repeat(depth) + "e".repeat(depth))));
+    }
+
+    @Test
+    void acceptsNestingAtTheLimit() {
+        int depth = BencodeDecoder.MAX_DEPTH;
+        BencodeDecoder.decode(bytes("d1:a".repeat(depth - 1) + "le" + "e".repeat(depth - 1)));
+    }
+
+    @Test
+    void rejectsHundredsOfThousandsOfNestedLists() {
+        int depth = 300_000;
+        assertThrows(BencodeException.class,
+                () -> BencodeDecoder.decode(bytes("l".repeat(depth) + "e".repeat(depth))));
+    }
+
+    @Test
+    void rejectsStringLengthThatWouldOverflow() {
+        assertThrows(BencodeException.class, () -> BencodeDecoder.decode(bytes("2147483647:x")));
+    }
+
     @Test
     void rejectsUnknownMarker() {
         assertThrows(BencodeException.class, () -> BencodeDecoder.decode(bytes("x")));

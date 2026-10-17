@@ -11,8 +11,6 @@ import java.time.Instant;
 import java.util.Base64;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Bearer-token sessions for GrimTorrenter's own management API - opaque random tokens
@@ -30,28 +28,18 @@ import java.util.concurrent.atomic.AtomicReference;
  * Instant computed from whatever the TTL was at that moment, not a reference back to the
  * setting.
  *
- * <p>Also tracks failed login attempts for a simple, global (not per-IP - single shared
- * password, and per-IP tracking behind a reverse proxy needs a trusted-proxy header policy
- * that's easy to get wrong) exponential backoff, reset on the next successful login. The
- * first FREE_FAILURES consecutive failures cost no delay at all - an honest typo (or two)
- * shouldn't be penalized the same way a real guessing attempt eventually is; backoff only
- * starts escalating once that grace runs out.
+ * <p>Failed-login backoff lives in LoginThrottle.
  */
 @ApplicationScoped
 public class SessionTokenStore {
 
     private static final int TOKEN_BYTES = 32;
-    private static final int MAX_BACKOFF_SECONDS = 60;
-    private static final int FREE_FAILURES = 4;
 
     @Inject
     SettingsStore settingsStore;
 
     private final Map<String, Instant> expiryByToken = new ConcurrentHashMap<>();
     private final SecureRandom random = new SecureRandom();
-
-    private final AtomicInteger consecutiveFailures = new AtomicInteger();
-    private final AtomicReference<Instant> lockedUntil = new AtomicReference<>(Instant.EPOCH);
 
     String issue() {
         byte[] bytes = new byte[TOKEN_BYTES];
@@ -63,10 +51,8 @@ public class SessionTokenStore {
 
     /** Atomic per-key via ConcurrentHashMap.computeIfPresent - either refreshes the sliding
      * expiry and returns true, or (an expired or unknown token) removes any stale entry and
-     * returns false. No separate read-then-write race, unlike PROGRESS.md's own documented
-     * PeakTrackingSemaphore flake (an updateAndGet lambda re-invoked under contention) -
-     * this remapping function has no side effect beyond the value it returns, so re-invocation
-     * under real contention is harmless. */
+     * returns false. No separate read-then-write race, and the remapping function has no side
+     * effect beyond the value it returns, so re-invocation under contention is harmless. */
     boolean validate(String token) {
         if (token == null) {
             return false;
@@ -75,6 +61,17 @@ public class SessionTokenStore {
         Instant refreshed = expiryByToken.computeIfPresent(token,
                 (t, expiry) -> expiry.isAfter(Instant.now()) ? Instant.now().plus(ttl) : null);
         return refreshed != null;
+    }
+
+    /** Like validate(), but without refreshing the sliding expiry - for TorrentWebSocket's
+     * periodic re-check of open sockets, which mustn't keep a forgotten tab's token alive just by
+     * being open. See design_docs/0094. */
+    boolean isValid(String token) {
+        if (token == null) {
+            return false;
+        }
+        Instant expiry = expiryByToken.get(token);
+        return expiry != null && expiry.isAfter(Instant.now());
     }
 
     private Duration currentTtl() {
@@ -87,22 +84,12 @@ public class SessionTokenStore {
         }
     }
 
-    boolean isLockedOut() {
-        return Instant.now().isBefore(lockedUntil.get());
-    }
-
-    void recordFailure() {
-        int failures = consecutiveFailures.incrementAndGet();
-        if (failures <= FREE_FAILURES) {
-            return;
-        }
-        long backoffSeconds = Math.min(MAX_BACKOFF_SECONDS, 1L << Math.min(failures - FREE_FAILURES, 6));
-        lockedUntil.set(Instant.now().plusSeconds(backoffSeconds));
-    }
-
-    void recordSuccess() {
-        consecutiveFailures.set(0);
-        lockedUntil.set(Instant.EPOCH);
+    /** Every token except {@code keep} (which may be null, revoking all) - a password change
+     * ends every other session, so a leaked token doesn't survive the obvious remedy. The caller's
+     * own session is kept so the browser that made the change isn't logged out mid-request. See
+     * design_docs/0094. */
+    void revokeAllExcept(String keep) {
+        expiryByToken.keySet().removeIf(token -> !token.equals(keep));
     }
 
     /** Sweeps tokens whose sliding expiry has already lapsed - without this, a long-running

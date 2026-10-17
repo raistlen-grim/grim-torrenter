@@ -18,6 +18,10 @@ import java.util.Map;
  */
 public final class BencodeDecoder {
 
+    /** Deepest list/dictionary nesting accepted. Real torrents, KRPC and extension messages
+     * nest a handful of levels; see design_docs/0090. */
+    static final int MAX_DEPTH = 64;
+
     private BencodeDecoder() {
     }
 
@@ -48,6 +52,7 @@ public final class BencodeDecoder {
     private static final class Cursor {
         private final byte[] data;
         private int position;
+        private int depth;
 
         Cursor(byte[] data) {
             this.data = data;
@@ -58,11 +63,17 @@ public final class BencodeDecoder {
             if (marker == 'i') {
                 return readInteger();
             }
-            if (marker == 'l') {
-                return readList();
-            }
-            if (marker == 'd') {
-                return readDictionary();
+            if (marker == 'l' || marker == 'd') {
+                // Decoding recurses per nesting level, and much of what reaches here comes from
+                // peers, DHT nodes and trackers - cap it so "llll..." can't overflow the stack.
+                if (++depth > MAX_DEPTH) {
+                    throw new BencodeException("Nesting deeper than " + MAX_DEPTH + " at offset " + position);
+                }
+                try {
+                    return marker == 'l' ? readList() : readDictionary();
+                } finally {
+                    depth--;
+                }
             }
             if (marker >= '0' && marker <= '9') {
                 return readString();
@@ -97,11 +108,11 @@ public final class BencodeDecoder {
                 throw new BencodeException("Negative string length at offset " + start);
             }
             int contentStart = colon + 1;
-            int contentEnd = contentStart + length;
-            if (contentEnd > data.length) {
+            if (length > data.length - contentStart) {
                 throw new BencodeException(
                         "String length " + length + " exceeds available data at offset " + start);
             }
+            int contentEnd = contentStart + length;
             BString result = BString.of(Arrays.copyOfRange(data, contentStart, contentEnd));
             position = contentEnd;
             return result;

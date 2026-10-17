@@ -209,4 +209,36 @@ class SettingsResourceTest {
                 .then().statusCode(200)
                 .body("maxConnectionsPerTorrent", equalTo(30));
     }
+
+    /** Settings whose extremes would hurt the server or other peers are bounded at the boundary,
+     * with the reason in the body. See design_docs/0094. */
+    @Test
+    void updateRejectsAnOutOfRangeValueWithItsReason() {
+        String body = """
+                {
+                  "dhtEnabled": false,
+                  "acceptIncomingConnections": false,
+                  "magnetFetchConcurrencyLimit": 1000000
+                }""";
+
+        given()
+                .contentType(ContentType.JSON)
+                .body(body)
+                .when().put("/api/settings")
+                .then().statusCode(400)
+                .body("error", equalTo("magnetFetchConcurrencyLimit must be between 1 and 1024 (was 1000000)"));
+
+        String lsdFlood = """
+                {
+                  "dhtEnabled": false,
+                  "acceptIncomingConnections": false,
+                  "lsdAnnounceIntervalSeconds": 1
+                }""";
+
+        given()
+                .contentType(ContentType.JSON)
+                .body(lsdFlood)
+                .when().put("/api/settings")
+                .then().statusCode(400);
+    }
 }

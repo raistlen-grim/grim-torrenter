@@ -12,6 +12,7 @@ import com.grimtorrenter.engine.ratelimit.RateLimiters;
 import com.grimtorrenter.engine.tracker.PeerAddress;
 import com.grimtorrenter.engine.tracker.PeerId;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -47,6 +48,10 @@ public final class MetadataFetcher {
     private static final int OUR_EXTENSION_ID = 1;
     private static final long HANDSHAKE_TIMEOUT_MS = 10_000;
     private static final long PIECE_TIMEOUT_MS = 10_000;
+    /** The peer's advertised metadata_size is untrusted. 16 MiB holds the info dict of a torrent
+     * with ~800k pieces - far beyond anything real - while bounding what one lying peer can make
+     * us hold. See design_docs/0090. */
+    static final int MAX_METADATA_SIZE = 16 * 1024 * 1024;
 
     private MetadataFetcher() {
     }
@@ -89,8 +94,13 @@ public final class MetadataFetcher {
 
     private static byte[] fetchAllPieces(PeerConnection connection, FetchListener listener, PeerAddress address,
                                           int theirExtensionId, int totalSize) {
+        if (totalSize <= 0 || totalSize > MAX_METADATA_SIZE) {
+            throw new MetadataFetchException("Peer " + address + " reported an unacceptable metadata size of "
+                    + totalSize + " bytes (limit " + MAX_METADATA_SIZE + ")");
+        }
         int pieceCount = (totalSize + BLOCK_SIZE - 1) / BLOCK_SIZE;
-        byte[] assembled = new byte[totalSize];
+        // Grown as pieces actually arrive rather than allocated up front from the peer's claim.
+        ByteArrayOutputStream assembled = new ByteArrayOutputStream(Math.min(totalSize, BLOCK_SIZE));
         for (int piece = 0; piece < pieceCount; piece++) {
             connection.sendExtended(theirExtensionId, UtMetadataCodec.encode(new MetadataRequest(piece)));
             UtMetadataMessage response = listener.awaitPiece(piece, PIECE_TIMEOUT_MS);
@@ -111,9 +121,9 @@ public final class MetadataFetcher {
             if (data.block().length != expectedLength) {
                 throw new MetadataFetchException("Peer " + address + " sent a wrong-sized metadata piece " + piece);
             }
-            System.arraycopy(data.block(), 0, assembled, offset, expectedLength);
+            assembled.write(data.block(), 0, expectedLength);
         }
-        return assembled;
+        return assembled.toByteArray();
     }
 
     private static byte[] sha1(byte[] data) {

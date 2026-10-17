@@ -62,6 +62,7 @@ public class JsonAuthStore implements AuthStore {
         }
         authFile = directory.resolve(AUTH_FILENAME);
         current = readOrSeed();
+        AtomicJsonFile.restrictToOwner(authFile);
     }
 
     @Override
@@ -101,11 +102,8 @@ public class JsonAuthStore implements AuthStore {
         return seeded;
     }
 
+    /** Atomic, and owner-only like the proxy password file. See design_docs/0093. */
     private void writeToDisk(StoredAuth auth) {
-        try {
-            objectMapper.writerWithDefaultPrettyPrinter().writeValue(authFile.toFile(), auth);
-        } catch (IOException e) {
-            throw new UncheckedIOException("Could not write " + authFile, e);
-        }
+        AtomicJsonFile.write(objectMapper, authFile, auth, true);
     }
 }

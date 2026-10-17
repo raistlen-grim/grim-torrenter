@@ -270,9 +270,15 @@ export class SettingsPage {
         this.saving.set(false);
         this.messageService.add({ severity: 'success', summary: 'Settings saved' });
       },
-      error: () => {
+      error: (err) => {
         this.saving.set(false);
-        this.messageService.add({ severity: 'error', summary: 'Could not save settings', sticky: true });
+        // The server's reason (e.g. a value out of range) - every 4xx carries one (design_docs/0094).
+        this.messageService.add({
+          severity: 'error',
+          summary: 'Could not save settings',
+          detail: err?.error?.error,
+          sticky: true,
+        });
       },
     });
   }

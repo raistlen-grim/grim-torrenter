@@ -88,6 +88,26 @@ class TorrentResourceTest {
                 .then().statusCode(200).body("$", hasSize(0));
     }
 
+    /** Every per-torrent endpoint 404s for an unknown torrent, these three included. See
+     * design_docs/0094. */
+    @Test
+    void removePauseAndResumeOfAnUnknownTorrentAre404() {
+        String unknown = "0".repeat(40);
+        given().when().delete("/api/torrents/" + unknown).then().statusCode(404)
+                .body("error", equalTo("Torrent not found: " + unknown));
+        given().when().post("/api/torrents/" + unknown + "/pause").then().statusCode(404);
+        given().when().post("/api/torrents/" + unknown + "/resume").then().statusCode(404);
+    }
+
+    /** A thrown BadRequestException reaches the client with its reason in the same
+     * {"error": ...} shape every other error uses. See design_docs/0094. */
+    @Test
+    void aThrownBadRequestCarriesItsReasonInTheErrorBody() {
+        given().when().get("/api/torrents/not-a-hash").then().statusCode(400)
+                .contentType(ContentType.JSON)
+                .body("error", equalTo("Invalid info hash: not-a-hash"));
+    }
+
     @Test
     void uploadGetAndDeleteRoundTrip() {
         byte[] torrent = torrentBytes("test-file.bin", new byte[]{1, 2, 3, 4, 5});

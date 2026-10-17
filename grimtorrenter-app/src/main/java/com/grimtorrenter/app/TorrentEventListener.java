@@ -8,6 +8,7 @@ import com.grimtorrenter.engine.events.LibraryEvent;
 import com.grimtorrenter.engine.torrent.TorrentSession;
 import com.grimtorrenter.engine.torrent.TorrentSessionListener;
 import com.grimtorrenter.engine.torrent.TorrentState;
+import io.quarkus.logging.Log;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 
@@ -43,10 +44,17 @@ public class TorrentEventListener implements TorrentSessionListener {
     @Inject
     EventStore eventStore;
 
+    /** Never throws - this runs inside TorrentSession's state transitions, which must complete
+     * whatever happens to the event log or the push. See design_docs/0093. */
     @Override
     public void onStateChanged(TorrentSession session, TorrentState oldState, TorrentState newState) {
-        recordLibraryEventIfNotable(session, oldState, newState);
-        broadcast(new TorrentEventMessage("state-changed", TorrentView.from(session)));
+        try {
+            recordLibraryEventIfNotable(session, oldState, newState);
+            broadcast(new TorrentEventMessage("state-changed", TorrentView.from(session)));
+        } catch (RuntimeException e) {
+            Log.errorf(e, "Could not report %s -> %s for torrent %s", oldState, newState,
+                    session.metadata().infoHash());
+        }
     }
 
     /** A DOWNLOADING -&gt; SEEDING transition alone isn't enough to mean "just finished

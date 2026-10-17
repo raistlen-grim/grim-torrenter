@@ -206,6 +206,21 @@ class HttpTrackerClientTest {
         assertThrows(TrackerException.class, () -> client.announce(request));
     }
 
+    /** The direct (non-proxied) path is capped like the proxied one - a hostile or broken tracker
+     * can't make us buffer an unbounded reply. See design_docs/0090. */
+    @Test
+    void throwsOnReplyLargerThanTheCap() throws IOException {
+        String url = startServer(new byte[HttpTrackerClient.MAX_RESPONSE_BYTES + 1], 200, null);
+
+        HttpTrackerClient client = new HttpTrackerClient(url);
+        TrackerRequest request = new TrackerRequest(
+                InfoHash.of(fakeInfoHashBytes()), PeerId.of(fakePeerIdBytes()),
+                6881, 0, 0, 1000, null, 50);
+
+        TrackerException ex = assertThrows(TrackerException.class, () -> client.announce(request));
+        assertTrue(ex.getMessage().contains("larger than"), ex.getMessage());
+    }
+
     @Test
     void throwsOnHttpErrorStatus() throws IOException {
         String url = startServer(new byte[0], 500, null);

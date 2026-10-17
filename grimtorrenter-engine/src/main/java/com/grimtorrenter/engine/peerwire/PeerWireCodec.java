@@ -27,6 +27,15 @@ import java.util.Arrays;
  */
 public final class PeerWireCodec {
 
+    /** Largest message (length prefix value) accepted from a peer. The prefix is untrusted, and
+     * without a cap a single message could buffer up to 2 GB. 2 MiB covers every legitimate
+     * message by a wide margin - a bitfield for a torrent of 16M pieces, a 16 KiB block, any
+     * extended message - see design_docs/0090. */
+    public static final int MAX_MESSAGE_LENGTH = 2 * 1024 * 1024;
+    /** No legitimate Have can name a piece beyond what a maximum-size bitfield could describe;
+     * bounds the per-connection peer-pieces BitSet a Have can grow. */
+    public static final int MAX_PIECE_INDEX = (MAX_MESSAGE_LENGTH - 1) * 8;
+
     private PeerWireCodec() {
     }
 
@@ -84,6 +93,10 @@ public final class PeerWireCodec {
         if (length == 0) {
             return new KeepAlive();
         }
+        if (length < 0 || length > MAX_MESSAGE_LENGTH) {
+            throw new PeerWireException("Message length " + Integer.toUnsignedString(length)
+                    + " exceeds the " + MAX_MESSAGE_LENGTH + "-byte limit");
+        }
         int messageId = readByteOrThrow(in);
         byte[] payload = readFully(in, length - 1);
         return decodePayload(messageId, payload);
@@ -109,7 +122,12 @@ public final class PeerWireCodec {
             }
             case 4 -> {
                 requireLength(payload, 4, "have");
-                yield new Have(ByteBuffer.wrap(payload).getInt());
+                int pieceIndex = ByteBuffer.wrap(payload).getInt();
+                if (pieceIndex < 0 || pieceIndex >= MAX_PIECE_INDEX) {
+                    throw new PeerWireException("have piece index " + Integer.toUnsignedString(pieceIndex)
+                            + " out of range");
+                }
+                yield new Have(pieceIndex);
             }
             case 5 -> new Bitfield(payload);
             case 6 -> {

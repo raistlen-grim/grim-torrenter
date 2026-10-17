@@ -179,6 +179,38 @@ class PeerWireCodecTest {
                 () -> PeerWireCodec.readMessage(new ByteArrayInputStream(out.toByteArray())));
     }
 
+    /** The length prefix is untrusted - one past the cap is refused before any payload is
+     * read, so no buffer is ever sized from it. See design_docs/0090. */
+    @Test
+    void rejectsMessageLongerThanTheCap() {
+        int tooLong = PeerWireCodec.MAX_MESSAGE_LENGTH + 1;
+        byte[] header = java.nio.ByteBuffer.allocate(5).putInt(tooLong).put((byte) 7).array();
+        assertThrows(PeerWireException.class,
+                () -> PeerWireCodec.readMessage(new ByteArrayInputStream(header)));
+    }
+
+    @Test
+    void rejectsNegativeMessageLength() {
+        byte[] header = {(byte) 0xFF, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF, 7};
+        assertThrows(PeerWireException.class,
+                () -> PeerWireCodec.readMessage(new ByteArrayInputStream(header)));
+    }
+
+    @Test
+    void rejectsHaveIndexBeyondAnyPossibleBitfield() {
+        byte[] message = java.nio.ByteBuffer.allocate(9).putInt(5).put((byte) 4)
+                .putInt(Integer.MAX_VALUE).array();
+        assertThrows(PeerWireException.class,
+                () -> PeerWireCodec.readMessage(new ByteArrayInputStream(message)));
+    }
+
+    @Test
+    void rejectsNegativeHaveIndex() {
+        byte[] message = java.nio.ByteBuffer.allocate(9).putInt(5).put((byte) 4).putInt(-1).array();
+        assertThrows(PeerWireException.class,
+                () -> PeerWireCodec.readMessage(new ByteArrayInputStream(message)));
+    }
+
     @Test
     void rejectsTruncatedMessage() {
         byte[] tooShort = {0, 0, 0, 5, 4}; // claims length 5 (have) but no payload follows

@@ -52,12 +52,19 @@ public final class UtpSocket implements AutoCloseable {
 
     private static final int VERSION_UNUSED_ACK = 0;
     private static final int MAX_PAYLOAD_LENGTH = 1400;
-    /** This side's own advertised receive window (BEP 29's wnd_size field) - fixed and generous,
-     * since this class has no bounded receive buffer to advertise a real backpressure signal
-     * for. Decoupled from the send-side congestion window (design_docs/0074's slice 5,
-     * LedbatCongestionControl) - those are two different BEP 29 concepts this class used to
-     * conflate by reusing one constant for both. */
-    private static final int ADVERTISED_RECEIVE_WINDOW_BYTES = 64 * 1024;
+    /** Most payload this side holds received-but-unread. The window advertised (BEP 29's wnd_size)
+     * is whatever is left of it, so a reader that slows down - PeerConnection's read loop blocks
+     * on the download rate limiter - backs the sender off, the way TCP flow control does, and an
+     * in-order packet that doesn't fit is dropped rather than queued. Decoupled from the
+     * send-side congestion window (LedbatCongestionControl). See design_docs/0092. */
+    static final int RECEIVE_BUFFER_LIMIT_BYTES = 256 * 1024;
+    /** With the peer's window too small for the next packet and nothing in flight, nothing would
+     * ever tell us it reopened if its window update were lost - so after this long one packet is
+     * sent anyway as a probe (BEP 29 / libtorrent behaviour). */
+    private static final long ZERO_WINDOW_PROBE_MILLIS = 1000;
+    /** Window-limited re-sends of one packet before giving up - at least a couple of minutes at
+     * MIN_RTO_MILLIS, far longer than any rate limit takes to drain the buffer. */
+    private static final int MAX_WINDOW_PROBES = 240;
     private static final int RECEIVE_BUFFER_SIZE = 4096;
 
     private static final long INITIAL_RTO_MILLIS = 1000;
@@ -106,6 +113,9 @@ public final class UtpSocket implements AutoCloseable {
     private volatile long lastObservedDelayMicros;
 
     private final LinkedBlockingQueue<byte[]> incoming = new LinkedBlockingQueue<>();
+    /** Payload bytes sitting in incoming, not yet taken by receive(). Bounded by
+     * RECEIVE_BUFFER_LIMIT_BYTES. */
+    private final AtomicInteger queuedBytes = new AtomicInteger();
     /** 0 (the default) means receive() blocks forever, identical to every slice 1 behavior/test
      * - only PeerConnection (via UtpPeerTransport.setSoTimeout(), design_docs/0074's slice 2)
      * ever sets this to something else. */
@@ -204,7 +214,7 @@ public final class UtpSocket implements AutoCloseable {
         int recvId = randomUint16();
         int sendId = wrap16(recvId + 1);
 
-        UtpPacket syn = new UtpPacket(UtpPacketType.SYN, recvId, nowMicros(), 0, ADVERTISED_RECEIVE_WINDOW_BYTES, initialSeqNr,
+        UtpPacket syn = new UtpPacket(UtpPacketType.SYN, recvId, nowMicros(), 0, RECEIVE_BUFFER_LIMIT_BYTES, initialSeqNr,
                 VERSION_UNUSED_ACK, new byte[0]);
 
         try {
@@ -267,7 +277,7 @@ public final class UtpSocket implements AutoCloseable {
             int initialLocalSeqNr = randomUint16();
 
             UtpPacket state = new UtpPacket(UtpPacketType.STATE, sendConnectionId, nowMicros(),
-                    delaySinceMicros(packet.timestampMicros()), ADVERTISED_RECEIVE_WINDOW_BYTES, initialLocalSeqNr, packet.seqNr(),
+                    delaySinceMicros(packet.timestampMicros()), RECEIVE_BUFFER_LIMIT_BYTES, initialLocalSeqNr, packet.seqNr(),
                     new byte[0]);
             sendRaw(socket, remoteAddress, state);
             return new UtpSocket(socket, remoteAddress, sendConnectionId, receiveConnectionId,
@@ -289,7 +299,7 @@ public final class UtpSocket implements AutoCloseable {
         int initialLocalSeqNr = randomUint16();
 
         UtpPacket state = new UtpPacket(UtpPacketType.STATE, sendConnectionId, nowMicros(),
-                delaySinceMicros(syn.timestampMicros()), ADVERTISED_RECEIVE_WINDOW_BYTES, initialLocalSeqNr, syn.seqNr(),
+                delaySinceMicros(syn.timestampMicros()), RECEIVE_BUFFER_LIMIT_BYTES, initialLocalSeqNr, syn.seqNr(),
                 new byte[0]);
         sendRaw(socket, remoteAddress, state);
         return new UtpSocket(socket, remoteAddress, sendConnectionId, receiveConnectionId,
@@ -347,10 +357,19 @@ public final class UtpSocket implements AutoCloseable {
     }
 
     private void acquireWindowSlot(int length) {
+        long probeAtNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(ZERO_WINDOW_PROBE_MILLIS);
         synchronized (windowLock) {
             while (bytesInFlight + length > Math.min(congestionControl.cwndBytes(), remoteWindowBytes) && !closed) {
+                long untilProbeNanos = probeAtNanos - System.nanoTime();
+                if (bytesInFlight == 0 && untilProbeNanos <= 0) {
+                    break; // zero-window probe - see ZERO_WINDOW_PROBE_MILLIS
+                }
                 try {
-                    windowLock.wait();
+                    if (bytesInFlight == 0) {
+                        TimeUnit.NANOSECONDS.timedWait(windowLock, untilProbeNanos);
+                    } else {
+                        windowLock.wait();
+                    }
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     throw new UtpException("Interrupted waiting for uTP send window", e);
@@ -383,6 +402,18 @@ public final class UtpSocket implements AutoCloseable {
             if (chunk == END_OF_STREAM) {
                 incoming.offer(END_OF_STREAM); // let a second concurrent receive() also see EOF
                 return null;
+            }
+            int queuedBefore = queuedBytes.getAndAdd(-chunk.length);
+            if (RECEIVE_BUFFER_LIMIT_BYTES - queuedBefore < MAX_PAYLOAD_LENGTH
+                    && receiveWindowBytes() >= MAX_PAYLOAD_LENGTH && !closed) {
+                // The window was too small for a full packet and now isn't - tell the sender,
+                // which may be waiting on exactly this. Best-effort: a lost update is covered by
+                // the sender's zero-window probe.
+                try {
+                    sendAck();
+                } catch (RuntimeException ignored) {
+                    // socket gone - closing anyway
+                }
             }
             return chunk;
         } catch (InterruptedException e) {
@@ -453,7 +484,15 @@ public final class UtpSocket implements AutoCloseable {
         // Must happen before acknowledgeOutstanding()/onBytesAcked() below - see
         // LedbatCongestionControl.onDelaySample()'s own Javadoc on why order matters here.
         congestionControl.onDelaySample(delayMicros, System.currentTimeMillis());
+        long previousRemoteWindow = remoteWindowBytes;
         remoteWindowBytes = packet.windowSize();
+        if (remoteWindowBytes > previousRemoteWindow) {
+            // A sender blocked in acquireWindowSlot() on the peer's window only re-checks when
+            // woken - an ack that frees nothing in flight but reopens the window must wake it.
+            synchronized (windowLock) {
+                windowLock.notifyAll();
+            }
+        }
         int bytesAcked = acknowledgeOutstanding(packet.ackNr());
         if (bytesAcked > 0) {
             congestionControl.onBytesAcked(bytesAcked, delayMicros);
@@ -470,11 +509,19 @@ public final class UtpSocket implements AutoCloseable {
 
         int expectedNext = wrap16(remoteAckNr + 1);
         if (packet.seqNr() == expectedNext) {
-            remoteAckNr = packet.seqNr();
+            int length = packet.payload().length;
             if (packet.type() == UtpPacketType.FIN) {
+                remoteAckNr = packet.seqNr();
                 incoming.offer(END_OF_STREAM);
-            } else if (packet.payload().length > 0) {
-                incoming.offer(packet.payload());
+            } else if (length > receiveWindowBytes()) {
+                // No room: not accepted, not acked - the sender retransmits it once our window
+                // (in the ack below) reopens. Keeps unread data bounded whatever the sender does.
+            } else {
+                remoteAckNr = packet.seqNr();
+                if (length > 0) {
+                    queuedBytes.addAndGet(length);
+                    incoming.offer(packet.payload());
+                }
             }
         }
         // Old/duplicate or out-of-order-ahead packets: dropped, not buffered (design_docs/0074's
@@ -505,7 +552,7 @@ public final class UtpSocket implements AutoCloseable {
         for (Outstanding o : acked) {
             releaseWindowSlot(o.payload.length);
             bytesAcked += o.payload.length;
-            if (o.retryCount == 0) {
+            if (o.retryCount == 0 && o.probeCount == 0) {
                 sampleRtt(TimeUnit.NANOSECONDS.toMillis(now - o.sentAtNanos));
             }
         }
@@ -516,9 +563,19 @@ public final class UtpSocket implements AutoCloseable {
         transmit(UtpPacketType.STATE, localSeqNr.get(), new byte[0]);
     }
 
+    /** What's left of the receive buffer - this side's advertised wnd_size. */
+    private int receiveWindowBytes() {
+        return Math.max(0, RECEIVE_BUFFER_LIMIT_BYTES - queuedBytes.get());
+    }
+
+    /** Package-private, for tests: payload received and not yet read. */
+    int queuedBytes() {
+        return queuedBytes.get();
+    }
+
     private void transmit(UtpPacketType type, int seqNr, byte[] payload) {
         UtpPacket packet = new UtpPacket(type, sendConnectionId, nowMicros(), lastObservedDelayMicros,
-                ADVERTISED_RECEIVE_WINDOW_BYTES, seqNr, remoteAckNr, payload);
+                receiveWindowBytes(), seqNr, remoteAckNr, payload);
         sendRaw(socket, remoteAddress, packet);
     }
 
@@ -551,8 +608,20 @@ public final class UtpSocket implements AutoCloseable {
     }
 
     private void retransmit(Outstanding outstanding) {
-        outstanding.retryCount++;
         outstanding.sentAtNanos = System.nanoTime();
+        if (remoteWindowBytes < outstanding.payload.length) {
+            // The peer's window is full - its reader is slow, not the network lossy. Re-send as a
+            // probe without counting a retry (a rate-limited reader mustn't get the connection
+            // closed) or a loss (that would shrink cwnd for no reason). A peer that never reads
+            // again - or died while full - is still given up on eventually. See design_docs/0092.
+            if (++outstanding.probeCount > MAX_WINDOW_PROBES) {
+                close();
+                return;
+            }
+            transmit(UtpPacketType.DATA, outstanding.seqNr, outstanding.payload);
+            return;
+        }
+        outstanding.retryCount++;
         // This connection's one loss signal (design_docs/0074's slice 5) - no selective
         // ack/fast retransmit yet, so an RTO firing is the only way loss is ever detected.
         congestionControl.onLoss();
@@ -641,6 +710,7 @@ public final class UtpSocket implements AutoCloseable {
         final byte[] payload;
         volatile long sentAtNanos;
         volatile int retryCount;
+        volatile int probeCount;
 
         Outstanding(int seqNr, byte[] payload) {
             this.seqNr = seqNr;

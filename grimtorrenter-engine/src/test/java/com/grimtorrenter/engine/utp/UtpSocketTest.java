@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Real UtpSocket pairs over real loopback DatagramSockets - design_docs/0074's slice 1 own
  * Testing section. Each test owns its sockets/connections and closes them itself; there's no
@@ -123,6 +124,39 @@ class UtpSocketTest {
 
             assertArrayEquals(data, received);
         } finally {
+            sender.close();
+            receiver.close();
+        }
+    }
+
+    /** A reader that stops reading (PeerConnection's read loop blocked on the download rate
+     * limiter) must hold back the sender, not let unread data pile up in memory - and once it
+     * reads again, the transfer must resume and complete intact. See design_docs/0092. */
+    @Test
+    @Timeout(value = 60, unit = TimeUnit.SECONDS)
+    void aReaderThatStopsReadingBoundsWhatIsBufferedAndTheTransferStillCompletes() throws Exception {
+        DatagramSocket initiatorSocket = new DatagramSocket();
+        DatagramSocket acceptorSocket = new DatagramSocket();
+        ConnectedPair pair = connectPair(initiatorSocket, acceptorSocket);
+        UtpSocket sender = pair.initiator();
+        UtpSocket receiver = pair.acceptor();
+        ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+        try {
+            byte[] data = new byte[4 * UtpSocket.RECEIVE_BUFFER_LIMIT_BYTES];
+            new Random(1234).nextBytes(data);
+            Future<?> sending = executor.submit(() -> sender.send(data));
+
+            // Long enough for the sender to fill the buffer and then sit on a zero window.
+            Thread.sleep(3000);
+            assertTrue(receiver.queuedBytes() <= UtpSocket.RECEIVE_BUFFER_LIMIT_BYTES,
+                    "buffered " + receiver.queuedBytes());
+            assertTrue(receiver.queuedBytes() > 0, "nothing arrived at all");
+
+            byte[] received = readExactly(receiver, data.length);
+            sending.get(30, TimeUnit.SECONDS);
+            assertArrayEquals(data, received);
+        } finally {
+            executor.shutdownNow();
             sender.close();
             receiver.close();
         }

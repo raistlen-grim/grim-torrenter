@@ -12,6 +12,7 @@ import com.grimtorrenter.engine.proxy.ProxySettings;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.InetAddress;
 import java.net.URI;
 import java.net.UnknownHostException;
@@ -23,6 +24,8 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * BEP 3 HTTP tracker client. Only requests/parses the compact peer list
@@ -44,10 +47,10 @@ public final class HttpTrackerClient implements TrackerClient {
     private static final String USER_AGENT = ClientIdentity.userAgent();
 
     /** A tracker reply is a few KB of bencode (a compact peer list); this is a generous ceiling
-     * that only exists to bound a hostile or broken tracker. Applies to the proxied path - the
-     * direct path reads with the JDK client, as it always has. */
-    private static final long MAX_PROXIED_RESPONSE_BYTES = 4L << 20;
-    private static final int PROXIED_DEADLINE_SECONDS = 30;
+     * that only exists to bound a hostile or broken tracker, on both the proxied and the direct
+     * path. See design_docs/0090. */
+    static final int MAX_RESPONSE_BYTES = 4 << 20;
+    private static final int RESPONSE_DEADLINE_SECONDS = 30;
 
     private final String announceUrl;
     private final HttpClient httpClient;
@@ -85,8 +88,8 @@ public final class HttpTrackerClient implements TrackerClient {
         if (proxy.isPresent()) {
             ByteArrayOutputStream sink = new ByteArrayOutputStream();
             try {
-                status = MiniHttp.get(URI.create(fullUrl), proxy.get(), MAX_PROXIED_RESPONSE_BYTES, sink, 0,
-                        PROXIED_DEADLINE_SECONDS);
+                status = MiniHttp.get(URI.create(fullUrl), proxy.get(), MAX_RESPONSE_BYTES, sink, 0,
+                        RESPONSE_DEADLINE_SECONDS);
             } catch (IOException e) {
                 throw new TrackerException("Tracker request to " + announceUrl + " through the proxy failed: "
                         + e.getMessage(), e);
@@ -98,9 +101,9 @@ public final class HttpTrackerClient implements TrackerClient {
                     .header("User-Agent", USER_AGENT)
                     .GET()
                     .build();
-            HttpResponse<byte[]> response;
+            HttpResponse<InputStream> response;
             try {
-                response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofByteArray());
+                response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofInputStream());
             } catch (IOException e) {
                 throw new TrackerException("Tracker request to " + announceUrl + " failed: " + TrackerErrors.reason(e), e);
             } catch (InterruptedException e) {
@@ -108,7 +111,11 @@ public final class HttpTrackerClient implements TrackerClient {
                 throw new TrackerException("Tracker request to " + announceUrl + " was interrupted", e);
             }
             status = response.statusCode();
-            body = response.body();
+            try {
+                body = status == 200 ? readBoundedBody(response.body()) : new byte[0];
+            } finally {
+                closeQuietly(response.body());
+            }
         }
 
         if (status != 200) {
@@ -116,6 +123,33 @@ public final class HttpTrackerClient implements TrackerClient {
         }
 
         return parseResponse(body);
+    }
+
+    /** The direct path's equivalent of MiniHttp's own size cap and deadline: REQUEST_TIMEOUT only
+     * covers getting the response headers, so the body read gets its own deadline (closing the
+     * stream unblocks it) and is cut off past MAX_RESPONSE_BYTES. See design_docs/0090. */
+    private byte[] readBoundedBody(InputStream in) {
+        CompletableFuture.delayedExecutor(RESPONSE_DEADLINE_SECONDS, TimeUnit.SECONDS).execute(() -> closeQuietly(in));
+        byte[] body;
+        try {
+            body = in.readNBytes(MAX_RESPONSE_BYTES + 1);
+        } catch (IOException e) {
+            throw new TrackerException("Tracker request to " + announceUrl + " failed while reading the reply: "
+                    + TrackerErrors.reason(e), e);
+        }
+        if (body.length > MAX_RESPONSE_BYTES) {
+            throw new TrackerException("Tracker " + announceUrl + " sent a reply larger than "
+                    + (MAX_RESPONSE_BYTES >> 20) + " MB");
+        }
+        return body;
+    }
+
+    private static void closeQuietly(InputStream in) {
+        try {
+            in.close();
+        } catch (IOException ignored) {
+            // nothing more to release
+        }
     }
 
     private String buildUrl(TrackerRequest request) {

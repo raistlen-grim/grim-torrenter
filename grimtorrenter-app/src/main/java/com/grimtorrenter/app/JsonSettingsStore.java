@@ -78,11 +78,11 @@ public class JsonSettingsStore implements SettingsStore {
         return defaults;
     }
 
+    /** Atomic (AtomicJsonFile). A settings.json that is corrupt anyway - hand-edited, say - still
+     * fails startup on purpose rather than falling back to defaults: the defaults have
+     * authEnabled off, and silently opening the API is worse than refusing to start. See
+     * design_docs/0093. */
     private void writeToDisk(Settings settings) {
-        try {
-            objectMapper.writerWithDefaultPrettyPrinter().writeValue(settingsFile.toFile(), settings);
-        } catch (IOException e) {
-            throw new UncheckedIOException("Could not write " + settingsFile, e);
-        }
+        AtomicJsonFile.write(objectMapper, settingsFile, settings, false);
     }
 }

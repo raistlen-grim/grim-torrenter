@@ -363,3 +363,12 @@ case still depends on the server selecting `bearer`.
 
 Stability: no new state on the backend; one boolean signal on the frontend. The failure mode
 removed was a reconnect every few seconds per affected browser, forever.
+
+## 2026-10-17 addendum: revocation and throttle (superseded parts)
+
+Revised by [[0094-session-revocation-error-shape-and-api-consistency]]:
+- "A password change doesn't revoke already-issued tokens" is withdrawn. A change now revokes
+  every token except the caller's own.
+- Open WebSockets are re-checked every 2 s and closed once their token stops being valid.
+- The failed-login backoff moved from `SessionTokenStore` to `LoginThrottle`, which also allows
+  only one verification at a time.

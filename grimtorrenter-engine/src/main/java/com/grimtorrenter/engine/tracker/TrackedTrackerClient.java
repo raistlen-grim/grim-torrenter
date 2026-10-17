@@ -79,7 +79,11 @@ public final class TrackedTrackerClient implements TrackerClient {
         return List.of(status);
     }
 
-    private void recordSuccess(TrackerResponse response) {
+    /** recordSuccess()/recordFailure() are synchronized: one torrent's announces can overlap
+     * (the scheduled reannounce, a forced one, the background STOPPED and COMPLETED announces),
+     * and the failure streak below is read-modify-write. Off the hot path - once per announce.
+     * See design_docs/0092. */
+    private synchronized void recordSuccess(TrackerResponse response) {
         Instant now = clock.instant();
         status = new TrackerStatus(url, tier, TrackerStatus.State.WORKING, now,
                 now.plusSeconds(response.interval()), null, response.complete(), response.incomplete(),
@@ -99,7 +103,7 @@ public final class TrackedTrackerClient implements TrackerClient {
         }
     }
 
-    private void recordFailure(TrackerException e) {
+    private synchronized void recordFailure(TrackerException e) {
         Instant now = clock.instant();
         TrackerStatus previous = status;
         status = new TrackerStatus(url, tier, TrackerStatus.State.ERROR, now, null,

@@ -1,5 +1,6 @@
 package com.grimtorrenter.engine.engine;
 
+import com.grimtorrenter.engine.GuardedTask;
 import com.grimtorrenter.engine.bencode.BDictionary;
 import com.grimtorrenter.engine.bencode.BList;
 import com.grimtorrenter.engine.bencode.BString;
@@ -63,6 +64,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.NetworkInterface;
 import java.net.UnknownHostException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
@@ -599,20 +601,20 @@ public final class TorrentEngine {
         if (this.peerServer != null) {
             this.peerServer.setIpFilter(this.blocklist);
         }
-        this.maintenanceScheduler.scheduleWithFixedDelay(this.blocklist::refreshIfNeeded,
+        this.maintenanceScheduler.scheduleWithFixedDelay(GuardedTask.of("blocklist refresh", this.blocklist::refreshIfNeeded),
                 1, BLOCKLIST_CHECK_INTERVAL_SECONDS, TimeUnit.SECONDS);
-        this.maintenanceScheduler.scheduleWithFixedDelay(this::checkSeedingLimits,
+        this.maintenanceScheduler.scheduleWithFixedDelay(GuardedTask.of("seeding-limit check", this::checkSeedingLimits),
                 SEEDING_LIMIT_CHECK_INTERVAL_SECONDS, SEEDING_LIMIT_CHECK_INTERVAL_SECONDS, TimeUnit.SECONDS);
-        this.maintenanceScheduler.scheduleWithFixedDelay(this::flushLifetimeStats,
+        this.maintenanceScheduler.scheduleWithFixedDelay(GuardedTask.of("lifetime-stats flush", this::flushLifetimeStats),
                 LIFETIME_STATS_FLUSH_INTERVAL_SECONDS, LIFETIME_STATS_FLUSH_INTERVAL_SECONDS, TimeUnit.SECONDS);
-        this.maintenanceScheduler.scheduleWithFixedDelay(this::scanWatchFolder,
+        this.maintenanceScheduler.scheduleWithFixedDelay(GuardedTask.of("watch-folder scan", this::scanWatchFolder),
                 this.watchFolderScanIntervalSeconds, this.watchFolderScanIntervalSeconds, TimeUnit.SECONDS);
         if (this.dhtNode != null) {
-            this.maintenanceScheduler.scheduleWithFixedDelay(this::refreshDhtRoutingTable,
+            this.maintenanceScheduler.scheduleWithFixedDelay(GuardedTask.of("DHT refresh", this::refreshDhtRoutingTable),
                     this.dhtRefreshIntervalSeconds, this.dhtRefreshIntervalSeconds, TimeUnit.SECONDS);
         }
         if (this.lsdService != null) {
-            this.maintenanceScheduler.scheduleWithFixedDelay(this::announceViaLsd,
+            this.maintenanceScheduler.scheduleWithFixedDelay(GuardedTask.of("LSD announce", this::announceViaLsd),
                     this.lsdAnnounceIntervalSeconds, this.lsdAnnounceIntervalSeconds, TimeUnit.SECONDS);
         }
         // Exactly one TorrentEngine per running process in production (TorrentEngineProducer's
@@ -1099,7 +1101,7 @@ public final class TorrentEngine {
         NodeId generated = NodeId.random();
         try {
             Files.createDirectories(configDirectory);
-            Files.writeString(marker, generated.hex());
+            writeAtomically(marker, generated.hex());
         } catch (IOException e) {
             LOG.log(System.Logger.Level.WARNING, "Could not persist DHT node id - it will regenerate next restart", e);
         }
@@ -1163,9 +1165,7 @@ public final class TorrentEngine {
         }
         try {
             Files.createDirectories(configDirectory);
-            Path tempFile = Files.createTempFile(configDirectory, DHT_KNOWN_NODES_MARKER_FILENAME, ".tmp");
-            Files.writeString(tempFile, content.toString());
-            Files.move(tempFile, marker, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            writeAtomically(marker, content.toString());
         } catch (IOException e) {
             LOG.log(System.Logger.Level.WARNING, "Could not persist DHT routing table", e);
         }
@@ -1360,9 +1360,8 @@ public final class TorrentEngine {
                 created.setIpFilter(blocklist);
                 created.setProxyProvider(proxyConfig);
                 directories.put(infoHash, contentPathFor(metadata, torrentDirectory));
-                if (!resolution.preExisting()) {
-                    created.start();
-                }
+                // Started below, once out of computeIfAbsent: the first announce can take a
+                // tracker timeout, and this lambda holds the map's bin lock. See design_docs/0092.
                 return created;
             } catch (IOException e) {
                 creationFailure.set(e);
@@ -1371,6 +1370,9 @@ public final class TorrentEngine {
         });
         if (creationFailure.get() != null) {
             throw creationFailure.get();
+        }
+        if (wasNewlyCreated.get() && !resolution.preExisting()) {
+            session.start();
         }
         if (wasNewlyCreated.get()) {
             String message = source != null ? "Added via " + source : null;
@@ -1427,11 +1429,21 @@ public final class TorrentEngine {
             throw new TorrentEngineException(
                     "Magnet link has no usable tracker, and DHT is unavailable - trackerless magnets need DHT");
         }
+        // putIfAbsent is the claim: of two concurrent adds of the same magnet (the UI and the
+        // watch folder, say), exactly one starts a fetch. See design_docs/0092.
+        PendingMagnet pending = new PendingMagnet(infoHash, magnet.displayName(), magnet.trackers());
+        PendingMagnet raced = pendingMagnets.putIfAbsent(infoHash, pending);
+        if (raced != null) {
+            return new AddMagnetResult(null, raced, true);
+        }
         // Declared before the fetch itself starts, same "persist before acting"
         // reasoning as design_docs/0069 - see design_docs/0070.
-        PendingMagnet pending = new PendingMagnet(infoHash, magnet.displayName(), magnet.trackers());
-        writeMagnetPendingMarker(configTorrentDirectory(infoHash), pending);
-        pendingMagnets.put(infoHash, pending);
+        try {
+            writeMagnetPendingMarker(configTorrentDirectory(infoHash), pending);
+        } catch (RuntimeException e) {
+            pendingMagnets.remove(infoHash, pending);
+            throw e;
+        }
         startMagnetFetch(magnet, trackerUrls, source);
         return new AddMagnetResult(null, pending, false);
     }
@@ -1526,7 +1538,7 @@ public final class TorrentEngine {
             alreadyTried.addAll(fresh);
             Optional<byte[]> infoDictBytes = raceOneRound(magnet, fresh);
             if (infoDictBytes.isPresent()) {
-                addFetchedTorrent(magnet, infoDictBytes.get(), trackerUrls, source);
+                addFetchedTorrentUnlessRemoved(magnet, infoDictBytes.get(), trackerUrls, source);
                 return;
             }
             if (fresh.isEmpty() && !sleepUnlessDeadlinePassed(EMPTY_ROUND_RETRY_DELAY, deadline)) {
@@ -1582,7 +1594,7 @@ public final class TorrentEngine {
                 // it relies on the resulting TorrentSession's own periodic DHT peer discovery
                 // (discoverPeersViaDht(), design_docs/0036's own 2026-09-06 revision) from here
                 // on, same as it relied on DHT to find this first batch of peers.
-                addFetchedTorrent(magnet, infoDictBytes.get(), List.of(), source);
+                addFetchedTorrentUnlessRemoved(magnet, infoDictBytes.get(), List.of(), source);
                 return;
             }
             if (fresh.isEmpty() && !sleepUnlessDeadlinePassed(EMPTY_ROUND_RETRY_DELAY, deadline)) {
@@ -1671,6 +1683,19 @@ public final class TorrentEngine {
      * watch-folder-dropped .torrent file already gets). Package-private (not private) so tests
      * can drive this directly rather than through a real peer metadata fetch - same
      * test-visibility rationale as trackerStatusListenerFor above. */
+    /** The fetch loops only check for a removal between rounds, and a round can take many
+     * seconds - a magnet removed while its winning round was still running must not be added
+     * once that round returns. See design_docs/0092. */
+    private void addFetchedTorrentUnlessRemoved(MagnetLink magnet, byte[] infoDictBytes, List<String> trackerUrls,
+                                                String source) {
+        if (!pendingMagnets.containsKey(magnet.infoHash())) {
+            LOG.log(System.Logger.Level.INFO, "Magnet " + magnet.infoHash()
+                    + " was removed while its metadata was being fetched - not adding it");
+            return;
+        }
+        addFetchedTorrent(magnet, infoDictBytes, trackerUrls, source);
+    }
+
     void addFetchedTorrent(MagnetLink magnet, byte[] infoDictBytes, List<String> trackerUrls, String source) {
         try {
             addTorrent(synthesizeTorrentFileBytes(infoDictBytes, trackerUrls), source != null ? source : MAGNET_SOURCE);
@@ -1719,8 +1744,8 @@ public final class TorrentEngine {
                 restoreOne(directory);
             }
         } catch (IOException e) {
-            throw new TorrentEngineException(
-                    "Could not scan config directory " + torrentsConfigDirectory + ": " + e.getMessage());
+            throw new TorrentEngineIoException(
+                    "Could not scan config directory " + torrentsConfigDirectory + ": " + e.getMessage(), e);
         }
     }
 
@@ -1805,12 +1830,13 @@ public final class TorrentEngine {
 
     /** Stops and forgets the session, and deletes its persisted resume record (so it
      * doesn't reappear on the next restore()) - but never deletes already-downloaded
-     * files. Use removeTorrent(infoHash, true) to delete those too. */
-    public void removeTorrent(InfoHash infoHash) {
-        removeTorrent(infoHash, false);
+     * files. Use removeTorrent(infoHash, true) to delete those too. Returns whether there was a
+     * torrent or pending magnet to remove. */
+    public boolean removeTorrent(InfoHash infoHash) {
+        return removeTorrent(infoHash, false);
     }
 
-    public void removeTorrent(InfoHash infoHash, boolean deleteData) {
+    public boolean removeTorrent(InfoHash infoHash, boolean deleteData) {
         // Checked first, before ever touching sessions/directories - a pending magnet never has
         // either populated. deleteData is meaningless here (nothing was ever downloaded) and is
         // ignored. The in-flight fetch thread, if any, notices via its own periodic
@@ -1819,7 +1845,7 @@ public final class TorrentEngine {
         if (pendingMagnets.remove(infoHash) != null) {
             deleteMagnetPendingMarker(configTorrentDirectory(infoHash));
             eventStore.record(new LibraryEvent(Instant.now(), EventType.REMOVED, infoHash.hex(), null, null));
-            return;
+            return true;
         }
         TorrentSession session = sessions.remove(infoHash);
         trackerReachability.forget(infoHash.hex());
@@ -1854,6 +1880,7 @@ public final class TorrentEngine {
             deleteIfExists(configTorrentDirectory.resolve(TORRENT_FILE_MARKER_FILENAME));
             deleteIfExists(configTorrentDirectory.resolve(STATE_MARKER_FILENAME));
         }
+        return session != null;
     }
 
     /**
@@ -1861,24 +1888,32 @@ public final class TorrentEngine {
      * state survives, so resumeTorrent picks up where it left off without
      * re-downloading anything, for as long as this TorrentEngine instance
      * (i.e. the running process) stays alive. See design_docs/0018.
+     *
+     * <p>Returns whether the torrent exists (false for a pending magnet, which has nothing to
+     * pause), so the REST layer can 404 like every other per-torrent endpoint.
      */
-    public void pauseTorrent(InfoHash infoHash) {
+    public boolean pauseTorrent(InfoHash infoHash) {
         TorrentSession session = sessions.get(infoHash);
-        if (session != null) {
-            session.stop();
-            writeStateMarker(configTorrentDirectory(infoHash), STATE_STOPPED);
-            // A deliberate stop shouldn't wait on the next periodic tick to capture its final
-            // lifetime totals. See design_docs/0064.
-            flushLifetimeStats(session);
+        if (session == null) {
+            return false;
         }
+        session.stop();
+        writeStateMarker(configTorrentDirectory(infoHash), STATE_STOPPED);
+        // A deliberate stop shouldn't wait on the next periodic tick to capture its final
+        // lifetime totals. See design_docs/0064.
+        flushLifetimeStats(session);
+        return true;
     }
 
-    public void resumeTorrent(InfoHash infoHash) {
+    /** Returns whether the torrent exists - see pauseTorrent(). */
+    public boolean resumeTorrent(InfoHash infoHash) {
         TorrentSession session = sessions.get(infoHash);
-        if (session != null) {
-            session.start();
-            writeStateMarker(configTorrentDirectory(infoHash), STATE_RUNNING);
+        if (session == null) {
+            return false;
         }
+        session.start();
+        writeStateMarker(configTorrentDirectory(infoHash), STATE_RUNNING);
+        return true;
     }
 
     /** Forced recheck - see TorrentSession.recheck(). The persisted running/stopped marker is
@@ -2139,51 +2174,79 @@ public final class TorrentEngine {
         }
     }
 
+    /** Every marker is written through here - temp file in the same directory, then an atomic
+     * rename - so a crash mid-write leaves the old marker or the new one, never a torn file that
+     * a reader then has to reject. See design_docs/0092. */
+    private static void writeAtomically(Path target, byte[] content) throws IOException {
+        Path temp = Files.createTempFile(target.getParent(), target.getFileName().toString(), ".tmp");
+        try {
+            Files.write(temp, content);
+            Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } finally {
+            Files.deleteIfExists(temp);
+        }
+    }
+
+    private static void writeAtomically(Path target, String content) throws IOException {
+        writeAtomically(target, content.getBytes(StandardCharsets.UTF_8));
+    }
+
     private static void writeTorrentFileMarker(Path directory, byte[] torrentFileBytes) throws IOException {
-        Files.write(directory.resolve(TORRENT_FILE_MARKER_FILENAME), torrentFileBytes);
+        writeAtomically(directory.resolve(TORRENT_FILE_MARKER_FILENAME), torrentFileBytes);
     }
 
     private static void writeStateMarker(Path directory, String state) {
         try {
-            Files.writeString(directory.resolve(STATE_MARKER_FILENAME), state);
+            writeAtomically(directory.resolve(STATE_MARKER_FILENAME), state);
         } catch (IOException e) {
-            throw new TorrentEngineException("Could not persist state to " + directory + ": " + e.getMessage());
+            throw new TorrentEngineIoException("Could not persist state to " + directory + ": " + e.getMessage(), e);
         }
     }
 
-    private static String readStateMarker(Path directory) throws IOException {
+    /** RUNNING when absent or unreadable - the same default a torrent has before it was ever
+     * paused. Like every marker reader here, never throws: a bad preference file must not make a
+     * torrent disappear on restore. See design_docs/0092. */
+    private static String readStateMarker(Path directory) {
         Path stateMarker = directory.resolve(STATE_MARKER_FILENAME);
-        return Files.exists(stateMarker) ? Files.readString(stateMarker).strip() : STATE_RUNNING;
+        if (!Files.exists(stateMarker)) {
+            return STATE_RUNNING;
+        }
+        try {
+            return Files.readString(stateMarker).strip();
+        } catch (IOException e) {
+            LOG.log(System.Logger.Level.WARNING, "Could not read state marker in " + directory + " - treating as running", e);
+            return STATE_RUNNING;
+        }
     }
 
     private static void writeSeedingLimitOverrideMarker(Path directory, SeedingLimitOverride override) {
         try {
-            Files.writeString(directory.resolve(SEEDING_LIMIT_OVERRIDE_MARKER_FILENAME),
+            writeAtomically(directory.resolve(SEEDING_LIMIT_OVERRIDE_MARKER_FILENAME),
                     "ratioLimit=" + override.ratioLimit() + "\ntimeLimitMinutes=" + override.timeLimitMinutes() + "\n");
         } catch (IOException e) {
-            throw new TorrentEngineException(
-                    "Could not persist seeding limit override to " + directory + ": " + e.getMessage());
+            throw new TorrentEngineIoException(
+                    "Could not persist seeding limit override to " + directory + ": " + e.getMessage(), e);
         }
     }
 
     private static void writeTorrentLimitOverrideMarker(Path directory, TorrentLimitOverride override) {
         try {
-            Files.writeString(directory.resolve(TORRENT_LIMIT_OVERRIDE_MARKER_FILENAME),
+            writeAtomically(directory.resolve(TORRENT_LIMIT_OVERRIDE_MARKER_FILENAME),
                     "uploadBytesPerSecOverride=" + override.uploadBytesPerSecOverride()
                             + "\ndownloadBytesPerSecOverride=" + override.downloadBytesPerSecOverride()
                             + "\nmaxConnectionsOverride=" + override.maxConnectionsOverride() + "\n");
         } catch (IOException e) {
-            throw new TorrentEngineException(
-                    "Could not persist torrent limit override to " + directory + ": " + e.getMessage());
+            throw new TorrentEngineIoException(
+                    "Could not persist torrent limit override to " + directory + ": " + e.getMessage(), e);
         }
     }
 
     private static void writeAddedAtMarker(Path directory, Instant addedAt) {
         try {
-            Files.writeString(directory.resolve(ADDED_AT_MARKER_FILENAME), addedAt.toString());
+            writeAtomically(directory.resolve(ADDED_AT_MARKER_FILENAME), addedAt.toString());
         } catch (IOException e) {
-            throw new TorrentEngineException(
-                    "Could not persist added-at timestamp to " + directory + ": " + e.getMessage());
+            throw new TorrentEngineIoException(
+                    "Could not persist added-at timestamp to " + directory + ": " + e.getMessage(), e);
         }
     }
 
@@ -2206,10 +2269,10 @@ public final class TorrentEngine {
 
     private static void writeDownloadPathMarker(Path configTorrentDirectory, Path downloadPath) {
         try {
-            Files.writeString(configTorrentDirectory.resolve(DOWNLOAD_PATH_MARKER_FILENAME), downloadPath.toString());
+            writeAtomically(configTorrentDirectory.resolve(DOWNLOAD_PATH_MARKER_FILENAME), downloadPath.toString());
         } catch (IOException e) {
-            throw new TorrentEngineException(
-                    "Could not persist download path to " + configTorrentDirectory + ": " + e.getMessage());
+            throw new TorrentEngineIoException(
+                    "Could not persist download path to " + configTorrentDirectory + ": " + e.getMessage(), e);
         }
     }
 
@@ -2239,10 +2302,10 @@ public final class TorrentEngine {
             for (String tracker : pending.trackers()) {
                 content.append("tracker=").append(tracker).append('\n');
             }
-            Files.writeString(configTorrentDirectory.resolve(MAGNET_PENDING_MARKER_FILENAME), content.toString());
+            writeAtomically(configTorrentDirectory.resolve(MAGNET_PENDING_MARKER_FILENAME), content.toString());
         } catch (IOException e) {
-            throw new TorrentEngineException(
-                    "Could not persist magnet-pending marker to " + configTorrentDirectory + ": " + e.getMessage());
+            throw new TorrentEngineIoException(
+                    "Could not persist magnet-pending marker to " + configTorrentDirectory + ": " + e.getMessage(), e);
         }
     }
 
@@ -2293,9 +2356,7 @@ public final class TorrentEngine {
                     + "\nactiveMillis=" + stats.activeMillisBaseline()
                     + "\ncompletedAtEpochMillis=" + stats.completedAtEpochMillis()
                     + "\nwastedBytes=" + stats.wastedBytesBaseline() + "\n";
-            Path tempFile = Files.createTempFile(configTorrentDirectory, LIFETIME_STATS_MARKER_FILENAME, ".tmp");
-            Files.writeString(tempFile, content);
-            Files.move(tempFile, marker, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            writeAtomically(marker, content);
         } catch (IOException e) {
             LOG.log(System.Logger.Level.WARNING, "Could not persist lifetime stats to " + configTorrentDirectory, e);
         }
@@ -2360,28 +2421,36 @@ public final class TorrentEngine {
     /** Absent marker (every pre-existing torrent directory, and any brand-new one) means
      * "inherit both metrics from the global default" - no migration needed. See
      * design_docs/0054. */
-    private static SeedingLimitOverride readSeedingLimitOverrideMarker(Path directory) throws IOException {
+    private static SeedingLimitOverride readSeedingLimitOverrideMarker(Path directory) {
         Path marker = directory.resolve(SEEDING_LIMIT_OVERRIDE_MARKER_FILENAME);
         if (!Files.exists(marker)) {
             return SeedingLimitOverride.INHERIT;
         }
         double ratioLimit = SeedingLimitOverride.INHERIT.ratioLimit();
         long timeLimitMinutes = SeedingLimitOverride.INHERIT.timeLimitMinutes();
-        for (String line : Files.readAllLines(marker)) {
-            String[] parts = line.split("=", 2);
-            if (parts.length != 2) {
-                continue;
-            }
-            switch (parts[0]) {
-                case "ratioLimit" -> ratioLimit = Double.parseDouble(parts[1]);
-                case "timeLimitMinutes" -> timeLimitMinutes = Long.parseLong(parts[1]);
-                default -> {
-                    // Unknown line - ignore rather than fail, forward-compatible with a
-                    // future field this version doesn't know about yet.
+        try {
+            for (String line : Files.readAllLines(marker)) {
+                String[] parts = line.split("=", 2);
+                if (parts.length != 2) {
+                    continue;
+                }
+                switch (parts[0]) {
+                    case "ratioLimit" -> ratioLimit = Double.parseDouble(parts[1]);
+                    case "timeLimitMinutes" -> timeLimitMinutes = Long.parseLong(parts[1]);
+                    default -> {
+                        // Unknown line - ignore rather than fail, forward-compatible with a
+                        // future field this version doesn't know about yet.
+                    }
                 }
             }
+            return new SeedingLimitOverride(ratioLimit, timeLimitMinutes);
+        } catch (IOException | RuntimeException e) {
+            // Unreadable or corrupt - fall back to the global defaults rather than dropping the
+            // torrent from restore. See design_docs/0092.
+            LOG.log(System.Logger.Level.WARNING, "Could not read seeding-limit override in " + directory
+                    + " - using the global defaults", e);
+            return SeedingLimitOverride.INHERIT;
         }
-        return new SeedingLimitOverride(ratioLimit, timeLimitMinutes);
     }
 
     private static void writeFilePrioritiesMarker(Path directory, FilePriorities priorities) {
@@ -2393,10 +2462,10 @@ public final class TorrentEngine {
             }
         }
         try {
-            Files.writeString(directory.resolve(FILE_PRIORITIES_MARKER_FILENAME), lines.toString());
+            writeAtomically(directory.resolve(FILE_PRIORITIES_MARKER_FILENAME), lines.toString());
         } catch (IOException e) {
-            throw new TorrentEngineException(
-                    "Could not persist file priorities to " + directory + ": " + e.getMessage());
+            throw new TorrentEngineIoException(
+                    "Could not persist file priorities to " + directory + ": " + e.getMessage(), e);
         }
     }
 
@@ -2407,11 +2476,11 @@ public final class TorrentEngine {
      * instantly. See design_docs/0075. */
     private static void writeLabelIdsMarker(Path directory, List<String> ids) {
         try {
-            Files.writeString(directory.resolve(LABEL_IDS_MARKER_FILENAME),
+            writeAtomically(directory.resolve(LABEL_IDS_MARKER_FILENAME),
                     ids.isEmpty() ? "" : String.join("\n", ids) + "\n");
         } catch (IOException e) {
-            throw new TorrentEngineException(
-                    "Could not persist labels to " + directory + ": " + e.getMessage());
+            throw new TorrentEngineIoException(
+                    "Could not persist labels to " + directory + ": " + e.getMessage(), e);
         }
     }
 
@@ -2436,31 +2505,38 @@ public final class TorrentEngine {
         }
     }
 
-    private static FilePriorities readFilePrioritiesMarker(Path directory, int fileCount) throws IOException {
+    private static FilePriorities readFilePrioritiesMarker(Path directory, int fileCount) {
         Path marker = directory.resolve(FILE_PRIORITIES_MARKER_FILENAME);
         FilePriority[] priorities = new FilePriority[fileCount];
         java.util.Arrays.fill(priorities, FilePriority.MEDIUM);
+        List<String> lines = List.of();
         if (Files.exists(marker)) {
-            for (String line : Files.readAllLines(marker)) {
-                String[] parts = line.split("=", 2);
-                if (parts.length != 2) {
-                    continue;
+            try {
+                lines = Files.readAllLines(marker);
+            } catch (IOException e) {
+                LOG.log(System.Logger.Level.WARNING, "Could not read file priorities in " + directory
+                        + " - every file at normal priority", e);
+            }
+        }
+        for (String line : lines) {
+            String[] parts = line.split("=", 2);
+            if (parts.length != 2) {
+                continue;
+            }
+            try {
+                int index = Integer.parseInt(parts[0].trim());
+                if (index >= 0 && index < fileCount) {
+                    priorities[index] = FilePriority.valueOf(parts[1].trim());
                 }
-                try {
-                    int index = Integer.parseInt(parts[0].trim());
-                    if (index >= 0 && index < fileCount) {
-                        priorities[index] = FilePriority.valueOf(parts[1].trim());
-                    }
-                } catch (IllegalArgumentException ignored) {
-                    // unparseable index or unknown priority name - leave that file at MEDIUM
-                }
+            } catch (IllegalArgumentException ignored) {
+                // unparseable index or unknown priority name - leave that file at MEDIUM
             }
         }
         FilePriorities result = new FilePriorities(java.util.Arrays.asList(priorities));
         return result.anyWanted() ? result : FilePriorities.allMedium(fileCount);
     }
 
-    private static TorrentLimitOverride readTorrentLimitOverrideMarker(Path directory) throws IOException {
+    private static TorrentLimitOverride readTorrentLimitOverrideMarker(Path directory) {
         Path marker = directory.resolve(TORRENT_LIMIT_OVERRIDE_MARKER_FILENAME);
         if (!Files.exists(marker)) {
             return TorrentLimitOverride.INHERIT;
@@ -2468,29 +2544,38 @@ public final class TorrentEngine {
         long uploadBytesPerSecOverride = TorrentLimitOverride.INHERIT.uploadBytesPerSecOverride();
         long downloadBytesPerSecOverride = TorrentLimitOverride.INHERIT.downloadBytesPerSecOverride();
         int maxConnectionsOverride = TorrentLimitOverride.INHERIT.maxConnectionsOverride();
-        for (String line : Files.readAllLines(marker)) {
-            String[] parts = line.split("=", 2);
-            if (parts.length != 2) {
-                continue;
-            }
-            switch (parts[0]) {
-                case "uploadBytesPerSecOverride" -> uploadBytesPerSecOverride = Long.parseLong(parts[1]);
-                case "downloadBytesPerSecOverride" -> downloadBytesPerSecOverride = Long.parseLong(parts[1]);
-                case "maxConnectionsOverride" -> maxConnectionsOverride = Integer.parseInt(parts[1]);
-                default -> {
-                    // Unknown line - ignore rather than fail, forward-compatible with a
-                    // future field this version doesn't know about yet.
+        try {
+            for (String line : Files.readAllLines(marker)) {
+                String[] parts = line.split("=", 2);
+                if (parts.length != 2) {
+                    continue;
+                }
+                switch (parts[0]) {
+                    case "uploadBytesPerSecOverride" -> uploadBytesPerSecOverride = Long.parseLong(parts[1]);
+                    case "downloadBytesPerSecOverride" -> downloadBytesPerSecOverride = Long.parseLong(parts[1]);
+                    case "maxConnectionsOverride" -> maxConnectionsOverride = Integer.parseInt(parts[1]);
+                    default -> {
+                        // Unknown line - ignore rather than fail, forward-compatible with a
+                        // future field this version doesn't know about yet.
+                    }
                 }
             }
+            return new TorrentLimitOverride(uploadBytesPerSecOverride, downloadBytesPerSecOverride,
+                    maxConnectionsOverride);
+        } catch (IOException | RuntimeException e) {
+            // Unreadable or corrupt - fall back to the global defaults rather than dropping the
+            // torrent from restore. See design_docs/0092.
+            LOG.log(System.Logger.Level.WARNING, "Could not read torrent limit override in " + directory
+                    + " - using the global defaults", e);
+            return TorrentLimitOverride.INHERIT;
         }
-        return new TorrentLimitOverride(uploadBytesPerSecOverride, downloadBytesPerSecOverride, maxConnectionsOverride);
     }
 
     private static void deleteIfExists(Path path) {
         try {
             Files.deleteIfExists(path);
         } catch (IOException e) {
-            throw new TorrentEngineException("Could not delete " + path + ": " + e.getMessage());
+            throw new TorrentEngineIoException("Could not delete " + path + ": " + e.getMessage(), e);
         }
     }
 
@@ -2500,7 +2585,7 @@ public final class TorrentEngine {
                 Files.delete(path);
             }
         } catch (IOException e) {
-            throw new TorrentEngineException("Could not delete " + directory + ": " + e.getMessage());
+            throw new TorrentEngineIoException("Could not delete " + directory + ": " + e.getMessage(), e);
         }
     }
 
@@ -2527,54 +2612,60 @@ public final class TorrentEngine {
     private DirectoryResolution resolveDownloadDirectory(TorrentMetadata metadata) {
         InfoHash infoHash = metadata.infoHash();
         Path configTorrentDirectory = configTorrentDirectory(infoHash);
-        Path alreadyResolved = readDownloadPathMarker(configTorrentDirectory);
-        if (alreadyResolved != null) {
-            return new DirectoryResolution(alreadyResolved, true);
-        }
-
-        Path resolved;
+        // The whole check-claim-record sequence holds the lock: two concurrent adds of the same new
+        // torrent must not each claim a directory, with the marker naming one and the session the
+        // other. Not a hot path - only ever an add. See design_docs/0092.
         synchronized (directoryResolutionLock) {
-            if (metadata instanceof SingleFileTorrent single && !Files.exists(baseDownloadDirectory.resolve(single.name()))) {
-                // Common case: no name collision - claim the flat file path directly (matching
-                // other clients' placement), by creating an empty placeholder while still
-                // holding the lock, same "claim by creating something on disk" idiom the
-                // directory branch below uses. TorrentStorage.create()'s own
-                // baseDirectory.resolve(single.name()) reopens and preallocates it.
-                try {
-                    Files.createDirectories(baseDownloadDirectory);
-                    Files.createFile(baseDownloadDirectory.resolve(single.name()));
-                } catch (IOException e) {
-                    throw new TorrentEngineException(
-                            "Could not claim download file " + single.name() + ": " + e.getMessage());
-                }
-                resolved = baseDownloadDirectory;
-            } else {
-                // Multi-file torrents, or a single-file torrent whose bare name collided with
-                // something already there, each get their own disambiguated subdirectory -
-                // same suffix scheme as before.
-                String safeName = sanitizeDirectoryName(metadata.name());
-                Path candidate = baseDownloadDirectory.resolve(safeName);
-                int suffix = 2;
-                while (Files.exists(candidate)) {
-                    candidate = baseDownloadDirectory.resolve(safeName + "-" + suffix);
-                    suffix++;
-                }
-                try {
-                    Files.createDirectories(candidate);
-                } catch (IOException e) {
-                    throw new TorrentEngineException(
-                            "Could not prepare download directory " + candidate + ": " + e.getMessage());
-                }
-                resolved = candidate;
+            Path alreadyResolved = readDownloadPathMarker(configTorrentDirectory);
+            if (alreadyResolved != null) {
+                return new DirectoryResolution(alreadyResolved, true);
             }
+            Path resolved = claimDownloadPath(metadata);
+            try {
+                Files.createDirectories(configTorrentDirectory);
+            } catch (IOException e) {
+                throw new TorrentEngineIoException("Could not create config directory " + configTorrentDirectory + ": "
+                        + e.getMessage(), e);
+            }
+            writeDownloadPathMarker(configTorrentDirectory, resolved);
+            return new DirectoryResolution(resolved, false);
+        }
+    }
+
+    /** Caller holds directoryResolutionLock. */
+    private Path claimDownloadPath(TorrentMetadata metadata) {
+        if (metadata instanceof SingleFileTorrent single && !Files.exists(baseDownloadDirectory.resolve(single.name()))) {
+            // Common case: no name collision - claim the flat file path directly (matching
+            // other clients' placement), by creating an empty placeholder while still
+            // holding the lock, same "claim by creating something on disk" idiom the
+            // directory branch below uses. TorrentStorage.create()'s own
+            // baseDirectory.resolve(single.name()) reopens and preallocates it.
+            try {
+                Files.createDirectories(baseDownloadDirectory);
+                Files.createFile(baseDownloadDirectory.resolve(single.name()));
+            } catch (IOException e) {
+                throw new TorrentEngineIoException(
+                        "Could not claim download file " + single.name() + ": " + e.getMessage(), e);
+            }
+            return baseDownloadDirectory;
+        }
+        // Multi-file torrents, or a single-file torrent whose bare name collided with
+        // something already there, each get their own disambiguated subdirectory -
+        // same suffix scheme as before.
+        String safeName = sanitizeDirectoryName(metadata.name());
+        Path candidate = baseDownloadDirectory.resolve(safeName);
+        int suffix = 2;
+        while (Files.exists(candidate)) {
+            candidate = baseDownloadDirectory.resolve(safeName + "-" + suffix);
+            suffix++;
         }
         try {
-            Files.createDirectories(configTorrentDirectory);
+            Files.createDirectories(candidate);
         } catch (IOException e) {
-            throw new TorrentEngineException("Could not create config directory " + configTorrentDirectory + ": " + e.getMessage());
+            throw new TorrentEngineIoException(
+                    "Could not prepare download directory " + candidate + ": " + e.getMessage(), e);
         }
-        writeDownloadPathMarker(configTorrentDirectory, resolved);
-        return new DirectoryResolution(resolved, false);
+        return candidate;
     }
 
     /** Replaces filesystem-unsafe characters (path separators on any OS, plus Windows'

@@ -37,7 +37,7 @@ public final class MetainfoParser {
 
         InfoHash infoHash = InfoHash.of(sha1(BencodeEncoder.encode(info)));
 
-        String name = requireString(info, "name");
+        String name = requirePathComponent(requireString(info, "name"), "name");
         long pieceLength = requireLong(info, "piece length");
         PieceHashes pieces = new PieceHashes(requireBytes(info, "pieces"));
 
@@ -53,6 +53,18 @@ public final class MetainfoParser {
 
         List<TorrentFile> files = parseFiles(filesValue);
         return new MultiFileTorrent(name, files, pieceLength, pieces, infoHash, announce, announceList, isPrivate);
+    }
+
+    /** The torrent's name and every file path segment become path components on disk, so each
+     * must be one plain component: not empty, not "." or "..", and no separator or NUL that could
+     * make it absolute or reach outside the download directory. Rejected rather than rewritten -
+     * a torrent shaped like this is malformed or hostile. See design_docs/0090. */
+    static String requirePathComponent(String value, String what) {
+        if (value.isEmpty() || value.equals(".") || value.equals("..")
+                || value.indexOf('/') >= 0 || value.indexOf('\\') >= 0 || value.indexOf('\0') >= 0) {
+            throw new MetainfoException("Unsafe " + what + " in torrent: \"" + value + "\"");
+        }
+        return value;
     }
 
     private static byte[] sha1(byte[] data) {
@@ -150,7 +162,11 @@ public final class MetainfoParser {
                 if (!(segment instanceof BString s)) {
                     throw new MetainfoException("Path segment must be a string");
                 }
-                segments.add(s.utf8());
+                segments.add(requirePathComponent(s.utf8(), "path segment"));
+            }
+            if (segments.isEmpty()) {
+                // An empty path would name the torrent's own directory as a file.
+                throw new MetainfoException("File entry has an empty 'path' list");
             }
             files.add(new TorrentFile(List.copyOf(segments), length));
         }

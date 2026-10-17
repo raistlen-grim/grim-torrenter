@@ -46,6 +46,10 @@ public class SettingsResource {
     @Consumes(MediaType.APPLICATION_JSON)
     @Produces(MediaType.APPLICATION_JSON)
     public Settings update(Settings settings) {
+        if (settings == null) {
+            throw new BadRequestException("Expected a JSON settings object");
+        }
+        requireWithinBounds(settings);
         if (settings.rateLimitScheduleEnabled()) {
             requireParsableTime(settings.rateLimitScheduleStart(), "rateLimitScheduleStart");
             requireParsableTime(settings.rateLimitScheduleEnd(), "rateLimitScheduleEnd");
@@ -82,10 +86,6 @@ public class SettingsResource {
                 throw new BadRequestException("The proxy port must be between 1 and 65535");
             }
         }
-        // No eventLogRetentionDays check here, unlike the schedule times above - Settings'
-        // own compact constructor already normalizes 0/negative to a safe default (see its
-        // Javadoc), so by the time this method sees `settings` there is no invalid value left
-        // to reject. See design_docs/0055.
         Settings before = settingsStore.current();
         settingsStore.update(settings);
         // A torrent that failed its first announce (most often because of the proxy) is retried on a
@@ -95,6 +95,35 @@ public class SettingsResource {
             torrentEngine.retryFailedStarts();
         }
         return settingsStore.current();
+    }
+
+    /** Upper bounds (and, for the network-facing intervals, lower ones) on the numeric settings
+     * whose extremes would hurt the server or other peers: a million concurrent metadata dials,
+     * a one-second LSD multicast or DHT refresh. Settings' own constructor has already replaced
+     * 0/negative with the defaults. Generous on purpose - anything a person would actually choose
+     * passes. Rate limits and seeding limits aren't bounded: their extremes only mean
+     * "unlimited". See design_docs/0094. */
+    private static void requireWithinBounds(Settings settings) {
+        requireRange("magnetFetchTimeBudgetSeconds", settings.magnetFetchTimeBudgetSeconds(), 1, 3600);
+        requireRange("magnetFetchCandidatesPerRound", settings.magnetFetchCandidatesPerRound(), 1, 500);
+        requireRange("magnetFetchConcurrencyLimit", settings.magnetFetchConcurrencyLimit(), 1, 1024);
+        requireRange("dhtReannounceIntervalSeconds", settings.dhtReannounceIntervalSeconds(), 60, 86_400);
+        requireRange("dhtRefreshIntervalSeconds", settings.dhtRefreshIntervalSeconds(), 60, 86_400);
+        // BEP 14 asks for at most one LSD announce per minute.
+        requireRange("lsdAnnounceIntervalSeconds", settings.lsdAnnounceIntervalSeconds(), 60, 86_400);
+        requireRange("watchFolderPollIntervalSeconds", settings.watchFolderPollIntervalSeconds(), 1, 86_400);
+        requireRange("maxConnectionsPerTorrent", settings.maxConnectionsPerTorrent(), 1, 500);
+        requireRange("utpConnectTimeoutSeconds", settings.utpConnectTimeoutSeconds(), 1, 60);
+        requireRange("authTokenTtlDays", settings.authTokenTtlDays(), 1, 365);
+        requireRange("eventLogRetentionDays", settings.eventLogRetentionDays(), 1, 3650);
+        requireRange("watchFolderRetentionDays", settings.watchFolderRetentionDays(), 1, 3650);
+        requireRange("blocklistRefreshHours", settings.blocklistRefreshHours(), 0, 8760);
+    }
+
+    private static void requireRange(String field, long value, long min, long max) {
+        if (value < min || value > max) {
+            throw new BadRequestException(field + " must be between " + min + " and " + max + " (was " + value + ")");
+        }
     }
 
     private static boolean proxyChanged(Settings before, Settings after) {

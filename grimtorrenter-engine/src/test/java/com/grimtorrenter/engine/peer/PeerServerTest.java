@@ -130,6 +130,28 @@ class PeerServerTest {
         }
     }
 
+    /** Each silent connection holds a socket and a thread for the handshake timeout - past
+     * MAX_PENDING_HANDSHAKES at once, a new one is closed straight away rather than queued. See
+     * design_docs/0092. */
+    @Test
+    void closesConnectionsBeyondThePendingHandshakeCapImmediately() throws Exception {
+        server = new PeerServer(0, hash -> Optional.empty());
+        java.util.List<Socket> silent = new java.util.ArrayList<>();
+        try {
+            for (int i = 0; i < PeerServer.MAX_PENDING_HANDSHAKES; i++) {
+                silent.add(new Socket(InetAddress.getLoopbackAddress(), server.port()));
+            }
+            try (Socket overflow = new Socket(InetAddress.getLoopbackAddress(), server.port())) {
+                overflow.setSoTimeout(5000); // well under the 10s handshake timeout
+                assertEquals(-1, overflow.getInputStream().read());
+            }
+        } finally {
+            for (Socket socket : silent) {
+                socket.close();
+            }
+        }
+    }
+
     /** Confirms the peek-and-branch (design_docs/0052) correctly recovers the info hash from
      * a real MSE negotiation (not a plaintext handshake) and still routes to the right
      * handler - the same assertion routesAnAcceptedConnectionToTheHandlerForItsInfoHash makes

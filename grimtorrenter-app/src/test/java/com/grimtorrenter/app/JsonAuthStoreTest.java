@@ -9,6 +9,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Optional;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -36,6 +37,26 @@ class JsonAuthStoreTest {
         assertFalse(store.hasPassword());
         assertFalse(store.verify("anything"));
         assertTrue(Files.exists(tempDir.resolve("auth.json")));
+    }
+
+    /** auth.json holds the password hash: owner-only, and written atomically so no temp file is
+     * left beside it. See design_docs/0093. */
+    @Test
+    void authFileIsOwnerOnlyAndWrittenWithoutLeftovers(@TempDir Path tempDir) throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                java.nio.file.FileSystems.getDefault().supportedFileAttributeViews().contains("posix"));
+        JsonAuthStore store = createStore(tempDir, "");
+        store.setPassword("first");
+        store.setPassword("second");
+
+        assertTrue(store.verify("second"));
+        assertEquals(java.util.Set.of(java.nio.file.attribute.PosixFilePermission.OWNER_READ,
+                        java.nio.file.attribute.PosixFilePermission.OWNER_WRITE),
+                Files.getPosixFilePermissions(tempDir.resolve("auth.json")));
+        try (var files = Files.list(tempDir)) {
+            assertEquals(java.util.List.of("auth.json"),
+                    files.map(p -> p.getFileName().toString()).toList());
+        }
     }
 
     @Test

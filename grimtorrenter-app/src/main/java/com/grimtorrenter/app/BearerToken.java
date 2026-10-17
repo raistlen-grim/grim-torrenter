@@ -4,7 +4,10 @@ package com.grimtorrenter.app;
  * "Bearer &lt;token&gt;" token out of an Authorization header. */
 final class BearerToken {
 
-    private static final String PREFIX = "Bearer ";
+    /** The WWW-Authenticate challenge a 401 carries. */
+    static final String SCHEME = "Bearer";
+
+    private static final String PREFIX = SCHEME + " ";
 
     private BearerToken() {
     }

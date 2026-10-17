@@ -2,6 +2,7 @@ package com.grimtorrenter.app;
 
 import com.grimtorrenter.engine.settings.SettingsStore;
 import jakarta.inject.Inject;
+import jakarta.ws.rs.BadRequestException;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.HeaderParam;
@@ -33,6 +34,9 @@ public class AuthResource {
     SessionTokenStore sessionTokenStore;
 
     @Inject
+    LoginThrottle loginThrottle;
+
+    @Inject
     SettingsStore settingsStore;
 
     @GET
@@ -47,14 +51,21 @@ public class AuthResource {
     @Consumes(MediaType.APPLICATION_JSON)
     @Produces(MediaType.APPLICATION_JSON)
     public LoginResponse login(LoginRequest request) {
-        if (sessionTokenStore.isLockedOut()) {
-            throw new WebApplicationException("Too many failed attempts - try again shortly", 429);
+        if (request == null) {
+            throw new BadRequestException("Expected a JSON body with a password");
         }
-        if (!authStore.verify(request.password())) {
-            sessionTokenStore.recordFailure();
-            throw new NotAuthorizedException("Invalid password");
+        if (!loginThrottle.tryBegin()) {
+            throw new WebApplicationException("Too many login attempts - try again shortly", 429);
         }
-        sessionTokenStore.recordSuccess();
+        boolean verified = false;
+        try {
+            verified = authStore.verify(request.password());
+        } finally {
+            loginThrottle.finish(verified);
+        }
+        if (!verified) {
+            throw new NotAuthorizedException("Invalid password", BearerToken.SCHEME);
+        }
         return new LoginResponse(sessionTokenStore.issue());
     }
 
@@ -71,18 +82,23 @@ public class AuthResource {
      * SettingsResource's own rejection). With one already stored, the request must supply the
      * correct current password - independent of whether authEnabled is even on, so an
      * otherwise-still-open deployment can't have its about-to-be-protected password silently
-     * overwritten by anyone who happens to hit this endpoint first. See design_docs/0061. */
+     * overwritten by anyone who happens to hit this endpoint first. See design_docs/0061.
+     *
+     * <p>Every other session token is revoked (open WebSockets holding one are closed on the next
+     * snapshot tick); the caller's own token, if it sent one, stays valid. See design_docs/0094. */
     @PUT
     @Path("/password")
     @Consumes(MediaType.APPLICATION_JSON)
-    public Response changePassword(PasswordChangeRequest request) {
-        if (request.newPassword() == null || request.newPassword().isBlank()) {
+    public Response changePassword(PasswordChangeRequest request,
+                                   @HeaderParam("Authorization") String authorizationHeader) {
+        if (request == null || request.newPassword() == null || request.newPassword().isBlank()) {
             return ErrorResponses.badRequest("newPassword must not be blank");
         }
         if (authStore.hasPassword() && !authStore.verify(request.currentPassword())) {
-            throw new NotAuthorizedException("Current password is incorrect");
+            throw new NotAuthorizedException("Current password is incorrect", BearerToken.SCHEME);
         }
         authStore.setPassword(request.newPassword());
+        sessionTokenStore.revokeAllExcept(BearerToken.extract(authorizationHeader));
         return Response.noContent().build();
     }
 }

@@ -55,6 +55,19 @@ class JsonLinesEventStoreTest {
         assertEquals(List.of(event), store.all());
     }
 
+    /** record() runs inside engine state transitions and scheduled tasks - a failed append (a
+     * full disk, here simulated by today's file being a directory) must cost only this event,
+     * never throw into the caller. See design_docs/0093. */
+    @Test
+    void recordNeverThrowsWhenTheAppendFails(@TempDir Path tempDir) throws IOException {
+        JsonLinesEventStore store = createStore(tempDir, 30);
+        LibraryEvent event = eventAt(Instant.now());
+        String today = java.time.LocalDate.ofInstant(event.timestamp(), java.time.ZoneId.systemDefault()).toString();
+        Files.createDirectories(tempDir.resolve("events").resolve("events-" + today + ".jsonl"));
+
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> store.record(event));
+    }
+
     @Test
     void recordWritesToTodaysFile(@TempDir Path tempDir) throws IOException {
         JsonLinesEventStore store = createStore(tempDir, 30);
@@ -92,6 +105,35 @@ class JsonLinesEventStoreTest {
 
         assertFalse(Files.exists(staleFile));
         assertTrue(Files.exists(freshFile));
+    }
+
+    /** A crash mid-append leaves a torn last line; the rest of the log must stay readable. See
+     * design_docs/0094. */
+    @Test
+    void aTornLineIsSkippedNotFatal(@TempDir Path tempDir) throws IOException {
+        JsonLinesEventStore store = createStore(tempDir, 30);
+        LibraryEvent event = eventAt(Instant.now());
+        store.record(event);
+        String today = java.time.LocalDate.ofInstant(event.timestamp(), java.time.ZoneId.systemDefault()).toString();
+        Files.writeString(tempDir.resolve("events").resolve("events-" + today + ".jsonl"),
+                "{\"timestamp\":\"20", java.nio.file.StandardOpenOption.APPEND);
+
+        assertEquals(List.of(event), store.all());
+    }
+
+    /** prune() runs from init(); an old day-file that can't be deleted (here a non-empty
+     * directory with a day-file's name) must not stop startup. See design_docs/0094. */
+    @Test
+    void anUndeletableOldFileDoesNotStopStartup(@TempDir Path tempDir) throws IOException {
+        String staleDate = java.time.LocalDate.now().minusDays(40).toString();
+        Path undeletable = tempDir.resolve("events").resolve("events-" + staleDate + ".jsonl");
+        Files.createDirectories(undeletable);
+        Files.writeString(undeletable.resolve("child"), "x");
+
+        JsonLinesEventStore store = org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> createStore(tempDir, 30));
+
+        assertTrue(Files.exists(undeletable));
+        assertEquals(List.of(), store.all());
     }
 
     @Test

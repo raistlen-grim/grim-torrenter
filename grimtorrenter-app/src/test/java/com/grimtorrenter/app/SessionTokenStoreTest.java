@@ -45,33 +45,30 @@ class SessionTokenStoreTest {
     }
 
     @Test
-    void notLockedOutBeforeAnyFailure() {
+    void isValidDoesNotNeedRefreshingAndRejectsRevokedTokens() {
         SessionTokenStore store = createStore();
 
-        assertFalse(store.isLockedOut());
+        String token = store.issue();
+
+        assertTrue(store.isValid(token));
+        assertFalse(store.isValid(null));
+        store.revoke(token);
+        assertFalse(store.isValid(token));
     }
 
-    /** A single failure - or a couple - shouldn't cost any delay at all; an honest typo isn't
-     * a guessing attack. See SessionTokenStore's own FREE_FAILURES. */
+    /** A password change ends every session but the caller's. See design_docs/0094. */
     @Test
-    void aFewFailuresInARowDoNotLockOut() {
+    void revokeAllExceptKeepsOnlyTheGivenToken() {
         SessionTokenStore store = createStore();
+        String caller = store.issue();
+        String other = store.issue();
 
-        store.recordFailure();
-        store.recordFailure();
-        assertFalse(store.isLockedOut());
-    }
+        store.revokeAllExcept(caller);
 
-    @Test
-    void locksOutOnceFreeFailuresAreExhaustedAndClearsOnSuccess() {
-        SessionTokenStore store = createStore();
+        assertTrue(store.validate(caller));
+        assertFalse(store.validate(other));
 
-        for (int i = 0; i < 10; i++) {
-            store.recordFailure();
-        }
-        assertTrue(store.isLockedOut());
-
-        store.recordSuccess();
-        assertFalse(store.isLockedOut());
+        store.revokeAllExcept(null);
+        assertFalse(store.validate(caller));
     }
 }

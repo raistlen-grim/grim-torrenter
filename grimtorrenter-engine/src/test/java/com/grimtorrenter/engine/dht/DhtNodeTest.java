@@ -193,6 +193,61 @@ class DhtNodeTest {
         }
     }
 
+    private static InfoHash infoHashNumbered(int value) {
+        byte[] bytes = new byte[20];
+        bytes[0] = 0x55;
+        bytes[16] = (byte) (value >> 24);
+        bytes[17] = (byte) (value >> 16);
+        bytes[18] = (byte) (value >> 8);
+        bytes[19] = (byte) value;
+        return InfoHash.of(bytes);
+    }
+
+    /** Anyone may announce, so a hash's peer list is capped (oldest announce dropped) and a
+     * get_peers reply carries at most MAX_PEERS_PER_RESPONSE of them, newest first - keeping
+     * the reply inside one datagram. See design_docs/0092. */
+    @Test
+    void peersPerInfoHashAreCappedAndRepliesCarryOnlyTheNewest() throws IOException {
+        nodeA = new DhtNode(NODE_A_ID, 0);
+        InfoHash infoHash = infoHashWithLastByte(7);
+        int announced = DhtNode.MAX_PEERS_PER_INFO_HASH + 20;
+
+        try (DatagramSocket raw = new DatagramSocket()) {
+            InetSocketAddress to = addressOf(nodeA);
+            BString token = getToken(raw, to, infoHash);
+            for (int i = 0; i < announced; i++) {
+                sendRawQuery(raw, to, new AnnouncePeer(BString.of(new byte[]{0x10}), idWithLastByte(9),
+                        infoHash, false, 10_000 + i, token));
+            }
+
+            GetPeers followUp = new GetPeers(BString.of(new byte[]{0x11}), idWithLastByte(9), infoHash);
+            BList values = (BList) ((KrpcResponse) sendRawQuery(raw, to, followUp)).returnValues().get("values");
+
+            assertEquals(DhtNode.MAX_PEERS_PER_RESPONSE, values.values().size());
+            int newestPort = 10_000 + announced - 1;
+            byte[] newest = {127, 0, 0, 1, (byte) (newestPort >> 8), (byte) newestPort};
+            assertEquals(BString.of(newest), values.values().get(0));
+        }
+    }
+
+    /** The number of distinct info hashes stored is capped too - past it, a new hash is simply
+     * not recorded (the announce is still answered). See design_docs/0092. */
+    @Test
+    void storedInfoHashesAreCapped() throws IOException {
+        nodeA = new DhtNode(NODE_A_ID, 0);
+
+        try (DatagramSocket raw = new DatagramSocket()) {
+            InetSocketAddress to = addressOf(nodeA);
+            BString token = getToken(raw, to, infoHashNumbered(0));
+            for (int i = 0; i < DhtNode.MAX_STORED_INFO_HASHES + 10; i++) {
+                KrpcMessage response = sendRawQuery(raw, to, new AnnouncePeer(BString.of(new byte[]{0x12}),
+                        idWithLastByte(9), infoHashNumbered(i), false, 51413, token));
+                assertTrue(response instanceof KrpcResponse);
+            }
+        }
+        assertEquals(DhtNode.MAX_STORED_INFO_HASHES, nodeA.storedInfoHashCount());
+    }
+
     @Test
     void announcePeerWithImpliedPortUsesTheActualSourcePortNotTheDeclaredOne() throws IOException {
         nodeA = new DhtNode(NODE_A_ID, 0);

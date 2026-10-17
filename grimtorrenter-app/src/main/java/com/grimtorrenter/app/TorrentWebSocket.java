@@ -9,22 +9,30 @@ import io.quarkus.websockets.next.WebSocketConnection;
 import jakarta.inject.Inject;
 
 import java.time.Duration;
-import java.util.Set;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeoutException;
+import java.util.function.Predicate;
 
 /**
- * Broadcast-only in Phase 1 - no client-to-server messages are handled.
- * Connections are tracked in a self-managed static set rather than relying
- * on a framework-provided cross-connection broadcast helper, so this works
- * regardless of whether quarkus-websockets-next instantiates one shared
- * endpoint instance or one per connection. See design_docs/0019 for the
- * verification caveats on this file's exact API usage.
+ * Broadcast-only - no client-to-server messages are handled. Connections are tracked in a
+ * self-managed static map rather than relying on a framework-provided cross-connection broadcast
+ * helper, so this works regardless of whether quarkus-websockets-next instantiates one shared
+ * endpoint instance or one per connection. See design_docs/0019.
+ *
+ * <p>Each connection is kept with the token it authenticated with (or none, if auth was off), so
+ * TorrentSnapshotScheduler can close it once that token stops being valid - logout, expiry, a
+ * password change, or auth being switched on. See design_docs/0094.
  */
 @WebSocket(path = "/ws/torrents")
 public class TorrentWebSocket {
 
-    private static final Set<WebSocketConnection> CONNECTIONS = ConcurrentHashMap.newKeySet();
+    /** The token a connection opened with; {@code token} is null when auth was off. A record
+     * because ConcurrentHashMap doesn't allow null values. */
+    private record Client(String token) {
+    }
+
+    private static final Map<WebSocketConnection, Client> CONNECTIONS = new ConcurrentHashMap<>();
     private static final Duration SEND_TIMEOUT = Duration.ofSeconds(5);
 
     @Inject
@@ -32,6 +40,9 @@ public class TorrentWebSocket {
 
     @Inject
     SessionTokenStore sessionTokenStore;
+
+    @Inject
+    OriginPolicy originPolicy;
 
     /** Browsers can't set custom headers on a WebSocket handshake - but the WebSocket
      * constructor's second argument (subprotocols) IS carried as a real request header
@@ -44,11 +55,6 @@ public class TorrentWebSocket {
      * CONNECTIONS and gets closed immediately, rather than silently receiving broadcasts it
      * was never entitled to. See design_docs/0061.
      *
-     * <p>Flagged, like this file's other API usage (design_docs/0019), as not yet confirmed
-     * by actually compiling it: handshakeRequest().header(String) is written against the
-     * documented shape of quarkus-websockets-next's HandshakeRequest, not verified against its
-     * real signature.
-     *
      * <p>The handshake response has to select one of the offered subprotocols: a browser that
      * offered any fails the connection as soon as the handshake completes if the server picks
      * none.
@@ -57,12 +63,23 @@ public class TorrentWebSocket {
      * 2026-10-01 correction. */
     @OnOpen
     public void onOpen(WebSocketConnection connection) {
-        if (settingsStore.current().authEnabled() && !sessionTokenStore.validate(tokenFromSubprotocol(connection))) {
+        var handshake = connection.handshakeRequest();
+        if (!originPolicy.allows(handshake.header("Origin"), handshake.header("Host"),
+                handshake.header("X-Forwarded-Host"))) {
+            // Cross-site WebSocket hijacking - see OriginPolicy and design_docs/0093.
+            Log.warnf("Rejecting WebSocket handshake from origin %s (Host %s) - set "
+                    + "grimtorrenter.allowed-origins if a reverse proxy rewrites Host",
+                    handshake.header("Origin"), handshake.header("Host"));
+            connection.close().subscribe().with(ignored -> { }, failure -> { });
+            return;
+        }
+        String token = tokenFromSubprotocol(connection);
+        if (settingsStore.current().authEnabled() && !sessionTokenStore.validate(token)) {
             Log.warn("Rejecting WebSocket handshake with a missing/invalid auth token");
             connection.close().subscribe().with(ignored -> { }, failure -> { });
             return;
         }
-        CONNECTIONS.add(connection);
+        CONNECTIONS.put(connection, new Client(token));
         Log.infof("WebSocket opened, %d connection(s) now tracked", CONNECTIONS.size());
     }
 
@@ -86,6 +103,29 @@ public class TorrentWebSocket {
         Log.infof("WebSocket closed, %d connection(s) now tracked", CONNECTIONS.size());
     }
 
+    /** Lets TorrentSnapshotScheduler skip building a snapshot nobody would receive. */
+    static boolean hasConnections() {
+        return !CONNECTIONS.isEmpty();
+    }
+
+    /** Closes every connection whose token (null if it opened with auth off) fails the check.
+     * The browser's reconnect then goes through onOpen's handshake check again. See
+     * design_docs/0094. */
+    static void closeConnectionsWhoseTokenFails(Predicate<String> tokenIsValid) {
+        CONNECTIONS.forEach((connection, client) -> {
+            if (!tokenIsValid.test(client.token())) {
+                Log.info("Closing a WebSocket whose auth token is no longer valid");
+                dropAndClose(connection);
+            }
+        });
+    }
+
+    private static void dropAndClose(WebSocketConnection connection) {
+        if (CONNECTIONS.remove(connection) != null) {
+            connection.close().subscribe().with(ignored -> { }, failure -> { });
+        }
+    }
+
     /** Deliberately non-blocking (sendText, not sendTextAndAwait) - this is called from
      * TorrentSnapshotScheduler's scheduled thread, not a per-request one, so blocking here
      * ties that thread up until every connection's send completes. A connection that went
@@ -95,18 +135,22 @@ public class TorrentWebSocket {
      * live-reload repeatedly abandoning connections mid-broadcast, motivated this. A
      * bounded timeout plus removing the connection on any failure means one bad connection
      * can only cost a few seconds once, not accumulate a stuck thread every broadcast tick
-     * forever. */
+     * forever.
+     *
+     * <p>A failed connection is also closed, not just forgotten: a socket left open but never
+     * sent to again looks healthy to the browser, so its reconnect logic never runs and the UI
+     * silently goes stale (e.g. after a laptop sleep). See design_docs/0094. */
     static void broadcast(String json) {
         Log.debugf("Broadcasting to %d connection(s)", CONNECTIONS.size());
-        for (WebSocketConnection connection : CONNECTIONS) {
+        for (WebSocketConnection connection : CONNECTIONS.keySet()) {
             connection.sendText(json)
                     .ifNoItem().after(SEND_TIMEOUT)
                     .failWith(() -> new TimeoutException("WebSocket send timed out after " + SEND_TIMEOUT))
                     .subscribe().with(
                             ignored -> { },
                             failure -> {
-                                Log.warnf(failure, "Removing a WebSocket connection that failed to send");
-                                CONNECTIONS.remove(connection);
+                                Log.warnf(failure, "Closing a WebSocket connection that failed to send");
+                                dropAndClose(connection);
                             });
         }
     }

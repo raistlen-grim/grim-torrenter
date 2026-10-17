@@ -173,6 +173,14 @@ A password alone is not enough: over plain HTTP it can be intercepted. Put a rev
 terminates TLS (Caddy, Traefik, nginx) in front of the container. The app does not serve HTTPS
 itself.
 
+The proxy should pass the original `Host` header through. Caddy and Traefik do this by default;
+with nginx, add `proxy_set_header Host $host;`. The app only accepts live-update connections
+from pages served under its own host name, so other websites can't read your torrent list. If
+your proxy can't pass `Host` through, list the address you open the app at instead:
+`-e GRIMTORRENTER_ALLOWED_ORIGINS=https://torrents.example.com`. If you call the API from your
+own scripts, plain `curl` works as before. Only requests a browser sends on behalf of another
+website are refused.
+
 ## Keyboard shortcuts
 
 On the torrent list. A shortcut acts on the ticked rows if there are any, otherwise on the

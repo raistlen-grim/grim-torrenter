@@ -4,6 +4,7 @@ import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Semaphore;
 import java.util.function.Consumer;
 
 /**
@@ -22,6 +23,10 @@ public final class UtpAcceptor {
     private final DatagramSocket socket;
     private final Consumer<UtpSocket> onAccepted;
     private final Map<ConnectionKey, UtpSocket> connections = new ConcurrentHashMap<>();
+    /** Accepted connections whose onAccepted callback (the BitTorrent handshake) hasn't
+     * finished yet. Package-private for tests. */
+    static final int MAX_PENDING_HANDSHAKES = 128;
+    private final Semaphore pendingHandshakes = new Semaphore(MAX_PENDING_HANDSHAKES);
 
     public UtpAcceptor(DatagramSocket socket, Consumer<UtpSocket> onAccepted) {
         this.socket = socket;
@@ -64,12 +69,31 @@ public final class UtpAcceptor {
             if (packet.type() != UtpPacketType.SYN) {
                 return; // A stray packet for a connection we don't (or no longer) know about.
             }
-            UtpSocket accepted = UtpSocket.acceptShared(socket, from, packet);
+            // A SYN costs nothing to send and its source can be spoofed, but each accepted one
+            // holds a UtpSocket (with its own retransmit thread) until onAccepted finishes the
+            // BitTorrent handshake - bounded like PeerServer's own pending handshakes. A SYN past
+            // the cap is ignored; a real peer resends it. See design_docs/0092.
+            if (!pendingHandshakes.tryAcquire()) {
+                return;
+            }
+            UtpSocket accepted;
+            try {
+                accepted = UtpSocket.acceptShared(socket, from, packet);
+            } catch (RuntimeException e) {
+                pendingHandshakes.release();
+                throw e;
+            }
             connections.put(key, accepted);
             accepted.setOnClosed(() -> connections.remove(key));
             // One virtual thread per accepted connection, same "never block the shared reader on
             // a slow/hanging handshake" reasoning PeerServer.acceptLoop() already applies to TCP.
-            Thread.ofVirtual().name("utp-accept-" + from).start(() -> onAccepted.accept(accepted));
+            Thread.ofVirtual().name("utp-accept-" + from).start(() -> {
+                try {
+                    onAccepted.accept(accepted);
+                } finally {
+                    pendingHandshakes.release();
+                }
+            });
         } catch (RuntimeException e) {
             LOG.log(System.Logger.Level.DEBUG, "Ignoring unhandleable uTP packet from " + from, e);
         }

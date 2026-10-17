@@ -21,11 +21,15 @@ import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
@@ -74,6 +78,18 @@ public final class DhtNode implements AutoCloseable {
 
     private static final long ERROR_BAD_TOKEN = 203;
     private static final Duration PEER_EXPIRY = Duration.ofMinutes(30);
+    /** Peer-store bounds - see recordAnnounce(). Comparable to libtorrent's dht_max_torrents
+     * (2000) and dht_max_peers (500, of which it returns at most ~100 per reply). */
+    static final int MAX_STORED_INFO_HASHES = 2000;
+    static final int MAX_PEERS_PER_INFO_HASH = 100;
+    /** Keeps a get_peers reply's "values" comfortably inside one UDP datagram. */
+    static final int MAX_PEERS_PER_RESPONSE = 50;
+    private static final long FULL_STORE_PRUNE_INTERVAL_MILLIS = 60_000;
+    private volatile long lastFullStorePruneMillis;
+    /** Stale contacts currently being pinged by replaceIfUnreachable() - one ping per stale node
+     * at a time, however many packets from new ids land in its full bucket meanwhile. Bounded by
+     * the number of buckets (each full bucket has one least-recently-seen contact). */
+    private final Set<NodeId> pendingReplacements = ConcurrentHashMap.newKeySet();
     private static final Duration SECRET_ROTATION_INTERVAL = Duration.ofMinutes(5);
     /** Same 5s convention Bootstrap/PeerLookup/TorrentSession's own DHT query timeouts
      * already use - how long to wait for a full bucket's stale contact to answer a
@@ -257,6 +273,7 @@ public final class DhtNode implements AutoCloseable {
      * tick spawns a virtual thread for this, never runs it inline), same reasoning as
      * bootstrap() itself. */
     public void refreshRoutingTable() {
+        pruneExpiredPeers();
         if (routingTable.size() < MIN_HEALTHY_NODE_COUNT) {
             bootstrap();
             return;
@@ -491,21 +508,65 @@ public final class DhtNode implements AutoCloseable {
         return idOnlyResponse(query.transactionId());
     }
 
+    /** Anyone can announce for any info hash once they've done a get_peers to us, so the store
+     * is bounded both ways (see MAX_STORED_INFO_HASHES / MAX_PEERS_PER_INFO_HASH): a new info
+     * hash past the cap is refused (after one throttled sweep for expired entries), and a new
+     * peer past its hash's cap replaces that hash's least recently announced one. Every
+     * per-hash map is only ever touched inside peerStore.compute*, so a plain LinkedHashMap
+     * (insertion order = announce order) is safe. See design_docs/0092. */
     private void recordAnnounce(InfoHash infoHash, PeerAddress peer) {
-        peerStore.computeIfAbsent(infoHash, key -> new ConcurrentHashMap<>()).put(peer, Instant.now());
+        if (!peerStore.containsKey(infoHash) && peerStore.size() >= MAX_STORED_INFO_HASHES) {
+            long now = System.currentTimeMillis();
+            if (now - lastFullStorePruneMillis >= FULL_STORE_PRUNE_INTERVAL_MILLIS) {
+                lastFullStorePruneMillis = now;
+                pruneExpiredPeers();
+            }
+            if (peerStore.size() >= MAX_STORED_INFO_HASHES) {
+                return;
+            }
+        }
+        peerStore.compute(infoHash, (key, peers) -> {
+            Map<PeerAddress, Instant> updated = peers != null ? peers : new LinkedHashMap<>();
+            updated.remove(peer);
+            if (updated.size() >= MAX_PEERS_PER_INFO_HASH) {
+                updated.remove(updated.keySet().iterator().next());
+            }
+            updated.put(peer, Instant.now());
+            return updated;
+        });
     }
 
-    /** Also opportunistically prunes anything past PEER_EXPIRY from the store - no
-     * separate sweep thread needed since every info hash with any announces at all gets
-     * read via a get_peers query sooner or later. */
+    /** Up to MAX_PEERS_PER_RESPONSE of the peers announced for infoHash within PEER_EXPIRY,
+     * most recent first - also dropping any expired ones it passes over. */
     private List<PeerAddress> livePeers(InfoHash infoHash) {
-        Map<PeerAddress, Instant> peers = peerStore.get(infoHash);
-        if (peers == null) {
-            return List.of();
-        }
         Instant cutoff = Instant.now().minus(PEER_EXPIRY);
-        peers.values().removeIf(announcedAt -> announcedAt.isBefore(cutoff));
-        return List.copyOf(peers.keySet());
+        List<PeerAddress> live = new ArrayList<>();
+        peerStore.computeIfPresent(infoHash, (key, peers) -> {
+            peers.values().removeIf(announcedAt -> announcedAt.isBefore(cutoff));
+            List<PeerAddress> newestFirst = new ArrayList<>(peers.keySet());
+            Collections.reverse(newestFirst);
+            live.addAll(newestFirst.subList(0, Math.min(MAX_PEERS_PER_RESPONSE, newestFirst.size())));
+            return peers.isEmpty() ? null : peers;
+        });
+        return live;
+    }
+
+    /** Drops every announce older than PEER_EXPIRY, and every info hash left with none. Run on
+     * each routing-table refresh tick (refreshRoutingTable()) so hashes nobody asks about again
+     * don't stay forever. */
+    void pruneExpiredPeers() {
+        Instant cutoff = Instant.now().minus(PEER_EXPIRY);
+        for (InfoHash infoHash : peerStore.keySet()) {
+            peerStore.computeIfPresent(infoHash, (key, peers) -> {
+                peers.values().removeIf(announcedAt -> announcedAt.isBefore(cutoff));
+                return peers.isEmpty() ? null : peers;
+            });
+        }
+    }
+
+    /** Package-private, for tests. */
+    int storedInfoHashCount() {
+        return peerStore.size();
     }
 
     private BString issueToken(InetAddress requesterAddress) {
@@ -602,6 +663,11 @@ public final class DhtNode implements AutoCloseable {
     }
 
     private void replaceIfUnreachable(NodeInfo stale, NodeInfo candidate) {
+        if (!pendingReplacements.add(stale.id())) {
+            // Already being checked - this candidate just isn't added, same as if the stale
+            // contact had answered. See design_docs/0092.
+            return;
+        }
         Thread.ofVirtual().start(() -> {
             try {
                 ping(new InetSocketAddress(stale.address(), stale.port()), REPLACEMENT_PING_TIMEOUT);
@@ -612,6 +678,8 @@ public final class DhtNode implements AutoCloseable {
                 // Unreachable - make room for candidate instead.
                 routingTable.evict(stale.id());
                 routingTable.insert(candidate);
+            } finally {
+                pendingReplacements.remove(stale.id());
             }
         });
     }

@@ -75,7 +75,8 @@ class AuthResourceTest {
         setAuthEnabled(true, null);
 
         try {
-            given().when().get("/api/torrents").then().statusCode(401);
+            given().when().get("/api/torrents").then().statusCode(401)
+                    .body("error", equalTo("Authentication required"));
             given()
                     .header("Authorization", "Bearer " + token)
                     .when().get("/api/torrents")
@@ -95,6 +96,11 @@ class AuthResourceTest {
                     .when().put("/api/auth/password")
                     .then().statusCode(401);
 
+            // A second session - another browser, or a leaked token.
+            String otherToken = loginAttempt(INITIAL_PASSWORD)
+                    .then().statusCode(200)
+                    .extract().path("token");
+
             given()
                     .header("Authorization", "Bearer " + token)
                     .contentType(ContentType.JSON)
@@ -102,14 +108,19 @@ class AuthResourceTest {
                     .when().put("/api/auth/password")
                     .then().statusCode(204);
 
-            // The old password no longer works, but the already-issued token is untouched -
-            // a password change doesn't revoke existing sessions (documented tradeoff, see
-            // design_docs/0061).
-            loginAttempt(INITIAL_PASSWORD).then().statusCode(401);
+            // The old password no longer works, and every other session has ended; the
+            // caller's own token is kept so it isn't logged out mid-change. See
+            // design_docs/0094.
+            loginAttempt(INITIAL_PASSWORD).then().statusCode(401)
+                    .body("error", equalTo("Invalid password"));
             given()
                     .header("Authorization", "Bearer " + token)
                     .when().get("/api/torrents")
                     .then().statusCode(200);
+            given()
+                    .header("Authorization", "Bearer " + otherToken)
+                    .when().get("/api/torrents")
+                    .then().statusCode(401);
 
             loginAttempt(CHANGED_PASSWORD).then().statusCode(200);
         } finally {

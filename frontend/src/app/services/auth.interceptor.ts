@@ -21,8 +21,14 @@ export const authInterceptor: HttpInterceptorFn = (req, next) => {
 
   const isUnauthenticatedPath = UNAUTHENTICATED_PATHS.some((path) => req.url.startsWith(path));
   const token = authService.token();
-  const authorizedReq =
-    token && !isUnauthenticatedPath ? req.clone({ setHeaders: { Authorization: `Bearer ${token}` } }) : req;
+  // X-Requested-With on every request marks it as coming from this page, not a cross-site
+  // forgery - the backend refuses a browser's state-changing request without it
+  // (CrossSiteRequestFilter, design_docs/0093).
+  const headers: Record<string, string> = { 'X-Requested-With': 'GrimTorrenter' };
+  if (token && !isUnauthenticatedPath) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  const authorizedReq = req.clone({ setHeaders: headers });
 
   return next(authorizedReq).pipe(
     catchError((error: unknown) => {

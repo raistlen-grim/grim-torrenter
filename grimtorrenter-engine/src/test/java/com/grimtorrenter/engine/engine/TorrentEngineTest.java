@@ -598,6 +598,26 @@ class TorrentEngineTest {
         assertTrue(freshEngine.listTorrents().isEmpty());
     }
 
+    /** Remove, pause and resume say whether the torrent existed, so the REST layer can 404 an
+     * unknown one. See design_docs/0094. */
+    @Test
+    void removePauseAndResumeReportWhetherTheTorrentExists(@TempDir Path tempDir) throws IOException {
+        String announceUrl = startFakeTrackerServer();
+        TorrentEngine engine = new TorrentEngine(tempDir, 6881, new NoOpListener());
+        InfoHash infoHash = engine.addTorrent(torrentBytes("exists.bin", fill(20, 5), announceUrl))
+                .session().metadata().infoHash();
+        InfoHash unknown = new InfoHash("0".repeat(40));
+
+        assertFalse(engine.pauseTorrent(unknown));
+        assertFalse(engine.resumeTorrent(unknown));
+        assertFalse(engine.removeTorrent(unknown));
+
+        assertTrue(engine.pauseTorrent(infoHash));
+        assertTrue(engine.resumeTorrent(infoHash));
+        assertTrue(engine.removeTorrent(infoHash));
+        assertFalse(engine.removeTorrent(infoHash));
+    }
+
     /** The bug this guards against: re-adding a torrent whose directory was reused (kept
      * on disk after an earlier "remove without delete data") used to always start a brand
      * new PieceManager with every piece NEEDED, silently re-downloading data that was
@@ -1024,6 +1044,32 @@ class TorrentEngineTest {
 
         TorrentSession restored = secondEngine.getTorrent(infoHash).orElseThrow();
         assertEquals(override, restored.seedingLimitOverride());
+    }
+
+    /** A torn or hand-mangled preference marker falls back to its default; it must not make the
+     * whole torrent disappear on the next start, as it used to (restoreOne() skipped the torrent
+     * on the parse exception). See design_docs/0092. */
+    @Test
+    void corruptPreferenceMarkersDoNotStopATorrentBeingRestored(@TempDir Path tempDir) throws Exception {
+        String announceUrl = startFakeTrackerServer();
+        byte[] torrentBytes = torrentBytes("corrupt-markers.bin", fill(20, 11), announceUrl);
+
+        TorrentEngine firstEngine = new TorrentEngine(tempDir, 6881, new NoOpListener());
+        TorrentSession original = firstEngine.addTorrent(torrentBytes).session();
+        InfoHash infoHash = original.metadata().infoHash();
+        original.stop();
+
+        Path configTorrentDirectory = tempDir.resolve("torrents").resolve(infoHash.hex());
+        Files.writeString(configTorrentDirectory.resolve(".grimtorrenter-seeding-limit-override"), "ratioLimit=2.5\ntimeLimitMinutes=1x");
+        Files.writeString(configTorrentDirectory.resolve(".grimtorrenter-torrent-limit-override"),
+                "maxConnectionsOverride=lots\n");
+
+        TorrentEngine secondEngine = new TorrentEngine(tempDir, 6881, new NoOpListener());
+        secondEngine.restore();
+
+        TorrentSession restored = secondEngine.getTorrent(infoHash).orElseThrow();
+        assertEquals(SeedingLimitOverride.INHERIT, restored.seedingLimitOverride());
+        assertEquals(com.grimtorrenter.engine.torrent.TorrentLimitOverride.INHERIT, restored.torrentLimits());
     }
 
     /** design_docs/0072 - same shape as aSeedingLimitOverrideSurvivesARestart above, for the

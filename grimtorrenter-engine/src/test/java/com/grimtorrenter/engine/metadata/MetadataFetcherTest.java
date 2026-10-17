@@ -27,6 +27,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Uses a raw ServerSocket as a fake remote peer (same approach as PeerConnectionTest),
@@ -221,6 +222,23 @@ class MetadataFetcherTest {
         fakePeer.start();
 
         assertThrows(MetadataFetchException.class, () -> MetadataFetcher.fetch(address, infoHash, ourPeerId(), EncryptionMode.DISABLED));
+        fakePeer.join(2000);
+    }
+
+    /** metadata_size is the peer's claim - one far beyond any real info dict is refused before
+     * anything is sized from it (it used to be a straight new byte[totalSize]). See
+     * design_docs/0090. */
+    @Test
+    void failsWhenPeerReportsAnAbsurdMetadataSize() throws Exception {
+        byte[] infoDictBytes = smallInfoDictBytes();
+        InfoHash infoHash = InfoHash.of(sha1(infoDictBytes));
+        PeerAddress address = startFakePeerServer();
+        Thread fakePeer = startFakePeer(infoHash, true, Integer.MAX_VALUE, null, null);
+        fakePeer.start();
+
+        MetadataFetchException ex = assertThrows(MetadataFetchException.class,
+                () -> MetadataFetcher.fetch(address, infoHash, ourPeerId(), EncryptionMode.DISABLED));
+        assertTrue(ex.getMessage().contains("unacceptable metadata size"), ex.getMessage());
         fakePeer.join(2000);
     }
 

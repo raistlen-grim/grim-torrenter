@@ -162,23 +162,33 @@ public class TorrentResource {
         return new AddTorrentResponse(torrent, result.alreadyExisted());
     }
 
+    /** 404 for an unknown torrent, like every other per-torrent endpoint (design_docs/0094). A
+     * pending magnet can be removed. */
     @DELETE
     @Path("/{infoHash}")
     public void remove(@PathParam("infoHash") String infoHashHex,
                         @QueryParam("deleteData") @DefaultValue("false") boolean deleteData) {
-        torrentEngine.removeTorrent(parseInfoHash(infoHashHex), deleteData);
+        if (!torrentEngine.removeTorrent(parseInfoHash(infoHashHex), deleteData)) {
+            throw new NotFoundException("Torrent not found: " + infoHashHex);
+        }
     }
 
+    /** 404 for an unknown torrent and for a pending magnet, which has nothing to pause yet. */
     @POST
     @Path("/{infoHash}/pause")
     public void pause(@PathParam("infoHash") String infoHashHex) {
-        torrentEngine.pauseTorrent(parseInfoHash(infoHashHex));
+        if (!torrentEngine.pauseTorrent(parseInfoHash(infoHashHex))) {
+            throw new NotFoundException("Torrent not found: " + infoHashHex);
+        }
     }
 
+    /** 404 for an unknown torrent and for a pending magnet, as pause(). */
     @POST
     @Path("/{infoHash}/resume")
     public void resume(@PathParam("infoHash") String infoHashHex) {
-        torrentEngine.resumeTorrent(parseInfoHash(infoHashHex));
+        if (!torrentEngine.resumeTorrent(parseInfoHash(infoHashHex))) {
+            throw new NotFoundException("Torrent not found: " + infoHashHex);
+        }
     }
 
     /** Forced recheck (design_docs/0082). Returns at once with the torrent as it now is -

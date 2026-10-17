@@ -1,5 +1,6 @@
+import { HttpErrorResponse } from '@angular/common/http';
 import { Injectable, inject, signal } from '@angular/core';
-import { Observable, defer, finalize, map, tap } from 'rxjs';
+import { Observable, catchError, defer, finalize, map, of, tap, throwError } from 'rxjs';
 
 import { TorrentEventsService } from './torrent-events.service';
 import { TorrentService } from './torrent.service';
@@ -36,12 +37,18 @@ export class TorrentActionsService {
   }
 
   /** Also drops the torrent from the local list on success, rather than leaving the row visible
-   * until the next snapshot. */
+   * until the next snapshot. A 404 counts as success: the torrent is already gone (removed from
+   * another tab, say), which is what was asked for. */
   remove(infoHash: string, deleteData = false): Observable<void> {
     return this.track(
       infoHash,
       'remove',
-      this.torrentService.remove(infoHash, deleteData).pipe(tap(() => this.events.removeLocal(infoHash))),
+      this.torrentService.remove(infoHash, deleteData).pipe(
+        catchError((error: unknown) =>
+          error instanceof HttpErrorResponse && error.status === 404 ? of(undefined) : throwError(() => error),
+        ),
+        tap(() => this.events.removeLocal(infoHash)),
+      ),
     );
   }
 

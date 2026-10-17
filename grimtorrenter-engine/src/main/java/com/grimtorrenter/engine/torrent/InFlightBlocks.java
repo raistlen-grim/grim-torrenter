@@ -82,6 +82,13 @@ final class InFlightBlocks {
         return won[0];
     }
 
+    /** Whether owner currently holds a claim on the block - i.e. we asked owner for it and
+     * haven't since released or handed the claim to someone else. */
+    boolean isHeldBy(int index, int begin, Object owner) {
+        List<Claim> holders = claims.get(new Key(index, begin));
+        return holders != null && holders.stream().anyMatch(c -> c.owner() == owner);
+    }
+
     /** Drops the block's claims (it arrived) and returns everyone who held one, so the caller
      * can cancel the now-redundant requests still outstanding on the others. */
     List<Object> release(int index, int begin) {

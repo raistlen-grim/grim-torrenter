@@ -75,7 +75,11 @@ public class JsonLinesEventStore implements EventStore {
      * so two concurrent events can't interleave their writes to the same day's file - not a hot
      * path (events fire on state transitions and engine decisions, not per-packet or
      * per-piece), so this doesn't reintroduce the synchronized-in-the-hot-path concern
-     * design_docs/0050 resolved elsewhere. See design_docs/0055. */
+     * design_docs/0050 resolved elsewhere. See design_docs/0055.
+     *
+     * <p>Never throws. Callers are deep inside the engine - a state transition, a scheduled
+     * maintenance task - and a full disk (the most likely failure, for a torrent client) must cost
+     * at most this one event, never the operation that produced it. See design_docs/0093. */
     @Override
     public synchronized void record(LibraryEvent event) {
         Path file = fileFor(LocalDate.ofInstant(event.timestamp(), ZoneId.systemDefault()));
@@ -83,8 +87,8 @@ public class JsonLinesEventStore implements EventStore {
             String line = objectMapper.writeValueAsString(event) + System.lineSeparator();
             Files.writeString(file, line, StandardCharsets.UTF_8,
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-        } catch (IOException e) {
-            throw new UncheckedIOException("Could not append event to " + file, e);
+        } catch (IOException | RuntimeException e) {
+            Log.errorf(e, "Could not record %s event in %s - it is not in the event log", event.type(), file);
         }
         broadcast(event);
     }
@@ -92,8 +96,8 @@ public class JsonLinesEventStore implements EventStore {
     private void broadcast(LibraryEvent event) {
         try {
             TorrentWebSocket.broadcast(objectMapper.writeValueAsString(new TorrentEventMessage("event", event)));
-        } catch (JsonProcessingException e) {
-            throw new IllegalStateException("Failed to serialize library event", e);
+        } catch (JsonProcessingException | RuntimeException e) {
+            Log.errorf(e, "Could not push %s event to connected clients", event.type());
         }
     }
 
@@ -107,21 +111,35 @@ public class JsonLinesEventStore implements EventStore {
         return readAll(event -> infoHash.equals(event.infoHash()));
     }
 
+    /** Skips, and logs, a line that doesn't parse - a crash mid-append leaves exactly one torn
+     * last line, and that mustn't make the whole log unreadable until its day-file ages out of
+     * the retention window. A day-file that can't be read at all is skipped the same way. See
+     * design_docs/0094. */
     private List<LibraryEvent> readAll(Predicate<LibraryEvent> filter) {
         List<LibraryEvent> events = new ArrayList<>();
         for (Path file : dayFiles()) {
+            List<String> lines;
             try {
-                for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
-                    if (line.isBlank()) {
-                        continue;
-                    }
-                    LibraryEvent event = objectMapper.readValue(line, LibraryEvent.class);
-                    if (filter.test(event)) {
-                        events.add(event);
-                    }
-                }
+                lines = Files.readAllLines(file, StandardCharsets.UTF_8);
             } catch (IOException e) {
-                throw new UncheckedIOException("Could not read events from " + file, e);
+                Log.errorf(e, "Could not read events from %s - leaving them out", file);
+                continue;
+            }
+            for (int i = 0; i < lines.size(); i++) {
+                String line = lines.get(i);
+                if (line.isBlank()) {
+                    continue;
+                }
+                LibraryEvent event;
+                try {
+                    event = objectMapper.readValue(line, LibraryEvent.class);
+                } catch (IOException e) {
+                    Log.warnf("Skipping unreadable event on line %d of %s: %s", i + 1, file, e.getMessage());
+                    continue;
+                }
+                if (filter.test(event)) {
+                    events.add(event);
+                }
             }
         }
         events.sort(Comparator.comparing(LibraryEvent::timestamp).reversed());
@@ -134,15 +152,26 @@ public class JsonLinesEventStore implements EventStore {
      * tick, or the one run at startup in init()), not synchronously. Package-private so
      * JsonLinesEventStoreTest can call it directly rather than waiting on
      * EventLogRetentionScheduler's real hourly tick, same spirit as TorrentEngine's
-     * checkSeedingLimits(). See design_docs/0055 and design_docs/0051. */
+     * checkSeedingLimits(). See design_docs/0055 and design_docs/0051.
+     *
+     * <p>Never throws: it runs in init(), and one undeletable old file mustn't stop the app
+     * starting. A file that can't be deleted is logged and retried on the next tick. See
+     * design_docs/0094. */
     synchronized void prune() {
         LocalDate cutoff = LocalDate.now(ZoneId.systemDefault()).minusDays(settingsStore.current().eventLogRetentionDays());
-        for (Path file : dayFiles()) {
+        List<Path> files;
+        try {
+            files = dayFiles();
+        } catch (UncheckedIOException e) {
+            Log.errorf(e, "Could not list %s to prune old event logs", eventsDirectory);
+            return;
+        }
+        for (Path file : files) {
             parseFileDate(file).filter(date -> date.isBefore(cutoff)).ifPresent(date -> {
                 try {
                     Files.deleteIfExists(file);
                 } catch (IOException e) {
-                    throw new UncheckedIOException("Could not delete stale event log file " + file, e);
+                    Log.errorf(e, "Could not delete stale event log file %s", file);
                 }
             });
         }

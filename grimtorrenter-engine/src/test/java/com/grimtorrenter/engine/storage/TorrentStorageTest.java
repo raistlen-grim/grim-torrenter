@@ -49,6 +49,23 @@ class TorrentStorageTest {
         assertEquals(1000, Files.size(file));
     }
 
+    /** Defence in depth behind MetainfoParser's own checks - metadata built directly (not
+     * parsed) still can't place a file outside the base directory, and nothing is created on
+     * disk for it. See design_docs/0090. */
+    @Test
+    void refusesFilesThatResolveOutsideTheBaseDirectory(@TempDir Path tempDir) {
+        Path base = tempDir.resolve("downloads");
+        SingleFileTorrent escapingSingle = new SingleFileTorrent(
+                "../outside.bin", 10, 10, fakePieceHashes(1), InfoHash.of(fill(20, 3)), null, List.of());
+        MultiFileTorrent escapingMulti = new MultiFileTorrent(
+                "t", List.of(new TorrentFile(List.of("..", "..", "outside.bin"), 10)), 10, fakePieceHashes(1),
+                InfoHash.of(fill(20, 4)), null, List.of());
+
+        assertThrows(StorageException.class, () -> TorrentStorage.create(escapingSingle, base));
+        assertThrows(StorageException.class, () -> TorrentStorage.create(escapingMulti, base));
+        assertFalse(Files.exists(tempDir.resolve("outside.bin")));
+    }
+
     @Test
     void writeSpanningTwoFilesSplitsCorrectly(@TempDir Path tempDir) throws IOException {
         TorrentFile fileA = new TorrentFile(List.of("a.bin"), 100);

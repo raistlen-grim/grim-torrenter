@@ -573,6 +573,15 @@ class TorrentSessionTest {
             assertEquals(1.0, session.progress());
             assertEquals(new Request(0, 0, content.length), receivedRequest.get());
             assertTrue(tracker.requests.stream().anyMatch(r -> r.event() == TrackerEvent.COMPLETED));
+            // Announce byte counts are per STARTED event: nothing at start, the piece by
+            // completion. See design_docs/0091.
+            TrackerRequest started = tracker.requests.get(0);
+            assertEquals(TrackerEvent.STARTED, started.event());
+            assertEquals(0, started.downloaded());
+            assertEquals(0, started.uploaded());
+            TrackerRequest completed = tracker.requests.stream()
+                    .filter(r -> r.event() == TrackerEvent.COMPLETED).findFirst().orElseThrow();
+            assertEquals(content.length, completed.downloaded());
             // A genuinely just-downloaded torrent (never restored) must never be flagged as
             // "already complete before we started" - that flag is what TorrentEventListener
             // (grimtorrenter-app) uses to tell a real completion apart from a restore/resume
@@ -1791,7 +1800,6 @@ class TorrentSessionTest {
 
         try {
             assertTrue(listener.seedingLatch.await(5, TimeUnit.SECONDS));
-            assertTrue(tracker.completedAnnounceLatch.await(5, TimeUnit.SECONDS));
             assertEquals(TorrentState.SEEDING, session.state());
             assertEquals(1, session.completedPieceCount());
             assertEquals(content.length, session.bytesDownloaded());
@@ -1803,6 +1811,168 @@ class TorrentSessionTest {
         } finally {
             session.stop();
         }
+    }
+
+    /** A torrent that was already complete on disk downloaded nothing this run: trackers - private
+     * ones credit the difference between announces - must see downloaded=0 on every announce,
+     * and no COMPLETED event (that would count as another finished download on every restart).
+     * See design_docs/0091. */
+    @Test
+    void restoredCompleteTorrentReportsNothingDownloadedAndNoCompletedEvent(@TempDir Path tempDir)
+            throws Exception {
+        byte[] content = fill(20, 1);
+        TorrentMetadata metadata = singlePieceMetadata(content);
+        Files.write(tempDir.resolve("file.bin"), content);
+
+        FakeTrackerClient tracker = new FakeTrackerClient();
+        RecordingListener listener = new RecordingListener();
+
+        TorrentSession session = TorrentSession.restoreAsync(
+                metadata, tracker, tempDir, fakeLocalPeerId(), 6881, listener, null, true);
+        assertTrue(listener.seedingLatch.await(5, TimeUnit.SECONDS));
+        session.reannounce();
+        // SEEDING is only reached after start()'s announce has returned; stop() then announces
+        // STOPPED in the background.
+        session.stop();
+        assertTrue(session.awaitStoppedAnnounce(Duration.ofSeconds(5)));
+
+        assertTrue(tracker.requests.stream().noneMatch(r -> r.event() == TrackerEvent.COMPLETED));
+        assertTrue(tracker.requests.stream().anyMatch(r -> r.event() == null));
+        assertTrue(tracker.requests.stream().anyMatch(r -> r.event() == TrackerEvent.STOPPED));
+        for (TrackerRequest request : tracker.requests) {
+            assertEquals(0, request.downloaded(), "downloaded on " + request.event());
+            assertEquals(0, request.left(), "left on " + request.event());
+        }
+    }
+
+    /** A listener that throws (the app's event log on a full disk) must not leave a transition
+     * half-done: the session still reaches each state, and stop() still tears down and announces.
+     * See design_docs/0093. */
+    @Test
+    void aThrowingListenerDoesNotBreakStateTransitions(@TempDir Path tempDir) throws Exception {
+        TorrentSessionListener throwing = new TorrentSessionListener() {
+            @Override
+            public void onStateChanged(TorrentSession session, TorrentState oldState, TorrentState newState) {
+                throw new IllegalStateException("event log unavailable");
+            }
+
+            @Override
+            public void onPieceCompleted(TorrentSession session, int pieceIndex) {
+                throw new IllegalStateException("event log unavailable");
+            }
+        };
+        FakeTrackerClient tracker = new FakeTrackerClient();
+        TorrentSession session = TorrentSession.create(singlePieceMetadata(fill(20, 1)), tracker, tempDir,
+                fakeLocalPeerId(), 6881, throwing, null);
+
+        session.start();
+        assertEquals(TorrentState.DOWNLOADING, session.state());
+        session.stop();
+        assertEquals(TorrentState.STOPPED, session.state());
+        assertTrue(session.awaitStoppedAnnounce(Duration.ofSeconds(5)));
+        assertEquals(TrackerEvent.STOPPED, tracker.requests.get(tracker.requests.size() - 1).event());
+        session.close();
+    }
+
+    /** start()'s first announce can take a tracker timeout; it must not hold the session lock
+     * meanwhile. A pause during it returns at once, the start is abandoned when the announce
+     * comes back, and the STARTED the tracker accepted is taken back with a STOPPED. See
+     * design_docs/0092. */
+    @Test
+    void stopDuringASlowStartReturnsImmediatelyAndTheStartIsAbandoned(@TempDir Path tempDir) throws Exception {
+        CountDownLatch announceEntered = new CountDownLatch(1);
+        CountDownLatch releaseAnnounce = new CountDownLatch(1);
+        List<TrackerRequest> requests = new CopyOnWriteArrayList<>();
+        TrackerClient slowTracker = request -> {
+            requests.add(request);
+            if (request.event() == TrackerEvent.STARTED) {
+                announceEntered.countDown();
+                try {
+                    releaseAnnounce.await(10, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            return new TrackerResponse(3600, null, 0, 0, List.of(), null, null);
+        };
+        TorrentSession session = TorrentSession.create(singlePieceMetadata(fill(20, 1)), slowTracker, tempDir,
+                fakeLocalPeerId(), 6881, new RecordingListener(), null);
+
+        Thread starter = Thread.ofVirtual().start(session::start);
+        assertTrue(announceEntered.await(5, TimeUnit.SECONDS));
+
+        long before = System.nanoTime();
+        session.stop();
+        assertTrue(System.nanoTime() - before < TimeUnit.SECONDS.toNanos(2), "stop() waited on the announce");
+
+        releaseAnnounce.countDown();
+        starter.join(5000);
+        assertEquals(TorrentState.STOPPED, session.state());
+        assertTrue(session.awaitStoppedAnnounce(Duration.ofSeconds(5)));
+        assertEquals(TrackerEvent.STOPPED, requests.get(requests.size() - 1).event());
+        session.close();
+    }
+
+    /** Candidate addresses are capped per torrent - PEX lets any connected peer hand us
+     * addresses, so without it a single peer could grow this without limit. A stopped session is
+     * used so nothing is dialled. See design_docs/0092. */
+    @Test
+    void knownAddressesAreCapped(@TempDir Path tempDir) throws Exception {
+        TorrentMetadata metadata = singlePieceMetadata(fill(20, 1));
+        TorrentSession session = TorrentSession.create(
+                metadata, new FakeTrackerClient(), tempDir, fakeLocalPeerId(), 6881, new RecordingListener(), null);
+        List<PeerAddress> flood = new ArrayList<>();
+        for (int i = 0; i < TorrentSession.MAX_KNOWN_ADDRESSES + 500; i++) {
+            flood.add(new PeerAddress(InetAddress.getByAddress(
+                    new byte[]{10, (byte) (i >> 16), (byte) (i >> 8), (byte) i}), 6881));
+        }
+        session.addKnownPeers(flood, PeerSource.PEX);
+        assertEquals(TorrentSession.MAX_KNOWN_ADDRESSES, session.knownAddressCount());
+        session.close();
+    }
+
+    /** A peer pushing a block we never asked for - here over a piece already verified on disk -
+     * must not get it written: that would let any peer corrupt data we then seed. The Interested
+     * sent after it is the sync point: the read loop handles messages in order, so by the time
+     * our Unchoke comes back the Piece has already been dealt with. See design_docs/0090. */
+    @Test
+    void unrequestedBlockIsNotWrittenOverVerifiedData(@TempDir Path tempDir) throws Exception {
+        byte[] content = fill(20, 1);
+        TorrentMetadata metadata = singlePieceMetadata(content);
+        InfoHash infoHash = metadata.infoHash();
+        Files.write(tempDir.resolve("file.bin"), content);
+
+        serverSocket = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+        PeerAddress fakePeerAddress = new PeerAddress(InetAddress.getLoopbackAddress(), serverSocket.getLocalPort());
+        CountDownLatch unchoked = new CountDownLatch(1);
+        Thread fakePeer = new Thread(() -> {
+            try (Socket socket = serverSocket.accept()) {
+                PeerWireCodec.readHandshake(socket.getInputStream());
+                PeerWireCodec.writeHandshake(socket.getOutputStream(), Handshake.of(infoHash, fakeRemotePeerId()));
+                PeerWireCodec.writeMessage(socket.getOutputStream(), new Piece(0, 0, fill(content.length, 99)));
+                PeerWireCodec.writeMessage(socket.getOutputStream(), new Interested());
+                readUntil(socket.getInputStream(), Unchoke.class);
+                unchoked.countDown();
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+        fakePeer.start();
+
+        FakeTrackerClient tracker = new FakeTrackerClient();
+        tracker.peersToReturn = List.of(fakePeerAddress);
+        RecordingListener listener = new RecordingListener();
+        TorrentSession session = TorrentSession.restoreAsync(
+                metadata, tracker, tempDir, fakeLocalPeerId(), 6881, listener, null, true);
+        try {
+            assertTrue(listener.seedingLatch.await(5, TimeUnit.SECONDS));
+            assertTrue(unchoked.await(10, TimeUnit.SECONDS));
+            assertArrayEquals(content, Files.readAllBytes(tempDir.resolve("file.bin")));
+            assertEquals(1, session.completedPieceCount());
+        } finally {
+            session.stop();
+        }
+        fakePeer.join(2000);
     }
 
     @Test

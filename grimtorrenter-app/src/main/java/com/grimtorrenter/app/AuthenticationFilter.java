@@ -50,7 +50,7 @@ public class AuthenticationFilter implements ContainerRequestFilter {
         }
         String token = BearerToken.extract(requestContext.getHeaderString("Authorization"));
         if (token == null || !sessionTokenStore.validate(token)) {
-            requestContext.abortWith(Response.status(Response.Status.UNAUTHORIZED).build());
+            requestContext.abortWith(ErrorResponses.status(Response.Status.UNAUTHORIZED, "Authentication required"));
         }
     }
 }

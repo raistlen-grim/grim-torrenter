@@ -19,6 +19,7 @@ import java.security.SecureRandom;
 import java.util.Collection;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.Semaphore;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -58,8 +59,14 @@ public final class PeerServer implements AutoCloseable {
             ((char) Handshake.PROTOCOL_NAME.length() + Handshake.PROTOCOL_NAME)
                     .getBytes(java.nio.charset.StandardCharsets.US_ASCII);
     private static final SecureRandom MSE_RANDOM = new SecureRandom();
+    /** Inbound connections allowed to be mid-handshake at once; any more are closed on accept.
+     * Generous next to real arrival rates, small next to a file-descriptor limit. Package-private
+     * for tests. See design_docs/0092. */
+    static final int MAX_PENDING_HANDSHAKES = 128;
+    private static final long ACCEPT_FAILURE_PAUSE_MS = 1000;
 
     private final ServerSocket serverSocket;
+    private final Semaphore pendingHandshakes = new Semaphore(MAX_PENDING_HANDSHAKES);
     private final Function<InfoHash, Optional<IncomingConnectionHandler>> handlerLookup;
     private final Supplier<EncryptionMode> encryptionMode;
     private final Supplier<Collection<InfoHash>> activeInfoHashes;
@@ -109,12 +116,37 @@ public final class PeerServer implements AutoCloseable {
             try {
                 socket = serverSocket.accept();
             } catch (IOException e) {
-                if (!closed) {
-                    LOG.log(System.Logger.Level.WARNING, "Peer server accept loop failed", e);
+                if (closed) {
+                    return;
                 }
-                return;
+                // Typically transient (e.g. out of file descriptors) - giving up here would end
+                // inbound connections until the next restart.
+                LOG.log(System.Logger.Level.WARNING, "Peer server accept failed - retrying", e);
+                pauseAfterAcceptFailure();
+                continue;
             }
-            Thread.ofVirtual().name("peer-server-handshake").start(() -> handleConnection(socket));
+            if (!pendingHandshakes.tryAcquire()) {
+                // Each pending handshake holds a socket and a thread for up to
+                // HANDSHAKE_TIMEOUT_MS - a flood of connections that never speak mustn't grow
+                // that without bound. See design_docs/0092.
+                reject(socket, "too many handshakes already in progress");
+                continue;
+            }
+            Thread.ofVirtual().name("peer-server-handshake").start(() -> {
+                try {
+                    handleConnection(socket);
+                } finally {
+                    pendingHandshakes.release();
+                }
+            });
+        }
+    }
+
+    private static void pauseAfterAcceptFailure() {
+        try {
+            Thread.sleep(ACCEPT_FAILURE_PAUSE_MS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 

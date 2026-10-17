@@ -75,7 +75,20 @@ public final class TorrentStorage implements Closeable {
                 }
             }
         }
+        requireInside(baseDirectory, slices);
         return new TorrentStorage(slices, pool);
+    }
+
+    /** Second line of defence behind MetainfoParser's own name/path checks: no file may resolve
+     * outside baseDirectory, whatever TorrentMetadata it was built from. See design_docs/0090. */
+    private static void requireInside(Path baseDirectory, List<FileSlice> slices) {
+        Path base = baseDirectory.toAbsolutePath().normalize();
+        for (FileSlice slice : slices) {
+            Path resolved = slice.path().toAbsolutePath().normalize();
+            if (!resolved.startsWith(base) || resolved.equals(base)) {
+                throw new StorageException("Torrent file " + slice.path() + " resolves outside " + baseDirectory);
+            }
+        }
     }
 
     /** Indexes (in the torrent's own file order) of the files that don't exist on disk. Every

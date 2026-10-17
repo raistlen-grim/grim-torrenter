@@ -11,7 +11,11 @@ final class ErrorResponses {
     }
 
     static Response badRequest(String message) {
-        return Response.status(Response.Status.BAD_REQUEST)
+        return status(Response.Status.BAD_REQUEST, message);
+    }
+
+    static Response status(Response.Status status, String message) {
+        return Response.status(status)
                 .type(MediaType.APPLICATION_JSON)
                 .entity(Map.of("error", String.valueOf(message)))
                 .build();
