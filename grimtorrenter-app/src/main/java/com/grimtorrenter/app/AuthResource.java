@@ -4,6 +4,7 @@ import com.grimtorrenter.engine.settings.SettingsStore;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.BadRequestException;
 import jakarta.ws.rs.Consumes;
+import jakarta.ws.rs.ForbiddenException;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.HeaderParam;
 import jakarta.ws.rs.NotAuthorizedException;
@@ -84,6 +85,10 @@ public class AuthResource {
      * otherwise-still-open deployment can't have its about-to-be-protected password silently
      * overwritten by anyone who happens to hit this endpoint first. See design_docs/0061.
      *
+     * <p>A wrong current password is 403, not 401: the caller may well hold a perfectly good
+     * session, and 401 is what tells a client its session is gone - the web UI logs out on any
+     * 401. See design_docs/0095.
+     *
      * <p>Every other session token is revoked (open WebSockets holding one are closed on the next
      * snapshot tick); the caller's own token, if it sent one, stays valid. See design_docs/0094. */
     @PUT
@@ -95,7 +100,7 @@ public class AuthResource {
             return ErrorResponses.badRequest("newPassword must not be blank");
         }
         if (authStore.hasPassword() && !authStore.verify(request.currentPassword())) {
-            throw new NotAuthorizedException("Current password is incorrect", BearerToken.SCHEME);
+            throw new ForbiddenException("Current password is incorrect");
         }
         authStore.setPassword(request.newPassword());
         sessionTokenStore.revokeAllExcept(BearerToken.extract(authorizationHeader));

@@ -20,18 +20,40 @@ are not listed here.
   block switch on plus a restart, then fix the proxy and watch torrents leave ERROR; backoff with
   no settings change; pause cancels the retry.
 - SOCKS5 proxy (`design_docs/0079`): not yet tried against a real proxy.
-- Authentication (`design_docs/0061`): WebSocket with auth on and a logged-in browser. The server
-  selecting the `bearer` subprotocol has only been confirmed with curl, and the frontend no longer
-  offering the token while auth is off hasn't been seen in a browser.
+- Authentication (`design_docs/0061`): ~~WebSocket with auth on and a logged-in browser~~ -
+  confirmed 2026-10-17 (live updates with auth on, and a password change in one browser sending
+  the other to the login page). Still to see in a browser: the frontend not offering a stale
+  token while auth is off (log in, switch auth off, reload - live updates must keep working).
 - Restyle task 9 copy pass (`design_docs/0032`).
+
+**Regression pass - from the pre-release code reviews (`code_review/01-03`, 2026-10-17):**
+- Restart the container with the app open: header, footer and an open detail panel recover
+  without a reload (`design_docs/0095`).
+- Log out (header button) lands on the login page; the server log shows no repeated handshake
+  rejections (`design_docs/0095`/`0096`).
+- Log out in one browser: a second logged-in browser goes to the login page within ~2 s and
+  stops reconnecting (`design_docs/0096`).
+- A wrong current password on Security settings shows the error and stays logged in
+  (`design_docs/0095`).
+- Settings: leaving with unsaved edits asks first; an unsaved theme preview reverts; a rate cap
+  switched on at 0 disables Save (`design_docs/0096`).
+- Pasting `magnet:?xt=urn:btih:<40 hex>&dn=50%` shows "50%" and the list keeps updating.
+- Remove the same torrent from two tabs: the second shows no error (`design_docs/0094`). Easiest
+  via "Remove and delete files…" left open in one tab.
+- Behind a reverse proxy: live updates connect, or `GRIMTORRENTER_ALLOWED_ORIGINS` fixes it
+  (`design_docs/0093`).
 
 **Open, decide whether it blocks beta:**
 - Does a VPN container such as gluetun work as the alternative to `network_mode: host` behind a
-  host VPN (see "Working behind a VPN" below)? Decides what the README tells VPN users.
-- `.torrent` upload latency - the add request waits on the initial tracker announce (PROGRESS.md
-  "Known gaps"). Feedback and crash-safety are covered; the latency itself isn't.
-- Row action (Pause/Resume/Remove) state lagging up to ~2s behind its spinner clearing
-  (PROGRESS.md "Known gaps", `design_docs/0033`).
+  host VPN (see "Working behind a VPN" below)? Decides what the README tells VPN users. Tracked as
+  "Investigate gluetun support" there; doesn't block beta.
+- ~~`.torrent` upload latency - the add request waits on the initial tracker announce~~ -
+  **Done (2026-10-17):** add and resume start in the background and show a new Starting state
+  (`design_docs/0098`). Check in a browser: add a torrent with a dead tracker - it shows Starting
+  at once, then Error once the announce times out; pausing while Starting stays paused.
+- ~~Row action (Pause/Resume/Remove) state lagging up to ~2s behind its spinner clearing~~ -
+  **Done (2026-10-17):** pause/resume return the torrent and the UI applies it at once
+  (`design_docs/0097`). Remove already dropped the row locally.
 
 ## Peers/Trackers/General detail — qBittorrent-parity backlog (2026-09-10)
 
@@ -456,3 +478,16 @@ dialling and the retry above make that case workable; still open:
   read `OK` and tracker errors said only "failed". All three follow-ups done the same day
   (tracker error reasons, a Health trackers check, a README section) - see `design_docs/0089`.
   Still open: whether a VPN container such as gluetun works as the alternative.
+- **Investigate gluetun support** (added 2026-10-17). Two parts, the second depending on the first:
+  1. *Does it work as-is?* Run GrimTorrenter with `network_mode: "service:gluetun"` behind a
+     gluetun container (e.g. with NordVPN). Check trackers, DHT, PEX and LSD (LSD multicast likely
+     won't cross the tunnel), the Health page, and how the web UI port is published (on gluetun,
+     not on GrimTorrenter). Outcome: a README section with a working `docker-compose.yml`, or a
+     documented reason it doesn't work.
+  2. *Forwarded port* (Proton VPN, PIA, AirVPN through gluetun's port forwarding). gluetun writes
+     the assigned port to a file and/or exposes it on its control server
+     (`/v1/openvpn/portforwarded`), and it can change on reconnect. Needs the listen port to be
+     changeable while running, which it isn't today (PeerServer, the µTP socket, DHT and every
+     tracker announce all take it once at startup). Options: watch gluetun's port file, poll its
+     control server, or a setting plus a restart. Write a design doc first; it overlaps the
+     automatic port mapping item above. Likely post-beta; part 1 decides what the README says.

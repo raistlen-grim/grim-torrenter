@@ -1,12 +1,13 @@
 import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
-import { catchError, interval, of, startWith, switchMap } from 'rxjs';
+import { catchError, of } from 'rxjs';
 
 import { DiskUsage, ResourceUsage } from '../../models/system.model';
 import { SystemService } from '../../services/system.service';
 import { TorrentEventsService } from '../../services/torrent-events.service';
 import { FormatBytesPipe } from '../../shared/format-bytes.pipe';
 import { FormatRatePipe } from '../../shared/format-rate.pipe';
+import { pollEvery } from '../../shared/poll';
 import { pluralTorrentCount } from '../../shared/plural-torrent-count';
 
 /** Where this build's source code lives. The licence (AGPL-3.0, section 13) requires anyone
@@ -60,10 +61,7 @@ export class AppFooter {
   });
 
   private readonly diskUsage = toSignal<DiskUsage | null>(
-    interval(SYSTEM_POLL_INTERVAL_MS).pipe(
-      startWith(0),
-      switchMap(() => this.system.diskUsage()),
-    ),
+    pollEvery(SYSTEM_POLL_INTERVAL_MS, () => this.system.diskUsage()),
     { initialValue: null },
   );
 
@@ -73,10 +71,7 @@ export class AppFooter {
   });
 
   private readonly resourceUsage = toSignal<ResourceUsage | null>(
-    interval(SYSTEM_POLL_INTERVAL_MS).pipe(
-      startWith(0),
-      switchMap(() => this.system.resourceUsage()),
-    ),
+    pollEvery(SYSTEM_POLL_INTERVAL_MS, () => this.system.resourceUsage()),
     { initialValue: null },
   );
 

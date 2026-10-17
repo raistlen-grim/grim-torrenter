@@ -74,3 +74,12 @@
 .settings-link .pi {
   font-size: 1.05rem;
 }
+
+/* The header's links are anchors; this one is an action, so a button - reset to look the same. */
+.logout-button {
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+}

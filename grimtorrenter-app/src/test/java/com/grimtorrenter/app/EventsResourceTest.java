@@ -28,8 +28,8 @@ import static org.hamcrest.Matchers.hasItem;
  *
  * <p>Asserts containment, not exact size/order: torrentBytes()'s announce URL is deliberately
  * unreachable (same as TorrentResourceTest's own helper, for the same "exercise upload
- * plumbing, not tracker communication" reason), which means start()'s synchronous initial
- * announce fails and the session immediately transitions to ERROR too - a real,
+ * plumbing, not tracker communication" reason), which means the initial announce (in the
+ * background since design_docs/0098) fails and the session soon transitions to ERROR too - a real,
  * TorrentEventListener-recorded event alongside ADDED/REMOVED, not a bug in either this test's
  * setup or the feature. */
 @QuarkusTest

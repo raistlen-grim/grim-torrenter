@@ -8,11 +8,13 @@ import { InputGroupAddonModule } from 'primeng/inputgroupaddon';
 import { InputNumberModule } from 'primeng/inputnumber';
 import { InputTextModule } from 'primeng/inputtext';
 import { ToggleSwitchModule } from 'primeng/toggleswitch';
-import { EMPTY, catchError, interval, map, merge, startWith, switchMap } from 'rxjs';
+import { map, merge, startWith, switchMap } from 'rxjs';
 
 import { BlocklistStatus } from '../../models/blocklist.model';
 import { Settings } from '../../models/settings.model';
 import { BlocklistService } from '../../services/blocklist.service';
+import { pollEvery } from '../../shared/poll';
+import { apiErrorMessage } from '../../shared/api-error';
 
 const STATUS_POLL_INTERVAL_MS = 5000;
 
@@ -115,18 +117,21 @@ export class BlocklistSettings {
   });
 
   constructor() {
-    interval(STATUS_POLL_INTERVAL_MS)
-      .pipe(
-        startWith(0),
-        // A failed poll (say a moment of no connectivity) just skips this tick rather than
-        // ending the stream, so the status line recovers on its own.
-        switchMap(() => this.blocklistService.status().pipe(catchError(() => EMPTY))),
-        takeUntilDestroyed(inject(DestroyRef)),
-      )
+    // A failed poll just skips that tick (pollEvery), so the status recovers on its own.
+    pollEvery(STATUS_POLL_INTERVAL_MS, () => this.blocklistService.status())
+      .pipe(takeUntilDestroyed(inject(DestroyRef)))
       .subscribe((status) => this.status.set(status));
   }
 
+  /** A reload that fails before the server can report it in the status (unreachable, a 500)
+   * shows its reason under the button - it used to fail silently. See design_docs/0096. */
+  readonly reloadError = signal<string | null>(null);
+
   reload(): void {
-    this.blocklistService.reload().subscribe({ next: (status) => this.status.set(status) });
+    this.reloadError.set(null);
+    this.blocklistService.reload().subscribe({
+      next: (status) => this.status.set(status),
+      error: (error: unknown) => this.reloadError.set(apiErrorMessage(error, 'Could not reload the blocklist.')),
+    });
   }
 }

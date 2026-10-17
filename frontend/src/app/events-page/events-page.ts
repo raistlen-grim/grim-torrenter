@@ -1,7 +1,7 @@
 import { DatePipe } from '@angular/common';
-import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
-import { toSignal } from '@angular/core/rxjs-interop';
+import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
+import { ButtonModule } from 'primeng/button';
 
 import { LibraryEvent } from '../models/events.model';
 import { EventsService } from '../services/events.service';
@@ -30,7 +30,7 @@ function eventKey(event: LibraryEvent): string {
  */
 @Component({
   selector: 'app-events-page',
-  imports: [DatePipe, RouterLink, StatusIndicator],
+  imports: [ButtonModule, DatePipe, RouterLink, StatusIndicator],
   templateUrl: './events-page.html',
   styleUrl: './events-page.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -39,7 +39,22 @@ export class EventsPage {
   private readonly eventsService = inject(EventsService);
   private readonly torrentEvents = inject(TorrentEventsService);
 
-  private readonly initial = toSignal(this.eventsService.list(), { initialValue: [] as LibraryEvent[] });
+  private readonly initial = signal<LibraryEvent[]>([]);
+  /** The history load failed - live events still show, and the template offers a retry. See
+   * design_docs/0095. */
+  readonly loadFailed = signal(false);
+
+  constructor() {
+    this.load();
+  }
+
+  load(): void {
+    this.loadFailed.set(false);
+    this.eventsService.list().subscribe({
+      next: (events) => this.initial.set(events),
+      error: () => this.loadFailed.set(true),
+    });
+  }
 
   readonly statusDisplay = eventTypeDisplay;
 

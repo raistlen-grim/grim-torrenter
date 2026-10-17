@@ -1,5 +1,5 @@
 import { ChangeDetectionStrategy, Component, effect, input } from '@angular/core';
-import { FormControl, FormGroup, ReactiveFormsModule } from '@angular/forms';
+import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { InputGroupModule } from 'primeng/inputgroup';
 import { InputGroupAddonModule } from 'primeng/inputgroupaddon';
 import { InputNumberModule } from 'primeng/inputnumber';
@@ -27,6 +27,12 @@ function bytesToKib(bytesPerSec: number): number {
 function kibToBytes(kibPerSec: number): number {
   return kibPerSec > 0 ? Math.round(kibPerSec * BYTES_PER_KIB) : 0;
 }
+
+/** A limit whose toggle is on must be at least 1 KB/s: 0 means unlimited to the server, so a cap
+ * switched on at 0 used to save as no cap at all and reload with the toggle off. A disabled
+ * control (toggle off) isn't validated, so this only bites while the cap is on - and an invalid
+ * form disables Save. See design_docs/0096. */
+const LIMIT_VALIDATORS = [Validators.required, Validators.min(1)];
 
 export type RateLimitSettingsForm = FormGroup<{
   uploadLimitKibPerSec: FormControl<number>;
@@ -66,12 +72,12 @@ export function buildRateLimitSettingsForm(settings: Settings): RateLimitSetting
   return new FormGroup({
     uploadLimitKibPerSec: new FormControl(
       { value: bytesToKib(settings.uploadRateLimitBytesPerSec), disabled: !uploadEnabled },
-      { nonNullable: true },
+      { nonNullable: true, validators: LIMIT_VALIDATORS },
     ),
     uploadEnabled: new FormControl(uploadEnabled, { nonNullable: true }),
     downloadLimitKibPerSec: new FormControl(
       { value: bytesToKib(settings.downloadRateLimitBytesPerSec), disabled: !downloadEnabled },
-      { nonNullable: true },
+      { nonNullable: true, validators: LIMIT_VALIDATORS },
     ),
     downloadEnabled: new FormControl(downloadEnabled, { nonNullable: true }),
     burstSeconds: new FormControl(Math.max(0, settings.rateLimitBurstSeconds), { nonNullable: true }),
@@ -90,7 +96,7 @@ export function buildRateLimitSettingsForm(settings: Settings): RateLimitSetting
         value: bytesToKib(settings.scheduledUploadRateLimitBytesPerSec),
         disabled: !scheduleEnabled || !scheduleUploadEnabled,
       },
-      { nonNullable: true },
+      { nonNullable: true, validators: LIMIT_VALIDATORS },
     ),
     scheduleUploadEnabled: new FormControl(
       { value: scheduleUploadEnabled, disabled: !scheduleEnabled },
@@ -101,7 +107,7 @@ export function buildRateLimitSettingsForm(settings: Settings): RateLimitSetting
         value: bytesToKib(settings.scheduledDownloadRateLimitBytesPerSec),
         disabled: !scheduleEnabled || !scheduleDownloadEnabled,
       },
-      { nonNullable: true },
+      { nonNullable: true, validators: LIMIT_VALIDATORS },
     ),
     scheduleDownloadEnabled: new FormControl(
       { value: scheduleDownloadEnabled, disabled: !scheduleEnabled },

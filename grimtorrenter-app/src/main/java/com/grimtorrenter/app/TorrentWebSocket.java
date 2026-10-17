@@ -2,6 +2,7 @@ package com.grimtorrenter.app;
 
 import com.grimtorrenter.engine.settings.SettingsStore;
 import io.quarkus.logging.Log;
+import io.quarkus.websockets.next.CloseReason;
 import io.quarkus.websockets.next.OnClose;
 import io.quarkus.websockets.next.OnOpen;
 import io.quarkus.websockets.next.WebSocket;
@@ -33,6 +34,13 @@ public class TorrentWebSocket {
     }
 
     private static final Map<WebSocketConnection, Client> CONNECTIONS = new ConcurrentHashMap<>();
+
+    /** Close code for "no valid auth token" - in the 4000-4999 range RFC 6455 leaves to
+     * applications, and distinct from the 1008 an Origin rejection uses, so the client can tell
+     * "your session has ended, log in again" (stop reconnecting, go to /login) from everything
+     * else. The web UI treats it like a REST 401. See design_docs/0096. */
+    static final CloseReason SESSION_ENDED = new CloseReason(4401, "Authentication required");
+    private static final CloseReason ORIGIN_REJECTED = new CloseReason(1008, "Origin not allowed");
     private static final Duration SEND_TIMEOUT = Duration.ofSeconds(5);
 
     @Inject
@@ -70,13 +78,13 @@ public class TorrentWebSocket {
             Log.warnf("Rejecting WebSocket handshake from origin %s (Host %s) - set "
                     + "grimtorrenter.allowed-origins if a reverse proxy rewrites Host",
                     handshake.header("Origin"), handshake.header("Host"));
-            connection.close().subscribe().with(ignored -> { }, failure -> { });
+            connection.close(ORIGIN_REJECTED).subscribe().with(ignored -> { }, failure -> { });
             return;
         }
         String token = tokenFromSubprotocol(connection);
         if (settingsStore.current().authEnabled() && !sessionTokenStore.validate(token)) {
-            Log.warn("Rejecting WebSocket handshake with a missing/invalid auth token");
-            connection.close().subscribe().with(ignored -> { }, failure -> { });
+            Log.debug("Rejecting WebSocket handshake with a missing/invalid auth token");
+            connection.close(SESSION_ENDED).subscribe().with(ignored -> { }, failure -> { });
             return;
         }
         CONNECTIONS.put(connection, new Client(token));
@@ -115,7 +123,9 @@ public class TorrentWebSocket {
         CONNECTIONS.forEach((connection, client) -> {
             if (!tokenIsValid.test(client.token())) {
                 Log.info("Closing a WebSocket whose auth token is no longer valid");
-                dropAndClose(connection);
+                if (CONNECTIONS.remove(connection) != null) {
+                    connection.close(SESSION_ENDED).subscribe().with(ignored -> { }, failure -> { });
+                }
             }
         });
     }

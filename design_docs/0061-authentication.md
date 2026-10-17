@@ -372,3 +372,5 @@ Revised by [[0094-session-revocation-error-shape-and-api-consistency]]:
 - Open WebSockets are re-checked every 2 s and closed once their token stops being valid.
 - The failed-login backoff moved from `SessionTokenStore` to `LoginThrottle`, which also allows
   only one verification at a time.
+- A wrong current password on `PUT /api/auth/password` is now 403, not 401, and the web UI has a
+  log-out button. See [[0095-frontend-failure-recovery-and-logout]].

@@ -420,9 +420,12 @@ public final class TorrentSession implements AutoCloseable {
      * running/paused intent it had, kept up to date by start()/stop() while it waits. */
     private volatile boolean resumeWhenFilesReturn;
     private volatile boolean startRetryActive;
-    /** True while a start() is in its unlocked network phase - a second start() then does
-     * nothing. Guarded by this. */
-    private boolean startInProgress;
+    private static final int NO_START = -1;
+    /** The lifecycleGeneration of the start() in its unlocked network phase, or NO_START. That
+     * start is still current only while this equals lifecycleGeneration (see startInFlight()); a
+     * stop() makes it stale at once, so a resume straight after a pause isn't refused while the
+     * cancelled announce is still out. Guarded by this. See design_docs/0098. */
+    private int inFlightStartGeneration = NO_START;
     /** Bumped by every stop() (and so by recheck()/close()); a start() whose announce was in
      * flight across a bump discards its outcome. Guarded by this. See design_docs/0092. */
     private int lifecycleGeneration;
@@ -1091,7 +1094,7 @@ public final class TorrentSession implements AutoCloseable {
         if (state == TorrentState.VERIFYING) {
             return false;
         }
-        boolean resumeAfter = missingFiles ? resumeWhenFilesReturn : state != TorrentState.STOPPED || startInProgress;
+        boolean resumeAfter = missingFiles ? resumeWhenFilesReturn : state != TorrentState.STOPPED || startInFlight();
         if (!missingFiles) {
             // First report, never recreate: a file deleted while the torrent was loaded is the
             // same situation as one found missing at restore. The next recheck is the go-ahead.
@@ -1164,6 +1167,33 @@ public final class TorrentSession implements AutoCloseable {
      * job for every non-private torrent regardless of tracker kind, via the periodic
      * discoverPeersViaDht() task below. */
     public void start() {
+        StartTicket ticket = beginStart();
+        if (ticket != null) {
+            finishStart(ticket);
+        }
+    }
+
+    /**
+     * Like start(), but returns as soon as the session has moved to STARTING; the announce runs on
+     * a virtual thread, and the session goes on to DOWNLOADING/SEEDING or ERROR from there. For
+     * a request that shouldn't wait out a slow tracker - adding a torrent, resuming one. A
+     * stop() meanwhile cancels it the same way it cancels a synchronous start(). See
+     * design_docs/0098.
+     */
+    public void startInBackground() {
+        StartTicket ticket = beginStart();
+        if (ticket != null) {
+            Thread.ofVirtual().name("start-" + metadata.infoHash()).start(() -> finishStart(ticket));
+        }
+    }
+
+    /** What start()'s locked first half hands to its unlocked network phase. */
+    private record StartTicket(int generation, Thread pendingStopped) {
+    }
+
+    /** start()'s locked first half: null if there is nothing to start, otherwise the session is
+     * now committed to finishStart() - STARTING if it was STOPPED, still ERROR for a retry. */
+    private StartTicket beginStart() {
         int generation;
         Thread pendingStopped;
         synchronized (this) {
@@ -1175,19 +1205,29 @@ public final class TorrentSession implements AutoCloseable {
                 if (state == TorrentState.STOPPED) {
                     setState(TorrentState.ERROR);
                 }
-                return;
+                return null;
             }
-            if (startInProgress
+            if (startInFlight()
                     || (state != TorrentState.STOPPED && !(state == TorrentState.ERROR && startFailedRetryable))) {
-                return;
+                return null;
             }
             startFailedRetryable = false;
-            startInProgress = true;
             generation = ++lifecycleGeneration;
+            inFlightStartGeneration = generation;
             pendingStopped = stoppedAnnounce;
             uploadedAtStart = bytesUploaded();
             downloadedSinceStart.set(0);
+            if (state == TorrentState.STOPPED) {
+                setState(TorrentState.STARTING);
+            }
         }
+        return new StartTicket(generation, pendingStopped);
+    }
+
+    /** start()'s network phase and its locked second half. */
+    private void finishStart(StartTicket ticket) {
+        int generation = ticket.generation();
+        Thread pendingStopped = ticket.pendingStopped();
 
         // The announce (and any DHT fallback) can take as long as the slowest tracker's timeout,
         // so it runs without the session lock: stop(), recheck(), choking and every peer's read
@@ -1206,17 +1246,39 @@ public final class TorrentSession implements AutoCloseable {
             Thread.currentThread().interrupt();
         } finally {
             synchronized (this) {
-                startInProgress = false;
+                if (inFlightStartGeneration == generation) {
+                    inFlightStartGeneration = NO_START;
+                }
                 if (outcome != null && generation == lifecycleGeneration) {
                     applyStartOutcome(outcome);
-                } else if (outcome != null && outcome.response() != null) {
+                } else if (outcome == null && generation == lifecycleGeneration
+                        && state == TorrentState.STARTING) {
+                    // Interrupted before any answer: don't leave the session showing STARTING
+                    // forever. Back to STOPPED, as if the start had never been asked for.
+                    setState(TorrentState.STOPPED);
+                } else if (outcome != null && outcome.response() != null && !runningAgain()) {
                     // Stopped (or rechecked, or closed) while announcing, after the tracker had
-                    // accepted our STARTED - take it back.
+                    // accepted our STARTED - take it back. Not if a newer start has already
+                    // begun: its STARTED may be out by now, and a STOPPED landing after it would
+                    // drop us. A second STARTED is harmless; the tracker treats it as an announce.
                     announceStoppedInBackground(new TrackerRequest(metadata.infoHash(), ourPeerId, ourListenPort,
                             0, 0, bytesRemaining(), TrackerEvent.STOPPED, 0));
                 }
             }
         }
+    }
+
+    /** Whether a start() that is still current (no stop() since it began) is announcing. Caller
+     * holds the session lock. */
+    private boolean startInFlight() {
+        return inFlightStartGeneration != NO_START && inFlightStartGeneration == lifecycleGeneration;
+    }
+
+    /** Whether a newer start() has taken over from a cancelled one - running, or on its way.
+     * Caller holds the session lock. */
+    private boolean runningAgain() {
+        return startInFlight() || state == TorrentState.STARTING
+                || state == TorrentState.DOWNLOADING || state == TorrentState.SEEDING;
     }
 
     /** What start()'s network phase found: a tracker response, or failing that the DHT
@@ -1394,10 +1456,17 @@ public final class TorrentSession implements AutoCloseable {
      * is being permanently discarded (removeTorrent, engine shutdown, AutoCloseable teardown
      * in tests) rather than merely paused. See design_docs/0030, design_docs/0047. */
     public synchronized void stop() {
-        // Cancels a start() whose announce is still in flight (state is still STOPPED then):
-        // its outcome is discarded when it returns. See design_docs/0092.
+        // Cancels a start() whose announce is still in flight: its outcome is discarded when it
+        // returns. See design_docs/0092.
         lifecycleGeneration++;
         if (state == TorrentState.STOPPED) {
+            return;
+        }
+        if (state == TorrentState.STARTING) {
+            // Nothing is running yet. If the tracker accepts the in-flight STARTED, finishStart()
+            // sees the bumped generation and sends the STOPPED itself. See design_docs/0098.
+            startFailedRetryable = false;
+            setState(TorrentState.STOPPED);
             return;
         }
         startFailedRetryable = false;
@@ -1458,6 +1527,9 @@ public final class TorrentSession implements AutoCloseable {
         if (state == TorrentState.ERROR || state == TorrentState.STOPPED) {
             return;
         }
+        // A start() still announcing must not bring this back to DOWNLOADING on storage that has
+        // just been closed. See design_docs/0098.
+        lifecycleGeneration++;
         LOG.log(System.Logger.Level.WARNING, "Torrent " + metadata.infoHash() + " failed", cause);
         lastError = cause;
         setState(TorrentState.ERROR);

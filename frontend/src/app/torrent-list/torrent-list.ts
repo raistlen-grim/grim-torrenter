@@ -38,9 +38,12 @@ import {
 import { TorrentService } from '../services/torrent.service';
 import { FormatBytesPipe } from '../shared/format-bytes.pipe';
 import { generateLocalId } from '../shared/local-id';
+import { apiErrorMessage } from '../shared/api-error';
+import { magnetDisplayName, normalizeMagnetCandidate, shortInfoHash } from '../shared/magnet';
 import { pluralTorrentCount } from '../shared/plural-torrent-count';
 import { SkullMark } from '../shared/skull-mark/skull-mark';
 import { StatusIndicator } from '../shared/status-indicator/status-indicator';
+import { AddState, resolveAddState } from './add-state';
 import { BulkLabelsDialog } from './bulk-labels-dialog/bulk-labels-dialog';
 import { SelectionSummary } from './selection-summary/selection-summary';
 import { TorrentRow } from './torrent-row/torrent-row';
@@ -64,33 +67,6 @@ type TableRow = { kind: 'pending'; upload: PendingUpload } | { kind: 'torrent'; 
 type SortField = 'name' | 'size' | 'status' | 'progress';
 type SortDirection = 'asc' | 'desc';
 
-/** Requires the actual btih infohash, not just the magnet: scheme - a bare
- * `magnet:?dn=foo` must fail validation. See ADD_CONTROL.md's "Validation" section. */
-const MAGNET_PREFIX_RE = /^magnet:\?/i;
-const BTIH_RE = /xt=urn:btih:([0-9a-fA-F]{40}|[A-Za-z2-7]{32})/i;
-const HEX_INFOHASH_RE = /^[0-9a-fA-F]{40}$/;
-const URL_RE = /^https?:\/\/\S+$/i;
-
-interface ParsedMagnet {
-  /** Only populated for a 40-char hex btih (the base32 form isn't converted client-side,
-   * so a base32 magnet skips duplicate detection rather than mis-comparing). */
-  infoHash: string | null;
-  displayName: string | null;
-  lengthBytes: number | null;
-  trackerCount: number;
-}
-
-type AddState =
-  | { kind: 'empty' }
-  | { kind: 'invalid' }
-  /** The design guide's "Add link" (fetch a .torrent from a URL) has no backend endpoint
-   * yet - flagged when ADDENDUM_02 was reviewed as needing new server work plus an SSRF
-   * consideration, not something to build silently. A recognised URL is shown as
-   * unsupported rather than wired to a fetch that doesn't exist. */
-  | { kind: 'torrent-url' }
-  | ({ kind: 'magnet'; uri: string; duplicate: TorrentWithRate | null } & ParsedMagnet)
-  | { kind: 'multi-magnet'; uris: string[]; firstName: string | null };
-
 interface EchoState {
   tone: 'accent' | 'alarm';
   icon: string;
@@ -99,100 +75,10 @@ interface EchoState {
   hint: string;
 }
 
-function normalizeMagnetCandidate(value: string): string | null {
-  const stripped = value.trim().replace(/^[<'"]+/, '').replace(/[>'"]+$/, '');
-  if (MAGNET_PREFIX_RE.test(stripped)) {
-    return stripped;
-  }
-  if (HEX_INFOHASH_RE.test(stripped)) {
-    return `magnet:?xt=urn:btih:${stripped}`;
-  }
-  return null;
-}
-
-function parseMagnetParams(uri: string): ParsedMagnet | null {
-  const match = BTIH_RE.exec(uri);
-  if (!match) {
-    return null;
-  }
-  const infoHash = match[1].length === 40 ? match[1].toLowerCase() : null;
-  let displayName: string | null = null;
-  let lengthBytes: number | null = null;
-  let trackerCount = 0;
-  const query = uri.slice(uri.indexOf('?') + 1);
-  for (const part of query.split('&')) {
-    const eqIndex = part.indexOf('=');
-    if (eqIndex === -1) {
-      continue;
-    }
-    const key = part.slice(0, eqIndex);
-    const value = decodeURIComponent(part.slice(eqIndex + 1));
-    if (key === 'dn' && displayName === null) {
-      displayName = value;
-    } else if (key === 'xl' && lengthBytes === null) {
-      const parsedLength = Number(value);
-      lengthBytes = Number.isFinite(parsedLength) ? parsedLength : null;
-    } else if (key === 'tr') {
-      trackerCount++;
-    }
-  }
-  return { infoHash, displayName, lengthBytes, trackerCount };
-}
-
-/** Same displayName-or-truncated-hash-or-generic-fallback shape the 'magnet' echo() branch
- * below already computes inline - pulled out so submitMagnet()/submitMultipleMagnets() can
- * label a pending row the same way without duplicating the fallback logic a third time. Never
- * null - a caller that already knows parseMagnetParams(uri) returned non-null (every call
- * site here does, since it's only reached once resolveAddState already classified the URI as
- * a valid magnet) always gets a usable label back. */
-function magnetDisplayName(uri: string): string {
-  const parsed = parseMagnetParams(uri);
-  if (parsed?.displayName) {
-    return parsed.displayName;
-  }
-  return parsed?.infoHash ? `btih:${parsed.infoHash.slice(0, 4)}…${parsed.infoHash.slice(-4)}` : 'Magnet link';
-}
-
-/** Newline-separated pastes are treated as a batch only when every line parses as a
- * magnet/infohash - a mix of valid and junk lines falls through to plain 'invalid'
- * rather than silently dropping the junk. See ADD_CONTROL.md's behaviour table. */
-function resolveAddState(rawValue: string, torrents: readonly TorrentWithRate[]): AddState {
-  const trimmed = rawValue.trim();
-  if (!trimmed) {
-    return { kind: 'empty' };
-  }
-
-  const lines = trimmed
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-
-  if (lines.length > 1) {
-    const uris = lines.map(normalizeMagnetCandidate);
-    if (uris.every((uri): uri is string => uri !== null)) {
-      const first = parseMagnetParams(uris[0]);
-      return { kind: 'multi-magnet', uris, firstName: first?.displayName ?? null };
-    }
-    return { kind: 'invalid' };
-  }
-
-  const single = lines[0];
-  const normalized = normalizeMagnetCandidate(single);
-  if (normalized) {
-    const parsed = parseMagnetParams(normalized);
-    if (parsed) {
-      const duplicate = parsed.infoHash
-        ? (torrents.find((t) => t.infoHash.toLowerCase() === parsed.infoHash) ?? null)
-        : null;
-      return { kind: 'magnet', uri: normalized, duplicate, ...parsed };
-    }
-  }
-
-  if (URL_RE.test(single)) {
-    return { kind: 'torrent-url' };
-  }
-
-  return { kind: 'invalid' };
+/** A torrent Pause can act on: running, or still starting (design_docs/0098) - a pause then
+ * cancels the start. */
+function isPausable(torrent: TorrentWithRate): boolean {
+  return torrent.state === 'DOWNLOADING' || torrent.state === 'SEEDING' || torrent.state === 'STARTING';
 }
 
 @Component({
@@ -489,7 +375,7 @@ export class TorrentList {
    * are disabled when these are empty. */
   readonly pausableSelection = computed(() =>
     this.selectedTorrents().filter(
-      (t) => (t.state === 'DOWNLOADING' || t.state === 'SEEDING') && this.actions.pendingFor(t.infoHash) === null,
+      (t) => isPausable(t) && this.actions.pendingFor(t.infoHash) === null,
     ),
   );
   readonly resumableSelection = computed(() =>
@@ -660,17 +546,18 @@ export class TorrentList {
     forkJoin(
       targets.map((t) =>
         action(t.infoHash).pipe(
-          map(() => true),
-          catchError(() => of(false)),
+          map((): unknown => null),
+          catchError((error: unknown) => of(error ?? 'failed')),
         ),
       ),
     ).subscribe((results) => {
-      const failed = results.filter((ok) => !ok).length;
-      if (failed > 0) {
+      const failures = results.filter((error) => error !== null);
+      if (failures.length > 0) {
+        // The first failure's reason stands for the batch - one toast, not one per torrent.
         this.messageService.add({
           severity: 'error',
-          summary: `Could not ${verb} ${pluralTorrentCount(failed)}`,
-          detail: 'Please try again.',
+          summary: `Could not ${verb} ${pluralTorrentCount(failures.length)}`,
+          detail: apiErrorMessage(failures[0], 'Please try again.'),
         });
       }
     });
@@ -732,7 +619,7 @@ export class TorrentList {
   /** Enter: pause whatever in the targets is running; if nothing is, resume what's paused. */
   private pauseOrResume(targets: TorrentWithRate[]): void {
     const idle = (t: TorrentWithRate) => this.actions.pendingFor(t.infoHash) === null;
-    const running = targets.filter((t) => (t.state === 'DOWNLOADING' || t.state === 'SEEDING') && idle(t));
+    const running = targets.filter((t) => isPausable(t) && idle(t));
     if (running.length > 0) {
       this.runOnEach(running, (infoHash) => this.actions.pause(infoHash), 'pause');
       return;
@@ -855,7 +742,7 @@ export class TorrentList {
    * failure isn't toasted per torrent here (one toast per row of a large list would bury the
    * screen); the row simply stays in its old state. See design_docs/0043. */
   pauseAll(): void {
-    const targets = this.events.torrents().filter((t) => t.state === 'DOWNLOADING' || t.state === 'SEEDING');
+    const targets = this.events.torrents().filter(isPausable);
     if (targets.length === 0) {
       return;
     }
@@ -955,7 +842,7 @@ export class TorrentList {
           };
         }
         const name =
-          state.displayName ?? (state.infoHash ? `btih:${state.infoHash.slice(0, 4)}…${state.infoHash.slice(-4)}` : 'Unnamed magnet link');
+          state.displayName ?? (state.infoHash ? shortInfoHash(state.infoHash) : 'Unnamed magnet link');
         const metaParts: string[] = [];
         if (state.lengthBytes !== null) {
           metaParts.push(this.formatBytes.transform(state.lengthBytes));
@@ -1091,12 +978,12 @@ export class TorrentList {
           });
         }
       },
-      error: (err: { error?: { error?: string } }) => {
+      error: (error: unknown) => {
         this.removePendingUpload(pendingId);
         this.messageService.add({
           severity: 'error',
           summary: 'Upload failed',
-          detail: err?.error?.error ?? 'Could not add torrent',
+          detail: apiErrorMessage(error, 'Could not add torrent'),
         });
       },
     });
@@ -1120,10 +1007,10 @@ export class TorrentList {
         this.addValue.set('');
         this.events.upsert(response.torrent);
       },
-      error: (err: { error?: { error?: string } }) => {
+      error: (error: unknown) => {
         this.removePendingUpload(pendingId);
         this.addPending.set(false);
-        this.addError.set(err?.error?.error ?? 'Invalid magnet link');
+        this.addError.set(apiErrorMessage(error, 'Invalid magnet link'));
       },
     });
   }

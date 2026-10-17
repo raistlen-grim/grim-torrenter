@@ -55,6 +55,9 @@ pass, and wasn't asked for - this doc covers only the list row's existing three 
 
 ## Future work
 
+**Resolved 2026-10-17 by [[0097-pause-resume-return-the-torrent]]**: pause/resume now return
+the torrent, applied at once - not the optimistic update suggested below.
+
 **The row's displayed state (tag, progress, etc.) still only catches up on the next
 periodic WebSocket snapshot** (up to ~2s, see [[0019-rest-and-websocket-layer]]) after
 `pendingAction` clears - the pending dim/spinner covers the request's own round trip, but

@@ -1,11 +1,12 @@
 import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
-import { RouterLink } from '@angular/router';
-import { interval, startWith, switchMap } from 'rxjs';
+import { Router, RouterLink } from '@angular/router';
 
+import { AuthService } from '../../services/auth.service';
 import { DhtService } from '../../services/dht.service';
 import { TorrentEventsService } from '../../services/torrent-events.service';
 import { FormatRatePipe } from '../../shared/format-rate.pipe';
+import { pollEvery } from '../../shared/poll';
 import { SkullMark } from '../../shared/skull-mark/skull-mark';
 import { StatusIndicator } from '../../shared/status-indicator/status-indicator';
 
@@ -31,6 +32,12 @@ const DHT_POLL_INTERVAL_MS = 5000;
 export class AppHeader {
   private readonly events = inject(TorrentEventsService);
   private readonly dht = inject(DhtService);
+  private readonly auth = inject(AuthService);
+  private readonly router = inject(Router);
+
+  /** Only while auth is on and this browser holds a token - with auth off there's no session to
+   * end. authGuard refreshes authEnabled on every guarded navigation. See design_docs/0095. */
+  readonly canLogOut = computed(() => this.auth.authEnabled() === true && this.auth.token() !== null);
 
   readonly totalDownloadRate = computed(() =>
     this.events.torrents().reduce((sum, t) => sum + t.downloadRateBytesPerSec, 0),
@@ -40,10 +47,22 @@ export class AppHeader {
   );
 
   readonly dhtStatus = toSignal(
-    interval(DHT_POLL_INTERVAL_MS).pipe(
-      startWith(0),
-      switchMap(() => this.dht.status()),
-    ),
+    pollEvery(DHT_POLL_INTERVAL_MS, () => this.dht.status()),
     { initialValue: { enabled: false, nodeCount: 0 } },
   );
+
+  /** Ends the session server-side (which also closes its WebSocket there), stops this tab's
+   * socket so it doesn't keep reconnecting with no token, and goes to the login page. Done on
+   * failure too - logout() clears the token either way. */
+  logOut(): void {
+    this.auth.logout().subscribe({
+      complete: () => this.leave(),
+      error: () => this.leave(),
+    });
+  }
+
+  private leave(): void {
+    this.events.disconnect();
+    this.router.navigateByUrl('/login');
+  }
 }

@@ -16,6 +16,7 @@ import { DetailTab, TorrentDetailTabService } from '../services/torrent-detail-t
 import { TorrentService } from '../services/torrent.service';
 import { ActiveContextMenuRegistry } from '../shared/active-context-menu-registry';
 import { copyToClipboard } from '../shared/clipboard';
+import { apiErrorMessage } from '../shared/api-error';
 import { FormatBytesPipe } from '../shared/format-bytes.pipe';
 import { FormatDurationPipe } from '../shared/format-duration.pipe';
 import { FormatRatePipe } from '../shared/format-rate.pipe';
@@ -234,26 +235,26 @@ export class TorrentDetail {
   onPause(): void {
     const infoHash = this.infoHash();
     const name = this.torrent()?.name;
-    this.actions.pause(infoHash).subscribe({ error: () => this.notifyActionFailed('pause', name) });
+    this.actions.pause(infoHash).subscribe({ error: (e: unknown) => this.notifyActionFailed('pause', name, e) });
   }
 
   onResume(): void {
     const infoHash = this.infoHash();
     const name = this.torrent()?.name;
-    this.actions.resume(infoHash).subscribe({ error: () => this.notifyActionFailed('resume', name) });
+    this.actions.resume(infoHash).subscribe({ error: (e: unknown) => this.notifyActionFailed('resume', name, e) });
   }
 
   /** Same two actions, and the same reasoning, as TorrentRow's own onRecheck()/onReannounce(). */
   onRecheck(): void {
     const name = this.torrent()?.name;
-    this.actions.recheck(this.infoHash()).subscribe({ error: () => this.notifyActionFailed('recheck', name) });
+    this.actions.recheck(this.infoHash()).subscribe({ error: (e: unknown) => this.notifyActionFailed('recheck', name, e) });
   }
 
   onReannounce(): void {
     const name = this.torrent()?.name;
     this.actions.reannounce(this.infoHash()).subscribe({
       next: () => this.messageService.add({ severity: 'info', summary: 'Reannouncing', detail: name }),
-      error: () => this.notifyActionFailed('reannounce', name),
+      error: (e: unknown) => this.notifyActionFailed('reannounce', name, e),
     });
   }
 
@@ -265,7 +266,7 @@ export class TorrentDetail {
     const name = this.torrent()?.name;
     this.actions.remove(infoHash).subscribe({
       next: () => this.closeIfStillShowing(infoHash),
-      error: () => this.notifyActionFailed('remove', name),
+      error: (e: unknown) => this.notifyActionFailed('remove', name, e),
     });
   }
 
@@ -287,7 +288,7 @@ export class TorrentDetail {
         const name = torrent.name;
         this.actions.remove(infoHash, true).subscribe({
           next: () => this.closeIfStillShowing(infoHash),
-          error: () => this.notifyActionFailed('remove', name),
+          error: (e: unknown) => this.notifyActionFailed('remove', name, e),
         });
       },
     });
@@ -303,11 +304,15 @@ export class TorrentDetail {
 
   /** Takes the name captured when the action started - by the time a slow request fails, the
    * panel may be showing a different torrent. */
-  private notifyActionFailed(action: PendingTorrentAction | 'recheck' | 'reannounce', name: string | undefined): void {
+  private notifyActionFailed(
+    action: PendingTorrentAction | 'recheck' | 'reannounce',
+    name: string | undefined,
+    error: unknown,
+  ): void {
     this.messageService.add({
       severity: 'error',
-      summary: `Could not ${action} torrent`,
-      detail: `"${name}" - please try again.`,
+      summary: name ? `Could not ${action} "${name}"` : `Could not ${action} torrent`,
+      detail: apiErrorMessage(error, 'Please try again.'),
     });
   }
 }

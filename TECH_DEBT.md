@@ -105,15 +105,15 @@ came from so the context can be found again.
   and static `broadcast()`.
 - **`JsonFileStore<T>`**: shared read-or-seed / atomic write-then-swap code for
   `JsonSettingsStore` and `JsonAuthStore`.
-- **Split `SessionTokenStore`** into a token store and a login throttle.
-- **Collapse the four identical exception mappers** into one, alongside B6's unified
-  `{"error": ...}` body for every 4xx.
+- ~~**Split `SessionTokenStore`** into a token store and a login throttle.~~ Done in app B2
+  (`LoginThrottle`, design_docs/0094).
+- **Collapse the four identical exception mappers** into one. (B6's unified `{"error": ...}`
+  body is done: `WebApplicationExceptionMapper`, design_docs/0094.)
 - **Decide the DTO policy explicitly.** Either always wrap engine types in app-side views, or
   document which engine records are public API. Today it's case by case
   (design_docs/0045), so the REST contract has no single place to read.
-- **Error typing in the engine:** separate "bad input" from "server failed"
-  (`TorrentEngineException` is used for both), so the app can map 400 vs 500 without
-  string-matching.
+- ~~**Error typing in the engine**~~ Done in app B5 (`TorrentEngineIoException`,
+  design_docs/0094).
 
 ### Features and hardening (post-release)
 - `GET /api/events` returns the whole retention window every time. Add `limit`/`before`
@@ -123,3 +123,45 @@ came from so the context can be found again.
 - Per-IP login throttling, deferred in design_docs/0061 because of the trusted-proxy-header
   question; revisit if the app is commonly exposed behind a reverse proxy.
 - Comment hygiene pass for the app module (same as the engine item).
+
+## Frontend (from code_review/03-frontend.md)
+
+### Thin frontend (design_docs/0071)
+- **Transfer rates are computed in the browser** (`TorrentEventsService` + `RateTracker`, from
+  successive snapshots). Every other client would have to rebuild that, and the numbers depend
+  on when snapshots happen to arrive. Expose `downloadRateBytesPerSec`/`uploadRateBytesPerSec`
+  (and ETA) on `TorrentView` from the engine's own counters; the client keeps only the
+  sparkline history.
+- **Copy magnet link** is assembled client-side in two places. A `magnetUri` field on
+  `TorrentView` would be one line server-side.
+
+### Structure
+- **Split `torrent-list.ts`** (~1100 lines): the magnet parsing has moved out
+  (`shared/magnet.ts`, `add-state.ts`, design_docs/0096); the add control as its own component
+  and a keyboard-shortcut directive remain.
+- **Component tests.** The pure logic has unit tests (design_docs/0096); no component has a
+  TestBed test yet. Start with `TorrentList`'s selection and keyboard handling, and
+  `TorrentEventsService`'s message handling and reconnect rules.
+- **One torrent action menu** shared by `TorrentRow` and `TorrentDetail`, plus confirm/copy
+  helpers in `TorrentActionsService`.
+- **Generated API types.** `models/*.ts` are hand-written copies of the backend DTOs, with no
+  check that they match. An OpenAPI document from Quarkus (`quarkus-smallrye-openapi`) plus a
+  generator, or at least a contract test, would catch drift.
+- **Commit the style guide** referenced from comments (`ADD_CONTROL.md`, `STYLE_GUIDE_NOTES.md`,
+  `SETTINGS_PAGE.md`), or replace those citations with design_docs.
+
+### Features and hardening (post-release)
+- **Events page renders the whole retention window** in one list. Pair with the app's events
+  pagination item: load a page, fetch more on scroll.
+- **Settings are saved as one whole object, last writer wins.** Two tabs, or the UI and a
+  script, can silently undo each other's changes. An `ETag`/`If-Match` on `PUT /api/settings`
+  would turn that into a 409.
+- **Snapshots are full lists every 2 s.** Fine at hundreds of torrents. At thousands, send only
+  the rows that changed.
+- **Accessibility isn't checked automatically**, though `frontend/.claude/CLAUDE.md` requires
+  AXE and WCAG AA. Add an axe check to the component tests, or a Lighthouse pass to the
+  regression checklist.
+- **Validate WebSocket messages** before use (a type guard per message type), so one bad frame
+  can't throw out of `onmessage`.
+- Comment hygiene pass for the frontend (same as the engine and app items).
+

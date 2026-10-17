@@ -1,7 +1,8 @@
 /** FETCHING_METADATA isn't a real backend TorrentState (TorrentSession never has that value) -
  * it's a pending magnet, rendered through the same Torrent shape via a sentinel string. See
  * design_docs/0070. */
-export type TorrentState = 'DOWNLOADING' | 'VERIFYING' | 'SEEDING' | 'STOPPED' | 'ERROR' | 'FETCHING_METADATA';
+/** STARTING: a start whose first announce is still in flight (design_docs/0098). */
+export type TorrentState = 'DOWNLOADING' | 'VERIFYING' | 'SEEDING' | 'STOPPED' | 'ERROR' | 'STARTING' | 'FETCHING_METADATA';
 
 /** Matches the backend's PieceState enum - see design_docs/0031's Piece map endpoint. */
 export type PieceState = 'NEEDED' | 'IN_PROGRESS' | 'COMPLETE';

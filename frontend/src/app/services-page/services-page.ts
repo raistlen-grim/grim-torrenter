@@ -1,10 +1,10 @@
 import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
-import { catchError, interval, of, startWith, switchMap, tap } from 'rxjs';
 
 import { HealthReport } from '../models/system.model';
 import { SystemService } from '../services/system.service';
 import { healthCheckDisplay, healthGroupLabel } from '../shared/status-display';
+import { pollEvery } from '../shared/poll';
 import { StatusIndicator } from '../shared/status-indicator/status-indicator';
 
 const HEALTH_POLL_INTERVAL_MS = 15_000;
@@ -31,19 +31,9 @@ const HEALTH_POLL_INTERVAL_MS = 15_000;
 export class ServicesPage {
   private readonly system = inject(SystemService);
 
-  /** The most recent successful report - what a failed poll falls back to. */
-  private lastReport: HealthReport | null = null;
-
-  readonly report = toSignal(
-    interval(HEALTH_POLL_INTERVAL_MS).pipe(
-      startWith(0),
-      switchMap(() =>
-        this.system.health().pipe(
-          tap((report) => (this.lastReport = report)),
-          catchError(() => of(this.lastReport)),
-        ),
-      ),
-    ),
+  /** A failed poll keeps the most recent successful report (pollEvery skips the tick). */
+  readonly report = toSignal<HealthReport | null>(
+    pollEvery(HEALTH_POLL_INTERVAL_MS, () => this.system.health()),
     { initialValue: null },
   );
 

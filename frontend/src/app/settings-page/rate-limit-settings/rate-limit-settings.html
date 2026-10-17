@@ -3,13 +3,16 @@
     <div class="settings-row-label">
       <label for="uploadLimitKibPerSec">Upload limit</label>
       <p class="settings-row-description">Caps how fast GrimTorrenter sends data.</p>
+      @if (form().controls.uploadLimitKibPerSec.invalid) {
+        <p class="settings-row-error" role="alert">Set at least 1 KB/s, or switch the cap off.</p>
+      }
     </div>
     <div class="settings-row-control">
       <p-inputgroup class="settings-number-group">
         <p-inputnumber
           inputId="uploadLimitKibPerSec"
           formControlName="uploadLimitKibPerSec"
-          [min]="0"
+          [min]="1"
           [showButtons]="false"
           inputStyleClass="settings-number-input"
         />
@@ -23,13 +26,16 @@
     <div class="settings-row-label">
       <label for="downloadLimitKibPerSec">Download limit</label>
       <p class="settings-row-description">Caps how fast GrimTorrenter receives data.</p>
+      @if (form().controls.downloadLimitKibPerSec.invalid) {
+        <p class="settings-row-error" role="alert">Set at least 1 KB/s, or switch the cap off.</p>
+      }
     </div>
     <div class="settings-row-control">
       <p-inputgroup class="settings-number-group">
         <p-inputnumber
           inputId="downloadLimitKibPerSec"
           formControlName="downloadLimitKibPerSec"
-          [min]="0"
+          [min]="1"
           [showButtons]="false"
           inputStyleClass="settings-number-input"
         />
@@ -76,13 +82,16 @@
       <div class="settings-row-label">
         <label for="scheduleUploadLimitKibPerSec">Scheduled upload limit</label>
         <p class="settings-row-description">Replaces the upload limit above during the window.</p>
+        @if (form().controls.scheduleUploadLimitKibPerSec.invalid) {
+          <p class="settings-row-error" role="alert">Set at least 1 KB/s, or switch the cap off.</p>
+        }
       </div>
       <div class="settings-row-control">
         <p-inputgroup class="settings-number-group">
           <p-inputnumber
             inputId="scheduleUploadLimitKibPerSec"
             formControlName="scheduleUploadLimitKibPerSec"
-            [min]="0"
+            [min]="1"
             [showButtons]="false"
             inputStyleClass="settings-number-input"
           />
@@ -96,13 +105,16 @@
       <div class="settings-row-label">
         <label for="scheduleDownloadLimitKibPerSec">Scheduled download limit</label>
         <p class="settings-row-description">Replaces the download limit above during the window.</p>
+        @if (form().controls.scheduleDownloadLimitKibPerSec.invalid) {
+          <p class="settings-row-error" role="alert">Set at least 1 KB/s, or switch the cap off.</p>
+        }
       </div>
       <div class="settings-row-control">
         <p-inputgroup class="settings-number-group">
           <p-inputnumber
             inputId="scheduleDownloadLimitKibPerSec"
             formControlName="scheduleDownloadLimitKibPerSec"
-            [min]="0"
+            [min]="1"
             [showButtons]="false"
             inputStyleClass="settings-number-input"
           />

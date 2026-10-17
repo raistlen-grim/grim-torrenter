@@ -77,6 +77,9 @@
       @if (status()?.lastError; as error) {
         <p class="settings-row-error" role="alert">{{ error }}</p>
       }
+      @if (reloadError(); as error) {
+        <p class="settings-row-error" role="alert">{{ error }}</p>
+      }
     </div>
     <div class="settings-row-control">
       <p-button

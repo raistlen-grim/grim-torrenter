@@ -1,6 +1,8 @@
 import { Signal } from '@angular/core';
 import { toObservable } from '@angular/core/rxjs-interop';
-import { Observable, interval, startWith, switchMap } from 'rxjs';
+import { Observable, switchMap } from 'rxjs';
+
+import { pollEvery } from './poll';
 
 /**
  * Polls fetch(value) every intervalMs, restarting whenever input's value changes. Built on
@@ -8,14 +10,13 @@ import { Observable, interval, startWith, switchMap } from 'rxjs';
  * input - reading a required input signal synchronously (e.g. inside interval(...).pipe(
  * switchMap(() => fetch(someInputSignal()))) directly) throws NG0950, since that runs
  * during the component's field-initializer/construction phase, before input binding has
- * happened. See design_docs/0031's detail-view polling pattern.
+ * happened. A failed fetch skips a tick rather than ending the poll - see pollEvery(). See
+ * design_docs/0031's detail-view polling pattern.
  */
 export function pollWhileInput<T>(
   input: Signal<string>,
   intervalMs: number,
   fetch: (value: string) => Observable<T>,
 ): Observable<T> {
-  return toObservable(input).pipe(
-    switchMap((value) => interval(intervalMs).pipe(startWith(0), switchMap(() => fetch(value)))),
-  );
+  return toObservable(input).pipe(switchMap((value) => pollEvery(intervalMs, () => fetch(value))));
 }

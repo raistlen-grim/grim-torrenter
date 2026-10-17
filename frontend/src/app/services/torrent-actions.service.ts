@@ -2,6 +2,7 @@ import { HttpErrorResponse } from '@angular/common/http';
 import { Injectable, inject, signal } from '@angular/core';
 import { Observable, catchError, defer, finalize, map, of, tap, throwError } from 'rxjs';
 
+import { Torrent } from '../models/torrent.model';
 import { TorrentEventsService } from './torrent-events.service';
 import { TorrentService } from './torrent.service';
 
@@ -11,8 +12,8 @@ export type PendingTorrentAction = 'pause' | 'resume' | 'remove';
  * a request in flight. The row, the details panel and the toolbar's Pause all/Resume all each
  * start these actions; keeping the pending state here (keyed by info hash) rather than in each
  * component means all of them show the same torrent as busy, and it survives the details panel
- * closing or switching torrent mid-request - a resume blocks on the tracker and can take a
- * minute. Failure toasts stay with the caller (MessageService is provided by TorrentList, not
+ * closing or switching torrent mid-request. (A resume no longer waits for the tracker -
+ * design_docs/0098 - but any request can still be slow.) Failure toasts stay with the caller (MessageService is provided by TorrentList, not
  * root). Same simple signal-service pattern as TorrentDetailTabService. See design_docs/0033's
  * 2026-10-01 addenda. */
 @Injectable({ providedIn: 'root' })
@@ -28,12 +29,15 @@ export class TorrentActionsService {
     return this.pending().get(infoHash) ?? null;
   }
 
+  /** The response is the torrent as it now is, applied at once - so the row's state changes in
+   * the same moment its spinner clears, rather than up to a snapshot (~2 s) later. See
+   * design_docs/0097. */
   pause(infoHash: string): Observable<void> {
-    return this.track(infoHash, 'pause', this.torrentService.pause(infoHash));
+    return this.track(infoHash, 'pause', this.applying(this.torrentService.pause(infoHash)));
   }
 
   resume(infoHash: string): Observable<void> {
-    return this.track(infoHash, 'resume', this.torrentService.resume(infoHash));
+    return this.track(infoHash, 'resume', this.applying(this.torrentService.resume(infoHash)));
   }
 
   /** Also drops the torrent from the local list on success, rather than leaving the row visible
@@ -65,6 +69,13 @@ export class TorrentActionsService {
   /** Not tracked as pending either - returns once the announce has been started. */
   reannounce(infoHash: string): Observable<void> {
     return this.torrentService.reannounce(infoHash);
+  }
+
+  private applying(request: Observable<Torrent>): Observable<void> {
+    return request.pipe(
+      tap((torrent) => this.events.upsert(torrent)),
+      map(() => undefined),
+    );
   }
 
   /** Marked pending on subscribe (not on call) and cleared on completion, error or unsubscribe,

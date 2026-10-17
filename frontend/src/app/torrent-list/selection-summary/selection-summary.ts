@@ -8,7 +8,7 @@ import { pluralTorrentCount } from '../../shared/plural-torrent-count';
 import { torrentStateDisplay } from '../../shared/status-display';
 
 /** The order the "count by state" line lists states in - running first, problems last. */
-const STATE_ORDER: TorrentState[] = ['DOWNLOADING', 'SEEDING', 'VERIFYING', 'STOPPED', 'ERROR', 'FETCHING_METADATA'];
+const STATE_ORDER: TorrentState[] = ['DOWNLOADING', 'SEEDING', 'STARTING', 'VERIFYING', 'STOPPED', 'ERROR', 'FETCHING_METADATA'];
 
 /**
  * The details panel's view of a multi-selection (design_docs/0083's second addendum): combined

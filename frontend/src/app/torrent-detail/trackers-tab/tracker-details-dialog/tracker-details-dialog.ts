@@ -2,12 +2,13 @@ import { DatePipe } from '@angular/common';
 import { ChangeDetectionStrategy, Component, LOCALE_ID, Signal, computed, inject, input, output } from '@angular/core';
 import { toObservable, toSignal } from '@angular/core/rxjs-interop';
 import { DialogModule } from 'primeng/dialog';
-import { EMPTY, Observable, interval, startWith, switchMap } from 'rxjs';
+import { EMPTY, Observable, switchMap } from 'rxjs';
 
 import { Peer, Tracker } from '../../../models/torrent.model';
 import { TorrentService } from '../../../services/torrent.service';
 import { FormatBytesPipe } from '../../../shared/format-bytes.pipe';
 import { activityDetail, activityLabel, comparePeersByActivity } from '../../../shared/peer-activity';
+import { pollEvery } from '../../../shared/poll';
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -19,7 +20,7 @@ const POLL_INTERVAL_MS = 3000;
 function pollWhileVisible<T>(visible: Signal<boolean>, fetch: () => Observable<T>, initialValue: T): Signal<T> {
   return toSignal(
     toObservable(visible).pipe(
-      switchMap((isVisible) => (isVisible ? interval(POLL_INTERVAL_MS).pipe(startWith(0), switchMap(fetch)) : EMPTY)),
+      switchMap((isVisible) => (isVisible ? pollEvery(POLL_INTERVAL_MS, fetch) : EMPTY)),
     ),
     { initialValue },
   );

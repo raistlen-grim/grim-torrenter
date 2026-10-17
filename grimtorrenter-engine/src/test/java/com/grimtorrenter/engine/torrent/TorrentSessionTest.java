@@ -2451,7 +2451,9 @@ class TorrentSessionTest {
 
         Thread resume = Thread.ofVirtual().start(session::start);
         Thread.sleep(100);
-        assertEquals(TorrentState.STOPPED, session.state(), "the resume must still be waiting");
+        // STARTING at once (design_docs/0098), but the STARTED announce hasn't gone out yet.
+        assertEquals(TorrentState.STARTING, session.state(), "the resume must still be waiting");
+        assertEquals(List.of(TrackerEvent.STARTED), events);
 
         releaseStopped.countDown();
         resume.join(5000);

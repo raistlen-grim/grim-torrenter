@@ -1,12 +1,16 @@
-import { ChangeDetectionStrategy, Component, computed, effect, inject, signal } from '@angular/core';
-import { toSignal } from '@angular/core/rxjs-interop';
+import { ChangeDetectionStrategy, Component, DestroyRef, computed, inject, signal } from '@angular/core';
 import { FormGroup } from '@angular/forms';
-import { MessageService } from 'primeng/api';
+import { ConfirmationService, MessageService } from 'primeng/api';
 import { ButtonModule } from 'primeng/button';
+import { ConfirmDialogModule } from 'primeng/confirmdialog';
+import { Observable } from 'rxjs';
 import { ToastModule } from 'primeng/toast';
 
 import { Settings } from '../models/settings.model';
 import { SettingsService } from '../services/settings.service';
+import { ThemeService } from '../services/theme.service';
+import { HasUnsavedChanges } from '../services/unsaved-changes.guard';
+import { apiErrorMessage } from '../shared/api-error';
 import {
   AppearanceSettings,
   AppearanceSettingsForm,
@@ -184,6 +188,7 @@ const SETTINGS_GROUPS: { key: SettingsGroupKey; label: string; icon: string; hin
     AppearanceSettings,
     BlocklistSettings,
     ButtonModule,
+    ConfirmDialogModule,
     EventLogSettings,
     MagnetFetchSettings,
     NetworkSettings,
@@ -196,12 +201,17 @@ const SETTINGS_GROUPS: { key: SettingsGroupKey; label: string; icon: string; hin
   ],
   templateUrl: './settings-page.html',
   styleUrl: './settings-page.scss',
-  providers: [MessageService],
+  providers: [ConfirmationService, MessageService],
   changeDetection: ChangeDetectionStrategy.OnPush,
+  host: {
+    '(window:beforeunload)': 'onBeforeUnload($event)',
+  },
 })
-export class SettingsPage {
+export class SettingsPage implements HasUnsavedChanges {
   private readonly settingsService = inject(SettingsService);
   private readonly messageService = inject(MessageService);
+  private readonly confirmationService = inject(ConfirmationService);
+  private readonly themeService = inject(ThemeService);
 
   /** The last value loaded from, or saved to, the backend - the base every save's patch is
    * merged onto, so a group that hasn't been touched never has its fields clobbered by a
@@ -212,17 +222,59 @@ export class SettingsPage {
   readonly activeGroup = signal<SettingsGroupKey>('appearance');
   readonly activeGroupDef = computed(() => this.groups.find((g) => g.key === this.activeGroup())!);
 
-  readonly loadedSettings = toSignal(this.settingsService.current());
   readonly form = signal<SettingsFormGroup | undefined>(undefined);
   readonly saving = signal(false);
+  /** The initial load failed - the template offers a retry instead of "Loading…" forever. See
+   * design_docs/0095. */
+  readonly loadFailed = signal(false);
 
   constructor() {
-    // Builds the form exactly once, the moment the initial GET resolves - loadedSettings()
-    // only ever emits once (a plain HTTP GET, not a live stream), so there's no risk of this
-    // clobbering in-progress edits with a second emission.
-    effect(() => {
-      const settings = this.loadedSettings();
-      if (settings && !this.form()) {
+    this.load();
+    // The Appearance group previews a theme the moment it's picked. Leaving without saving must
+    // put the saved one back, or the app keeps showing a theme the server doesn't have.
+    // baseline is the last loaded-or-saved Settings, so after a save this is a no-op. See
+    // design_docs/0096.
+    inject(DestroyRef).onDestroy(() => {
+      if (this.baseline) {
+        this.themeService.preview(this.baseline.theme);
+      }
+    });
+  }
+
+  /** unsavedChangesGuard: asks before navigating away from edits that haven't been saved. */
+  confirmLeave(): boolean | Observable<boolean> {
+    if (!this.form()?.dirty || this.saving()) {
+      return true;
+    }
+    return new Observable<boolean>((subscriber) => {
+      const answer = (leave: boolean) => {
+        subscriber.next(leave);
+        subscriber.complete();
+      };
+      this.confirmationService.confirm({
+        header: 'Leave without saving?',
+        message: 'Your changes to settings will be lost.',
+        icon: 'pi pi-exclamation-triangle',
+        acceptLabel: 'Leave',
+        rejectLabel: 'Stay',
+        accept: () => answer(true),
+        reject: () => answer(false),
+      });
+    });
+  }
+
+  /** Closing or reloading the tab - the browser shows its own generic prompt. */
+  onBeforeUnload(event: BeforeUnloadEvent): void {
+    if (this.form()?.dirty) {
+      event.preventDefault();
+    }
+  }
+
+  /** Builds the form once, from the initial GET. Also the Retry button's handler. */
+  load(): void {
+    this.loadFailed.set(false);
+    this.settingsService.current().subscribe({
+      next: (settings) => {
         this.baseline = settings;
         this.form.set(
           new FormGroup({
@@ -238,7 +290,8 @@ export class SettingsPage {
             security: buildSecuritySettingsForm(settings),
           }),
         );
-      }
+      },
+      error: () => this.loadFailed.set(true),
     });
   }
 
@@ -270,13 +323,13 @@ export class SettingsPage {
         this.saving.set(false);
         this.messageService.add({ severity: 'success', summary: 'Settings saved' });
       },
-      error: (err) => {
+      error: (error: unknown) => {
         this.saving.set(false);
-        // The server's reason (e.g. a value out of range) - every 4xx carries one (design_docs/0094).
+        // The server's reason, e.g. a value out of range (design_docs/0094/0096).
         this.messageService.add({
           severity: 'error',
           summary: 'Could not save settings',
-          detail: err?.error?.error,
+          detail: apiErrorMessage(error, 'Please try again.'),
           sticky: true,
         });
       },

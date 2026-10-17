@@ -63,6 +63,16 @@ export class RateTracker {
     this.historyByKey.delete(key);
   }
 
+  /** Stops tracking every key not in keep - for a full snapshot, where anything missing from it
+   * is gone. */
+  retainOnly(keep: ReadonlySet<string>): void {
+    for (const key of this.historyByKey.keys()) {
+      if (!keep.has(key)) {
+        this.historyByKey.delete(key);
+      }
+    }
+  }
+
   private snapshotFrom(history: Reading[], now: number): RateSnapshot {
     if (history.length < 2) {
       return ZERO_SNAPSHOT;

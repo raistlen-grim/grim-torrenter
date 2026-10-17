@@ -139,7 +139,8 @@ export class SecuritySettings {
         },
         error: (error: unknown) => {
           this.savingPassword.set(false);
-          const isCurrentPasswordWrong = error instanceof HttpErrorResponse && error.status === 401;
+          // 403, not 401 - the server keeps 401 for "your session has ended", which logs out.
+          const isCurrentPasswordWrong = error instanceof HttpErrorResponse && error.status === 403;
           this.messageService.add({
             severity: 'error',
             summary: isCurrentPasswordWrong ? 'Current password is incorrect' : 'Could not save password',

@@ -1,4 +1,5 @@
 <p-toast />
+<p-confirmDialog />
 
 <h1 class="display-font">Settings</h1>
 
@@ -70,6 +71,11 @@
       <span class="unsaved-hint">Unsaved changes</span>
     }
   </div>
+} @else if (loadFailed()) {
+  <p class="loading-hint">
+    Couldn't load settings.
+    <p-button label="Retry" severity="secondary" size="small" (onClick)="load()" />
+  </p>
 } @else {
   <p class="loading-hint">Loading settings…</p>
 }

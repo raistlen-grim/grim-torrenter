@@ -1,11 +1,11 @@
 import { ChangeDetectionStrategy, Component, inject, input, linkedSignal } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
-import { HttpErrorResponse } from '@angular/common/http';
 import { MessageService } from 'primeng/api';
 
 import { FilePriority, TorrentFile } from '../../models/torrent.model';
 import { TorrentService } from '../../services/torrent.service';
 import { FormatBytesPipe } from '../../shared/format-bytes.pipe';
+import { apiErrorMessage } from '../../shared/api-error';
 import { pollWhileInput } from '../../shared/poll-while-input';
 
 const POLL_INTERVAL_MS = 3000;
@@ -87,12 +87,12 @@ export class FilesTab {
     const priorities = current.map((file, i) => (i === index ? priority : file.priority));
     this.torrentService.setFilePriorities(this.infoHash(), priorities).subscribe({
       next: (updated) => this.files.set(updated),
-      error: (error: HttpErrorResponse) => {
+      error: (error: unknown) => {
         select.value = current[index].priority;
         this.messageService.add({
           severity: 'error',
           summary: 'Could not change file priority',
-          detail: error.status === 400 ? 'At least one file must stay wanted.' : 'Please try again.',
+          detail: apiErrorMessage(error, 'Please try again.'),
         });
       },
     });

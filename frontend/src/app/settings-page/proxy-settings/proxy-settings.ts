@@ -5,11 +5,13 @@ import { ButtonModule } from 'primeng/button';
 import { InputNumberModule } from 'primeng/inputnumber';
 import { InputTextModule } from 'primeng/inputtext';
 import { ToggleSwitchModule } from 'primeng/toggleswitch';
-import { EMPTY, catchError, interval, map, merge, startWith, switchMap } from 'rxjs';
+import { map, merge, startWith, switchMap } from 'rxjs';
 
 import { ProxyStatus, ProxyTestResult } from '../../models/proxy.model';
 import { Settings } from '../../models/settings.model';
 import { ProxyService } from '../../services/proxy.service';
+import { apiErrorMessage } from '../../shared/api-error';
+import { pollEvery } from '../../shared/poll';
 
 const STATUS_POLL_INTERVAL_MS = 5000;
 
@@ -108,13 +110,9 @@ export class ProxySettings {
   );
 
   constructor() {
-    interval(STATUS_POLL_INTERVAL_MS)
-      .pipe(
-        startWith(0),
-        // A failed poll just skips this tick, so the status recovers on its own.
-        switchMap(() => this.proxyService.status().pipe(catchError(() => EMPTY))),
-        takeUntilDestroyed(inject(DestroyRef)),
-      )
+    // A failed poll just skips that tick (pollEvery), so the status recovers on its own.
+    pollEvery(STATUS_POLL_INTERVAL_MS, () => this.proxyService.status())
+      .pipe(takeUntilDestroyed(inject(DestroyRef)))
       .subscribe((status) => this.status.set(status));
   }
 
@@ -132,9 +130,9 @@ export class ProxySettings {
         this.savingPassword.set(false);
         this.testResult.set(undefined);
       },
-      error: () => {
+      error: (error: unknown) => {
         this.savingPassword.set(false);
-        this.passwordError.set('Could not save the password - please try again.');
+        this.passwordError.set(apiErrorMessage(error, 'Could not save the password - please try again.'));
       },
     });
   }
@@ -151,9 +149,9 @@ export class ProxySettings {
         this.savingPassword.set(false);
         this.testResult.set(undefined);
       },
-      error: () => {
+      error: (error: unknown) => {
         this.savingPassword.set(false);
-        this.passwordError.set('Could not remove the password - please try again.');
+        this.passwordError.set(apiErrorMessage(error, 'Could not remove the password - please try again.'));
       },
     });
   }
@@ -169,8 +167,12 @@ export class ProxySettings {
         this.testResult.set(result);
         this.testing.set(false);
       },
-      error: () => {
-        this.testResult.set({ reachable: false, udpSupported: false, message: 'The test could not be run.' });
+      error: (error: unknown) => {
+        this.testResult.set({
+          reachable: false,
+          udpSupported: false,
+          message: apiErrorMessage(error, 'The test could not be run.'),
+        });
         this.testing.set(false);
       },
     });

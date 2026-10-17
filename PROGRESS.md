@@ -1388,8 +1388,8 @@ torrent's files were opened once and held open for its whole lifetime, even whil
 
 ## Known gaps / TODO
 
-- **Upload latency (a `.torrent` file's initial synchronous tracker announce) has no deeper
-  fix, only better feedback and crash-safety.** `TorrentSession.start()`'s initial tracker
+- ~~**Upload latency (a `.torrent` file's initial synchronous tracker announce) has no deeper
+  fix, only better feedback and crash-safety.**~~ **Fixed 2026-10-17 by [[0098-background-start-and-starting-state]].** `TorrentSession.start()`'s initial tracker
   announce is still fully synchronous within the add request; 0029's optimistic "Processing"
   row covers the *feedback* gap, [[0069-persist-before-starting]] covers the *crash-safety* gap
   (a failure after this point now leaves a recoverable, `restore()`-visible record), but neither
@@ -1397,9 +1397,9 @@ torrent's files were opened once and held open for its whole lifetime, even whil
   loosening `start()`'s synchronous contract, a bigger change than it looks given how much else
   assumes it. (Magnet adds don't share this gap the same way any more — [[0070-pending-magnet-as-first-class-torrent]]
   made a magnet's own slow metadata-fetch a first-class, durable, immediately-visible state.)
-- **A per-row pending action (Pause/Resume/Remove) clears its spinner on
+- ~~**A per-row pending action (Pause/Resume/Remove) clears its spinner on
   response, but the row's displayed state still only catches up on the
-  next ~2s WebSocket snapshot** — a brief window where the row looks
+  next ~2s WebSocket snapshot**~~ **Fixed 2026-10-17 by [[0097-pause-resume-return-the-torrent]].** — a brief window where the row looks
   normal again but hasn't visually caught up yet. Flagged by the user as
   worth revisiting with an optimistic local update if it feels
   unresponsive in practice; see [[0033-per-entry-action-feedback]]'s

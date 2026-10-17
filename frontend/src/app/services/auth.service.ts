@@ -1,6 +1,6 @@
 import { HttpClient } from '@angular/common/http';
 import { Injectable, inject, signal } from '@angular/core';
-import { Observable, map, tap } from 'rxjs';
+import { Observable, finalize, map, tap } from 'rxjs';
 
 const TOKEN_STORAGE_KEY = 'grimtorrenter.auth.token';
 
@@ -48,8 +48,11 @@ export class AuthService {
     );
   }
 
+  /** Revokes the token server-side, then forgets it. The local token is cleared even if the
+   * request fails (finalize) - a user who asked to log out must end up logged out here, and a
+   * token the server couldn't be told about still expires on its own. */
   logout(): Observable<void> {
-    return this.http.post<void>('/api/auth/logout', null).pipe(tap(() => this.clearToken()));
+    return this.http.post<void>('/api/auth/logout', null).pipe(finalize(() => this.clearToken()));
   }
 
   /** Public (unlike setToken) - authInterceptor also calls this on a 401, since that means

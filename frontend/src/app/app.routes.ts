@@ -1,6 +1,7 @@
 import { Routes } from '@angular/router';
 
 import { authGuard } from './services/auth.guard';
+import { unsavedChangesGuard } from './services/unsaved-changes.guard';
 
 export const routes: Routes = [
   {
@@ -38,6 +39,7 @@ export const routes: Routes = [
   {
     path: 'settings',
     canActivate: [authGuard],
+    canDeactivate: [unsavedChangesGuard],
     loadComponent: () => import('./settings-page/settings-page').then((m) => m.SettingsPage),
   },
 ];

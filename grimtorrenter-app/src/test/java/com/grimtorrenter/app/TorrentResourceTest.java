@@ -25,6 +25,7 @@ import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.hasSize;
+import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -274,6 +275,26 @@ class TorrentResourceTest {
         given()
                 .when().post("/api/torrents/" + infoHash + "/reannounce")
                 .then().statusCode(409);
+    }
+
+    /** Pause and resume answer with the torrent as it now is, so a client needn't wait for the
+     * next snapshot (design_docs/0097). The upload helper's tracker is unreachable and DHT is
+     * off, so a resume comes back STARTING (design_docs/0098), never DOWNLOADING - what matters is that it's no
+     * longer STOPPED. */
+    @Test
+    void pauseAndResumeReturnTheTorrentInItsNewState() {
+        String infoHash = upload(torrentBytes("pause-resume-test.bin", new byte[]{1, 2, 3}));
+
+        given()
+                .when().post("/api/torrents/" + infoHash + "/pause")
+                .then().statusCode(200)
+                .body("infoHash", equalTo(infoHash))
+                .body("state", equalTo("STOPPED"));
+        given()
+                .when().post("/api/torrents/" + infoHash + "/resume")
+                .then().statusCode(200)
+                .body("infoHash", equalTo(infoHash))
+                .body("state", not(equalTo("STOPPED")));
     }
 
     @Test

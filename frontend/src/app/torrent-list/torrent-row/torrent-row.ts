@@ -8,6 +8,8 @@ import { TorrentWithRate } from '../../models/torrent.model';
 import { LabelService } from '../../services/label.service';
 import { PendingTorrentAction, TorrentActionsService } from '../../services/torrent-actions.service';
 import { copyToClipboard } from '../../shared/clipboard';
+import { apiErrorMessage } from '../../shared/api-error';
+import { splitFileName } from '../../shared/file-name';
 import { FormatBytesPipe } from '../../shared/format-bytes.pipe';
 import { FormatEtaPipe } from '../../shared/format-eta.pipe';
 import { FormatRatePipe } from '../../shared/format-rate.pipe';
@@ -141,11 +143,9 @@ export class TorrentRow {
 
   readonly infoHash = computed(() => this.torrent().infoHash);
   readonly name = computed(() => this.torrent().name);
-  /** Split so the template can truncate the stem with an ellipsis while always keeping the
-   * extension visible (style guide row anatomy: "the extension is preserved"). A plain
-   * `lastIndexOf('.')` would cut `archive.tar.xz` down to `.xz` - COMPOUND_EXTENSIONS keeps
-   * the handful of common two-part extensions whole instead. */
-  private readonly nameSplit = computed(() => TorrentRow.splitFileName(this.name()));
+  /** Split so the template can truncate the stem while keeping the extension - see
+   * shared/file-name.ts. */
+  private readonly nameSplit = computed(() => splitFileName(this.name()));
   readonly nameStem = computed(() => this.nameSplit().stem);
   readonly nameExtension = computed(() => this.nameSplit().extension);
   readonly state = computed(() => this.torrent().state);
@@ -294,23 +294,6 @@ export class TorrentRow {
     this.activeContextMenus.show(this.rowContextMenu(), event);
   }
 
-  /** `archive.tar.xz` keeps its whole compound extension; anything else just splits on the
-   * final dot. A leading dot (`.gitignore`) or no dot at all has no extension to split off. */
-  private static splitFileName(name: string): { stem: string; extension: string } {
-    const lastDot = name.lastIndexOf('.');
-    if (lastDot <= 0) {
-      return { stem: name, extension: '' };
-    }
-    const secondLastDot = name.lastIndexOf('.', lastDot - 1);
-    if (secondLastDot > 0) {
-      const compound = name.slice(secondLastDot + 1).toLowerCase();
-      if (compound === 'tar.gz' || compound === 'tar.bz2' || compound === 'tar.xz') {
-        return { stem: name.slice(0, secondLastDot), extension: name.slice(secondLastDot) };
-      }
-    }
-    return { stem: name.slice(0, lastDot), extension: name.slice(lastDot) };
-  }
-
   /** A magnet URI needs nothing beyond the info hash to be valid - dn is a display-name
    * hint, not required. Built client-side; no backend endpoint needed. */
   copyMagnetLink(): void {
@@ -322,29 +305,29 @@ export class TorrentRow {
   }
 
   onPause(): void {
-    this.actions.pause(this.infoHash()).subscribe({ error: () => this.notifyActionFailed('pause') });
+    this.actions.pause(this.infoHash()).subscribe({ error: (e: unknown) => this.notifyActionFailed('pause', e) });
   }
 
   onResume(): void {
-    this.actions.resume(this.infoHash()).subscribe({ error: () => this.notifyActionFailed('resume') });
+    this.actions.resume(this.infoHash()).subscribe({ error: (e: unknown) => this.notifyActionFailed('resume', e) });
   }
 
   /** No confirm dialog: a recheck drops the torrent's peers while it runs but destroys nothing,
    * and the row switches to Verifying at once. See design_docs/0082. */
   onRecheck(): void {
-    this.actions.recheck(this.infoHash()).subscribe({ error: () => this.notifyActionFailed('recheck') });
+    this.actions.recheck(this.infoHash()).subscribe({ error: (e: unknown) => this.notifyActionFailed('recheck', e) });
   }
 
   /** Nothing in the row changes when this succeeds, so it gets a toast of its own. */
   onReannounce(): void {
     this.actions.reannounce(this.infoHash()).subscribe({
       next: () => this.messageService.add({ severity: 'info', summary: 'Reannouncing', detail: this.name() }),
-      error: () => this.notifyActionFailed('reannounce'),
+      error: (e: unknown) => this.notifyActionFailed('reannounce', e),
     });
   }
 
   onRemove(): void {
-    this.actions.remove(this.infoHash()).subscribe({ error: () => this.notifyActionFailed('remove') });
+    this.actions.remove(this.infoHash()).subscribe({ error: (e: unknown) => this.notifyActionFailed('remove', e) });
   }
 
   /** No "Are you sure? This action cannot be undone." (STYLE_GUIDE_NOTES.md's Voice rules
@@ -361,7 +344,7 @@ export class TorrentRow {
       rejectLabel: 'Cancel',
       acceptButtonProps: { severity: 'danger' },
       accept: () => {
-        this.actions.remove(infoHash, true).subscribe({ error: () => this.notifyActionFailed('remove') });
+        this.actions.remove(infoHash, true).subscribe({ error: (e: unknown) => this.notifyActionFailed('remove', e) });
       },
     });
   }
@@ -370,11 +353,11 @@ export class TorrentRow {
    * unlike upload/magnet-add) - a failed action clearing its pending state with no
    * explanation would read as even more confusing than doing nothing, so this closes that
    * gap the same way 0029's upload/magnet toasts already do. */
-  private notifyActionFailed(action: PendingTorrentAction | 'recheck' | 'reannounce'): void {
+  private notifyActionFailed(action: PendingTorrentAction | 'recheck' | 'reannounce', error: unknown): void {
     this.messageService.add({
       severity: 'error',
-      summary: `Could not ${action} torrent`,
-      detail: `"${this.name()}" - please try again.`,
+      summary: `Could not ${action} "${this.name()}"`,
+      detail: apiErrorMessage(error, 'Please try again.'),
     });
   }
 }

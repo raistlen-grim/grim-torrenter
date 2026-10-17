@@ -7,6 +7,7 @@ import { PasswordModule } from 'primeng/password';
 
 import { AuthService } from '../services/auth.service';
 import { TorrentEventsService } from '../services/torrent-events.service';
+import { apiErrorMessage } from '../shared/api-error';
 
 /**
  * The one screen reachable with no token at all (design_docs/0061) - rendered standalone,
@@ -46,10 +47,16 @@ export class LoginPage {
       },
       error: (error: unknown) => {
         this.submitting.set(false);
-        const isTooManyAttempts = error instanceof HttpErrorResponse && error.status === 429;
-        this.errorMessage.set(
-          isTooManyAttempts ? 'Too many failed attempts - wait a moment and try again.' : 'Incorrect password.',
-        );
+        // Only a 401 means the password was wrong - anything else (a 429, a network error, a
+        // 500) says what actually happened. See design_docs/0096.
+        const status = error instanceof HttpErrorResponse ? error.status : undefined;
+        if (status === 401) {
+          this.errorMessage.set('Incorrect password.');
+        } else if (status === 429) {
+          this.errorMessage.set('Too many attempts - wait a moment and try again.');
+        } else {
+          this.errorMessage.set(apiErrorMessage(error, 'Could not log in - please try again.'));
+        }
       },
     });
   }

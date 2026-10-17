@@ -71,12 +71,13 @@ export class TorrentService {
     return this.http.delete<void>(`${this.baseUrl}/${infoHash}`, { params: { deleteData } });
   }
 
-  pause(infoHash: string): Observable<void> {
-    return this.http.post<void>(`${this.baseUrl}/${infoHash}/pause`, null);
+  /** Both return the torrent as it is afterwards (design_docs/0097). */
+  pause(infoHash: string): Observable<Torrent> {
+    return this.http.post<Torrent>(`${this.baseUrl}/${infoHash}/pause`, null);
   }
 
-  resume(infoHash: string): Observable<void> {
-    return this.http.post<void>(`${this.baseUrl}/${infoHash}/resume`, null);
+  resume(infoHash: string): Observable<Torrent> {
+    return this.http.post<Torrent>(`${this.baseUrl}/${infoHash}/resume`, null);
   }
 
   /** Forced recheck (design_docs/0082) - returns at once with the torrent as it now is

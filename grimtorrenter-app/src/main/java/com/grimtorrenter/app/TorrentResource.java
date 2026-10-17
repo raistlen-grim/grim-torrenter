@@ -173,22 +173,30 @@ public class TorrentResource {
         }
     }
 
-    /** 404 for an unknown torrent and for a pending magnet, which has nothing to pause yet. */
+    /** Responds with the torrent as it is once paused, like recheck() - so a client shows the
+     * new state straight away instead of waiting for the next snapshot (design_docs/0097).
+     * 404 for an unknown torrent and for a pending magnet, which has nothing to pause yet. */
     @POST
     @Path("/{infoHash}/pause")
-    public void pause(@PathParam("infoHash") String infoHashHex) {
+    @Produces(MediaType.APPLICATION_JSON)
+    public TorrentView pause(@PathParam("infoHash") String infoHashHex) {
         if (!torrentEngine.pauseTorrent(parseInfoHash(infoHashHex))) {
             throw new NotFoundException("Torrent not found: " + infoHashHex);
         }
+        return TorrentView.from(requireSession(infoHashHex));
     }
 
-    /** 404 for an unknown torrent and for a pending magnet, as pause(). */
+    /** Responds with the torrent once the start has run: start() announces synchronously, so
+     * this is normally DOWNLOADING or SEEDING, or ERROR if no tracker or DHT answered. 404 as
+     * pause(). See design_docs/0097. */
     @POST
     @Path("/{infoHash}/resume")
-    public void resume(@PathParam("infoHash") String infoHashHex) {
+    @Produces(MediaType.APPLICATION_JSON)
+    public TorrentView resume(@PathParam("infoHash") String infoHashHex) {
         if (!torrentEngine.resumeTorrent(parseInfoHash(infoHashHex))) {
             throw new NotFoundException("Torrent not found: " + infoHashHex);
         }
+        return TorrentView.from(requireSession(infoHashHex));
     }
 
     /** Forced recheck (design_docs/0082). Returns at once with the torrent as it now is -

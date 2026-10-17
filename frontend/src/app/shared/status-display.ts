@@ -17,6 +17,8 @@ const TORRENT_STATE_DISPLAY: Record<TorrentState, StatusDisplay> = {
   SEEDING: { icon: 'pi-arrow-up', label: 'Seeding', tone: 'active' },
   VERIFYING: { icon: 'pi-refresh', label: 'Verifying', tone: 'active' },
   STOPPED: { icon: 'pi-pause', label: 'Paused', tone: 'dim' },
+  // The first announce of an add or resume is still in flight - design_docs/0098.
+  STARTING: { icon: 'pi-spin pi-spinner', label: 'Starting', tone: 'dim' },
   ERROR: { icon: 'pi-exclamation-triangle', label: 'Error', tone: 'alarm' },
   // Not a real backend TorrentState - a pending magnet, see design_docs/0070.
   FETCHING_METADATA: { icon: 'pi-spin pi-spinner', label: 'Fetching metadata', tone: 'dim' },

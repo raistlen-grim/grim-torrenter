@@ -89,12 +89,15 @@ class AuthResourceTest {
             // PUT /api/auth/password isn't in AuthenticationFilter's allowlist, so once
             // authEnabled is true it needs the bearer token too, on top of (not instead of)
             // the currentPassword check below - defense in depth, see design_docs/0061.
+            // A wrong current password is 403, not 401, so a client doesn't mistake it for an
+            // ended session (design_docs/0095) - and the caller's token still works afterwards.
             given()
                     .header("Authorization", "Bearer " + token)
                     .contentType(ContentType.JSON)
                     .body(Map.of("currentPassword", "wrong", "newPassword", CHANGED_PASSWORD))
                     .when().put("/api/auth/password")
-                    .then().statusCode(401);
+                    .then().statusCode(403)
+                    .body("error", equalTo("Current password is incorrect"));
 
             // A second session - another browser, or a leaked token.
             String otherToken = loginAttempt(INITIAL_PASSWORD)

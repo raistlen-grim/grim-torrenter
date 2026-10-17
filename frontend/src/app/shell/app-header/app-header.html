@@ -17,4 +17,9 @@
   <a routerLink="/settings" class="settings-link" aria-label="Settings" title="Settings">
     <i class="pi pi-cog" aria-hidden="true"></i>
   </a>
+  @if (canLogOut()) {
+    <button type="button" class="settings-link logout-button" aria-label="Log out" title="Log out" (click)="logOut()">
+      <i class="pi pi-sign-out" aria-hidden="true"></i>
+    </button>
+  }
 </header>

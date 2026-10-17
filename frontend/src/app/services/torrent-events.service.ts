@@ -1,4 +1,5 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
+import { Router } from '@angular/router';
 
 import { LibraryEvent } from '../models/events.model';
 import { Label, Torrent, TorrentWithRate } from '../models/torrent.model';
@@ -29,6 +30,10 @@ interface Rates {
 }
 
 const RECONNECT_DELAY_MS = 3000;
+
+/** The server's close code for "no valid auth token" (TorrentWebSocket.SESSION_ENDED). Handled
+ * like a REST 401: the session is over, so reconnecting can't help. See design_docs/0096. */
+const SESSION_ENDED_CLOSE_CODE = 4401;
 const ZERO_RATES: Rates = {
   downloadRateBytesPerSec: 0,
   uploadRateBytesPerSec: 0,
@@ -58,6 +63,7 @@ export class TorrentEventsService {
   private readonly torrentService = inject(TorrentService);
   private readonly authService = inject(AuthService);
   private readonly labelService = inject(LabelService);
+  private readonly router = inject(Router);
 
   private readonly torrentsByHash = signal(new Map<string, Torrent>());
   private readonly ratesByHash = signal(new Map<string, Rates>());
@@ -92,6 +98,23 @@ export class TorrentEventsService {
     this.torrentService.list().subscribe((list) => this.replaceAll(list));
     this.labelService.load();
     this.openSocket();
+  }
+
+  /** Closes the socket for good (no reconnect) and forgets everything received, for logout -
+   * the next connect(), after logging in again, starts from a fresh REST load. See
+   * design_docs/0095. */
+  disconnect(): void {
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
+    const socket = this.socket;
+    this.socket = undefined;
+    if (socket) {
+      socket.onclose = null;
+      socket.close();
+    }
+    this.torrentsByHash.set(new Map());
+    this.ratesByHash.set(new Map());
+    this.recentLibraryEvents.set([]);
   }
 
   /** The backend has no "removed" push event, so the caller applies this locally
@@ -135,9 +158,20 @@ export class TorrentEventsService {
     this.socket.onmessage = (event) => this.handleMessage(JSON.parse(event.data));
     this.socket.onclose = (event) => {
       // Code distinguishes who ended it: 1006 = dropped without a close frame (network/proxy),
-      // 1008/1000 = the server closed it deliberately (e.g. rejected auth token).
+      // 1008 = Origin rejected, 4401 = no valid auth token (logged out, expired, revoked, or
+      // auth just switched on).
       console.debug(`[events] socket closed, code=${event.code} reason=${event.reason || '-'}`);
       this.socket = undefined;
+      if (event.code === SESSION_ENDED_CLOSE_CODE) {
+        // Same as authInterceptor's 401 handling. No reconnect: LoginPage calls connect() again.
+        this.authService.clearToken();
+        this.router.navigateByUrl('/login');
+        return;
+      }
+      if (this.authService.authEnabled() === true && !this.authService.token()) {
+        // Nothing to authenticate with, so a reconnect would only be refused - wait for login.
+        return;
+      }
       this.reconnectTimer = setTimeout(() => {
         this.reconnectTimer = undefined;
         this.openSocket();
@@ -159,9 +193,17 @@ export class TorrentEventsService {
     }
   }
 
+  /** Builds both maps once per snapshot - adding each torrent's rates to a copy of the map one
+   * at a time was O(n²) every 2 s. Also drops rate history for torrents no longer in the list
+   * (removed from another tab or client), which otherwise lived as long as the tab. See
+   * design_docs/0096. */
   private replaceAll(list: Torrent[]): void {
+    const now = Date.now();
     this.torrentsByHash.set(new Map(list.map((t) => [t.infoHash, t])));
-    list.forEach((t) => this.recordReading(t));
+    this.ratesByHash.set(new Map(list.map((t) => [t.infoHash, this.recordReading(t, now)])));
+    const present = new Set(list.map((t) => t.infoHash));
+    this.downloadRateTracker.retainOnly(present);
+    this.uploadRateTracker.retainOnly(present);
   }
 
   /** Public so a caller that already has a fresh Torrent from a direct REST response
@@ -173,7 +215,8 @@ export class TorrentEventsService {
       next.set(torrent.infoHash, torrent);
       return next;
     });
-    this.recordReading(torrent);
+    const rates = this.recordReading(torrent, Date.now());
+    this.ratesByHash.update((map) => new Map(map).set(torrent.infoHash, rates));
   }
 
   /** Download rate is derived from bytesReceived, not bytesDownloaded - the latter only
@@ -182,19 +225,13 @@ export class TorrentEventsService {
    * streaming in; bytesReceived moves continuously as blocks arrive. Both fields (and
    * bytesUploaded) only ever increase - see PieceManager/PeerConnection/TorrentSession -
    * so a negative delta shouldn't happen, but RateTracker clamps to 0 defensively regardless. */
-  private recordReading(torrent: Torrent): void {
-    const now = Date.now();
+  private recordReading(torrent: Torrent, now: number): Rates {
     const download = this.downloadRateTracker.record(torrent.infoHash, torrent.bytesReceived, now);
     const upload = this.uploadRateTracker.record(torrent.infoHash, torrent.bytesUploaded, now);
-    const rates: Rates = {
+    return {
       downloadRateBytesPerSec: download.current,
       uploadRateBytesPerSec: upload.current,
       downloadRateTrend: download.trend,
     };
-    this.ratesByHash.update((map) => {
-      const next = new Map(map);
-      next.set(torrent.infoHash, rates);
-      return next;
-    });
   }
 }

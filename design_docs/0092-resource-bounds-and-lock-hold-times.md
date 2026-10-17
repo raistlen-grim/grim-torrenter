@@ -114,3 +114,9 @@ STOPPED) are short-lived and bounded by the tracker client timeouts.
 - **Shrinking the µTP buffer to 64 KiB:** it would deadlock any caller that sends before it
   starts reading, which is the existing tests' pattern. Real peer connections always read on
   their own thread, but 256 KiB costs little and avoids the trap.
+
+## 2026-10-17 addendum
+
+Adding and resuming a torrent now start it in the background: `start()` is split into a locked
+`beginStart()` and an unlocked `finishStart()`, and the session shows the new STARTING state
+while the announce is in flight. See [[0098-background-start-and-starting-state]].

@@ -1372,7 +1372,10 @@ public final class TorrentEngine {
             throw creationFailure.get();
         }
         if (wasNewlyCreated.get() && !resolution.preExisting()) {
-            session.start();
+            // In the background: the first announce can take a tracker timeout per tier, and the
+            // add request (an upload, a watch-folder pick-up) shouldn't wait for it. The session
+            // is STARTING when this returns. See design_docs/0098.
+            session.startInBackground();
         }
         if (wasNewlyCreated.get()) {
             String message = source != null ? "Added via " + source : null;
@@ -1911,7 +1914,9 @@ public final class TorrentEngine {
         if (session == null) {
             return false;
         }
-        session.start();
+        // Returns once the session is STARTING; the announce runs in the background, so a resume
+        // never waits on a slow tracker. See design_docs/0098.
+        session.startInBackground();
         writeStateMarker(configTorrentDirectory(infoHash), STATE_RUNNING);
         return true;
     }

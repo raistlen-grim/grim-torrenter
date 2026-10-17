@@ -48,9 +48,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -97,6 +99,28 @@ class TorrentEngineTest {
                 BString.of("peers"), BString.of(new byte[0])));
         byte[] body = BencodeEncoder.encode(response);
         trackerServer.createContext("/announce", exchange -> {
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        trackerServer.start();
+        return "http://127.0.0.1:" + trackerServer.getAddress().getPort() + "/announce";
+    }
+
+    /** Like startFakeTrackerServer(), but every announce takes `delay` to answer - one virtual
+     * thread per request, so concurrent announces don't queue behind each other. */
+    private String startSlowTrackerServer(Duration delay) throws IOException {
+        trackerServer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        trackerServer.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
+        byte[] body = BencodeEncoder.encode(new BDictionary(Map.of(
+                BString.of("interval"), new BInteger(3600),
+                BString.of("peers"), BString.of(new byte[0]))));
+        trackerServer.createContext("/announce", exchange -> {
+            try {
+                Thread.sleep(delay);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
             exchange.sendResponseHeaders(200, body.length);
             exchange.getResponseBody().write(body);
             exchange.close();
@@ -417,6 +441,8 @@ class TorrentEngineTest {
         TorrentEngine engine = new TorrentEngine(tempDir, 0, new NoOpListener(), false, true);
         try {
             TorrentSession session = engine.addTorrent(torrentBytes).session();
+            // Started in the background (design_docs/0098) - wait for it before dialling in.
+            awaitState(session, TorrentState.DOWNLOADING);
             InfoHash infoHash = session.metadata().infoHash();
             int peerServerPort = engine.peerServerPort().orElseThrow();
 
@@ -436,8 +462,10 @@ class TorrentEngineTest {
         }
     }
 
+    /** The start runs in the background (design_docs/0098): addTorrent() returns once the
+     * session is STARTING, and it reaches DOWNLOADING when the announce answers. */
     @Test
-    void addTorrentParsesStartsAndRegistersSession(@TempDir Path tempDir) throws IOException {
+    void addTorrentParsesStartsAndRegistersSession(@TempDir Path tempDir) throws Exception {
         String announceUrl = startFakeTrackerServer();
         byte[] torrentBytes = torrentBytes("file.bin", fill(20, 5), announceUrl);
 
@@ -445,7 +473,7 @@ class TorrentEngineTest {
         TorrentSession session = engine.addTorrent(torrentBytes).session();
         InfoHash infoHash = MetainfoParser.parse(torrentBytes).infoHash();
 
-        assertEquals(TorrentState.DOWNLOADING, session.state());
+        awaitState(session, TorrentState.DOWNLOADING);
         assertSame(session, engine.getTorrent(infoHash).orElseThrow());
         assertEquals(1, engine.listTorrents().size());
 
@@ -555,7 +583,7 @@ class TorrentEngineTest {
     }
 
     @Test
-    void pauseAndResumeDelegateToSessionStopAndStart(@TempDir Path tempDir) throws IOException {
+    void pauseAndResumeDelegateToSessionStopAndStart(@TempDir Path tempDir) throws Exception {
         String announceUrl = startFakeTrackerServer();
         byte[] torrentBytes = torrentBytes("file.bin", fill(20, 5), announceUrl);
 
@@ -567,9 +595,40 @@ class TorrentEngineTest {
         assertEquals(TorrentState.STOPPED, session.state());
 
         engine.resumeTorrent(infoHash);
-        assertEquals(TorrentState.DOWNLOADING, session.state());
+        awaitState(session, TorrentState.DOWNLOADING);
 
         session.stop();
+    }
+
+    /** design_docs/0098: neither an add nor a resume waits for the tracker. With a tracker that
+     * takes seconds to answer, both return while the session is STARTING; a pause meanwhile wins,
+     * and the late answer doesn't restart it. */
+    @Test
+    void addAndResumeReturnWithoutWaitingForASlowTracker(@TempDir Path tempDir) throws Exception {
+        String announceUrl = startSlowTrackerServer(Duration.ofSeconds(3));
+        byte[] torrentBytes = torrentBytes("slow-tracker.bin", fill(20, 5), announceUrl);
+        TorrentEngine engine = new TorrentEngine(tempDir, 6881, new NoOpListener());
+
+        long before = System.nanoTime();
+        TorrentSession session = engine.addTorrent(torrentBytes).session();
+        assertTrue(Duration.ofNanos(System.nanoTime() - before).compareTo(Duration.ofSeconds(2)) < 0,
+                "addTorrent must not wait for the announce");
+        assertEquals(TorrentState.STARTING, session.state());
+
+        InfoHash infoHash = session.metadata().infoHash();
+        engine.pauseTorrent(infoHash);
+        assertEquals(TorrentState.STOPPED, session.state());
+
+        before = System.nanoTime();
+        engine.resumeTorrent(infoHash);
+        assertTrue(Duration.ofNanos(System.nanoTime() - before).compareTo(Duration.ofSeconds(2)) < 0,
+                "resumeTorrent must not wait for the announce");
+        assertEquals(TorrentState.STARTING, session.state());
+        engine.pauseTorrent(infoHash);
+
+        // Both announces answer after the pause; neither may bring the torrent back.
+        Thread.sleep(Duration.ofSeconds(4));
+        assertEquals(TorrentState.STOPPED, session.state());
     }
 
     @Test
@@ -1430,6 +1489,8 @@ class TorrentEngineTest {
                 String url = realUrl.replace("127.0.0.1", "tracker.invalid");
 
                 TorrentSession session = engine.addTorrent(torrentBytes("proxied.bin", fill(20, 21), url)).session();
+                // The announce runs in the background (design_docs/0098).
+                awaitState(session, TorrentState.DOWNLOADING);
 
                 assertTrue(proxy.connectTargets.contains("tracker.invalid:" + trackerPort),
                         "the announce must have been tunnelled: " + proxy.connectTargets);
