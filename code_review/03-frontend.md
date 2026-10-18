@@ -161,6 +161,13 @@ Fix: while a limit's toggle is on, require a value of at least 1.
 
 ## C. Code smells and duplication
 
+**Status (2026-10-18): fixed, except where noted. See design_docs/0101.**
+- **`torrent-list.ts`:** the add control's logic moved to `AddTorrentController`, and the file
+  is now ~740 lines. Its markup stays in the list's template, and the keyboard shortcuts stay
+  in the list; both are in TECH_DEBT.
+- **Style-guide citations:** they now point at design_docs. Committing the guide itself is in
+  TECH_DEBT, as is the module-wide comment pass.
+
 - **`torrent-list/torrent-list.ts` is 1226 lines** with six jobs: the list and sort, filter
   chips, multi-select, keyboard shortcuts, the remove dialog, and the whole add control (magnet
   parsing, drag/drop, global paste, pending rows, failure toasts). Suggested split:

@@ -44,6 +44,9 @@ public class TorrentEventListener implements TorrentSessionListener {
     @Inject
     EventStore eventStore;
 
+    @Inject
+    WebSocketBroadcaster broadcaster;
+
     /** Never throws - this runs inside TorrentSession's state transitions, which must complete
      * whatever happens to the event log or the push. See design_docs/0093. */
     @Override
@@ -94,7 +97,7 @@ public class TorrentEventListener implements TorrentSessionListener {
 
     private void broadcast(TorrentEventMessage message) {
         try {
-            TorrentWebSocket.broadcast(objectMapper.writeValueAsString(message));
+            broadcaster.broadcast(objectMapper.writeValueAsString(message));
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("Failed to serialize torrent event", e);
         }

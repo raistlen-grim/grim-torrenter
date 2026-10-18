@@ -1,21 +1,20 @@
 package com.grimtorrenter.engine.metadata;
 
+import com.grimtorrenter.engine.Hashing;
 import com.grimtorrenter.engine.metainfo.InfoHash;
 import com.grimtorrenter.engine.mse.EncryptionMode;
 import com.grimtorrenter.engine.peer.PeerConnection;
-import com.grimtorrenter.engine.peer.PeerSource;
-import com.grimtorrenter.engine.proxy.ProxyProvider;
 import com.grimtorrenter.engine.peer.PeerConnectionListener;
+import com.grimtorrenter.engine.peer.PeerSource;
 import com.grimtorrenter.engine.peerwire.Extended;
 import com.grimtorrenter.engine.peerwire.PeerMessage;
+import com.grimtorrenter.engine.proxy.ProxyProvider;
 import com.grimtorrenter.engine.ratelimit.RateLimiters;
 import com.grimtorrenter.engine.tracker.PeerAddress;
 import com.grimtorrenter.engine.tracker.PeerId;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.Map;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
@@ -83,7 +82,7 @@ public final class MetadataFetcher {
 
             byte[] assembled = fetchAllPieces(connection, listener, address, theirExtensionId, totalSize);
 
-            InfoHash actual = InfoHash.of(sha1(assembled));
+            InfoHash actual = InfoHash.of(Hashing.sha1(assembled));
             if (!actual.equals(infoHash)) {
                 throw new MetadataFetchException(
                         "Peer " + address + " sent metadata that doesn't match the requested info hash");
@@ -126,13 +125,6 @@ public final class MetadataFetcher {
         return assembled.toByteArray();
     }
 
-    private static byte[] sha1(byte[] data) {
-        try {
-            return MessageDigest.getInstance("SHA-1").digest(data);
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-1 not available on this JVM", e);
-        }
-    }
 
     /**
      * Requests are sent one at a time, waiting for each response before requesting the

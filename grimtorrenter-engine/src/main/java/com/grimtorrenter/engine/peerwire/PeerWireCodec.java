@@ -10,6 +10,7 @@ import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.HexFormat;
 
 /**
  * Reads/writes handshakes and messages against InputStream/OutputStream -
@@ -57,7 +58,7 @@ public final class PeerWireCodec {
             // Hex, not the bytes themselves - they come straight from the peer and end up in
             // logs, where raw control characters have no business being.
             throw new PeerWireException("Unexpected protocol name (hex): "
-                    + java.util.HexFormat.of().formatHex(pstrBytes));
+                    + HexFormat.of().formatHex(pstrBytes));
         }
         byte[] reserved = readFully(in, Handshake.RESERVED_LENGTH);
         InfoHash infoHash = InfoHash.of(readFully(in, InfoHash.LENGTH_BYTES));

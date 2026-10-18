@@ -13,8 +13,10 @@ export type PendingTorrentAction = 'pause' | 'resume' | 'remove';
  * start these actions; keeping the pending state here (keyed by info hash) rather than in each
  * component means all of them show the same torrent as busy, and it survives the details panel
  * closing or switching torrent mid-request. (A resume no longer waits for the tracker -
- * design_docs/0098 - but any request can still be slow.) Failure toasts stay with the caller (MessageService is provided by TorrentList, not
- * root). Same simple signal-service pattern as TorrentDetailTabService. See design_docs/0033's
+ * design_docs/0098 - but any request can still be slow.) Failure toasts stay with the caller -
+ * TorrentCommands for the row and the panel, TorrentList for bulk actions - because
+ * MessageService is provided by TorrentList, not root. Same simple signal-service pattern as
+ * TorrentDetailTabService. See design_docs/0033's
  * 2026-10-01 addenda. */
 @Injectable({ providedIn: 'root' })
 export class TorrentActionsService {

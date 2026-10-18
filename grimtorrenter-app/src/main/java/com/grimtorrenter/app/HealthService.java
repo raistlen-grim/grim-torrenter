@@ -18,7 +18,6 @@ import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
@@ -59,14 +58,8 @@ public class HealthService {
     @Inject
     JsonLinesEventStore eventStore;
 
-    @ConfigProperty(name = "grimtorrenter.download-directory", defaultValue = "downloads")
-    String downloadDirectory;
-
-    @ConfigProperty(name = "grimtorrenter.config-directory", defaultValue = "config")
-    String configDirectory;
-
-    @ConfigProperty(name = "grimtorrenter.watch-directory", defaultValue = "watch")
-    String watchDirectory;
+    @Inject
+    AppDirectories directories;
 
     /** Storage checks currently failing - so each failure is written to the event log once when
      * it starts, not on every poll. */
@@ -93,8 +86,8 @@ public class HealthService {
      * the two directories it cannot work without count - a network service that failed to bind
      * or a dead proxy leaves the app running and worth keeping. */
     public boolean isLive() {
-        return directoryCheck("config", Path.of(configDirectory)).state() != State.FAILED
-                && directoryCheck("downloads", Path.of(downloadDirectory)).state() != State.FAILED;
+        return directoryCheck("config", directories.config()).state() != State.FAILED
+                && directoryCheck("downloads", directories.downloads()).state() != State.FAILED;
     }
 
     private Group networkGroup() {
@@ -117,14 +110,13 @@ public class HealthService {
     }
 
     private Group storageGroup() {
-        Path downloads = Path.of(downloadDirectory);
         List<Check> checks = new ArrayList<>();
-        checks.add(directoryCheck("downloads", downloads));
-        checks.add(directoryCheck("config", Path.of(configDirectory)));
+        checks.add(directoryCheck("downloads", directories.downloads()));
+        checks.add(directoryCheck("config", directories.config()));
         checks.add(settingsStore.current().watchFolderEnabled()
-                ? directoryCheck("watch", Path.of(watchDirectory))
+                ? directoryCheck("watch", directories.watch())
                 : new Check("watch", State.DISABLED, "Watch folder is off"));
-        checks.add(freeSpaceCheck(downloads));
+        checks.add(freeSpaceCheck());
         recordNewStorageFailures(checks);
         return new Group("storage", checks);
     }
@@ -149,10 +141,9 @@ public class HealthService {
         return new Check(name, State.OK, absolute.toString());
     }
 
-    private static Check freeSpaceCheck(Path downloads) {
+    private Check freeSpaceCheck() {
         try {
-            Files.createDirectories(downloads);
-            return freeSpaceCheck(Files.getFileStore(downloads).getUsableSpace());
+            return freeSpaceCheck(directories.downloadsUsableSpace());
         } catch (IOException | SecurityException e) {
             return new Check("freeSpace", State.INFO, "Unknown");
         }

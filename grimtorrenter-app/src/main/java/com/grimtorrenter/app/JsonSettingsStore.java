@@ -6,18 +6,14 @@ import com.grimtorrenter.engine.settings.SettingsStore;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 
 /**
  * JSON-file-backed SettingsStore - @ApplicationScoped, so every injector shares the exact
  * same in-memory instance (CDI's own singleton guarantee is what makes "the store is the
  * only thing that holds a Settings instance" actually true, not just a convention).
- * settings.json lives in its own configurable directory (grimtorrenter.config-directory),
+ * settings.json lives in its own configurable directory (AppDirectories.config()),
  * deliberately separate from the download directory, so a Docker deployment can bind-mount
  * config and downloads to different host paths - matching how self-hosted tools like this
  * are typically deployed. See design_docs/0041.
@@ -27,8 +23,8 @@ public class JsonSettingsStore implements SettingsStore {
 
     private static final String SETTINGS_FILENAME = "settings.json";
 
-    @ConfigProperty(name = "grimtorrenter.config-directory", defaultValue = "config")
-    String configDirectory;
+    @Inject
+    AppDirectories directories;
 
     @Inject
     ObjectMapper objectMapper;
@@ -37,17 +33,15 @@ public class JsonSettingsStore implements SettingsStore {
     private volatile Settings current;
 
     /** Package-private (not private) so a test can call it directly after setting
-     * configDirectory/objectMapper itself, without going through CDI. */
+     * directories/objectMapper itself, without going through CDI.
+     *
+     * <p>A settings.json that is corrupt anyway - hand-edited, say - fails startup on purpose
+     * rather than falling back to defaults: the defaults have authEnabled off, and silently
+     * opening the API is worse than refusing to start. See design_docs/0093. */
     @PostConstruct
     void init() {
-        Path directory = Path.of(configDirectory);
-        try {
-            Files.createDirectories(directory);
-        } catch (IOException e) {
-            throw new UncheckedIOException("Could not create config directory " + directory, e);
-        }
-        settingsFile = directory.resolve(SETTINGS_FILENAME);
-        current = readOrCreateDefault();
+        settingsFile = directories.config().resolve(SETTINGS_FILENAME);
+        current = AtomicJsonFile.readOrSeed(objectMapper, settingsFile, Settings.class, Settings::defaults, false);
     }
 
     @Override
@@ -65,23 +59,7 @@ public class JsonSettingsStore implements SettingsStore {
         current = settings;
     }
 
-    private Settings readOrCreateDefault() {
-        if (Files.exists(settingsFile)) {
-            try {
-                return objectMapper.readValue(settingsFile.toFile(), Settings.class);
-            } catch (IOException e) {
-                throw new UncheckedIOException("Could not read " + settingsFile, e);
-            }
-        }
-        Settings defaults = Settings.defaults();
-        writeToDisk(defaults);
-        return defaults;
-    }
-
-    /** Atomic (AtomicJsonFile). A settings.json that is corrupt anyway - hand-edited, say - still
-     * fails startup on purpose rather than falling back to defaults: the defaults have
-     * authEnabled off, and silently opening the API is worse than refusing to start. See
-     * design_docs/0093. */
+    /** Atomic - see AtomicJsonFile and design_docs/0093. */
     private void writeToDisk(Settings settings) {
         AtomicJsonFile.write(objectMapper, settingsFile, settings, false);
     }

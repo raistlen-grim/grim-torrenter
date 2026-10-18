@@ -101,7 +101,7 @@ type SettingsGroupKey =
  * design_docs/0045's own addendum: at this page's width, seven labels including multi-word
  * ones like "Rate limiting"/"Magnet fetching" don't fit a horizontal tab strip without
  * wrapping or scrolling). Order matches the groups' existing top-to-bottom order. `hint` is
- * the group's intro copy, now rendered once by this page (SETTINGS_PAGE.md) rather than
+ * the group's intro copy, now rendered once by this page (the settings guide (design_docs/0045)) rather than
  * duplicated as each child component's own `.group-hint` - present on every group, not just
  * the 4 of 7 that had one before.
  *

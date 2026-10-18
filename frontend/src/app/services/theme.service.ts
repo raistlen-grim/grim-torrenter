@@ -15,9 +15,8 @@ type ResolvedTheme = 'light' | 'dark';
  * override can actually override the OS) can't also fall back to a media query the way
  * PrimeNG's own `'system'` option does.
  *
- * Started eagerly from App's constructor (see `inject(TorrentEventsService).connect()` there
- * for the same pattern) rather than waiting for first injection, since the whole point is
- * applying the right theme before the user sees anything.
+ * Started eagerly by App's constructor injecting it, rather than on first use elsewhere, since
+ * the whole point is applying the right theme before the user sees anything.
  *
  * <p>Stability note: the preference itself is persisted through the same backend Settings API
  * as every other setting (a deliberate choice over browser localStorage, confirmed with the

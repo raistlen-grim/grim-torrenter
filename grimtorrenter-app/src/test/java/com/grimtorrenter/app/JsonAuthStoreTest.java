@@ -23,7 +23,7 @@ class JsonAuthStoreTest {
 
     private static JsonAuthStore createStore(Path configDirectory, String bootstrapPassword) {
         JsonAuthStore store = new JsonAuthStore();
-        store.configDirectory = configDirectory.toString();
+        store.directories = AppDirectories.of(configDirectory.resolve("downloads"), configDirectory, configDirectory.resolve("watch"));
         store.bootstrapPassword = Optional.ofNullable(bootstrapPassword);
         store.objectMapper = new ObjectMapper();
         store.init();

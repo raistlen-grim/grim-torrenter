@@ -9,20 +9,16 @@ import jakarta.enterprise.inject.Produces;
 import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
-import java.nio.file.Path;
 
 @ApplicationScoped
 public class TorrentEngineProducer {
-
-    @ConfigProperty(name = "grimtorrenter.download-directory", defaultValue = "downloads")
-    String downloadDirectory;
 
     @ConfigProperty(name = "grimtorrenter.listen-port", defaultValue = "6881")
     int listenPort;
 
     /** Bounds total open torrent-data file handles across every torrent this engine manages
      * at once (design_docs/0047) - deploy-time config, not a live Settings field, matching
-     * download-directory/listen-port above: it's a resource/infra sizing knob, not a
+     * listen-port above: it's a resource/infra sizing knob, not a
      * user-facing behavioral preference. 256 leaves comfortable headroom under a typical
      * default OS ulimit (often 1024) for everything else competing for file descriptors -
      * peer connection sockets (up to 30 per torrent, design_docs/0007), the DHT/PeerServer
@@ -42,19 +38,12 @@ public class TorrentEngineProducer {
     @ConfigProperty(name = "grimtorrenter.max-concurrent-piece-verifications", defaultValue = "0")
     int maxConcurrentPieceVerifications;
 
-    /** The watch-folder auto-add directory (design_docs/0056) - deploy-time config, same
-     * category as download-directory above, independently mountable. Whether it's actually
-     * scanned at all is governed live by Settings.watchFolderEnabled, not by this property -
-     * this just says where to look if/when that's turned on. */
-    @ConfigProperty(name = "grimtorrenter.watch-directory", defaultValue = "watch")
-    String watchDirectory;
-
-    /** Same property JsonSettingsStore/JsonLinesEventStore already read for settings.json/
-     * events/ - engine-wide bookkeeping (currently just the two DHT marker files) belongs in
-     * the same place, not the download directory a user actually browses. See
-     * design_docs/0028's own 2026-08-30 addendum. */
-    @ConfigProperty(name = "grimtorrenter.config-directory", defaultValue = "config")
-    String configDirectory;
+    /** Downloads, the watch folder (scanned only while Settings.watchFolderEnabled is on,
+     * design_docs/0056) and the config directory. The engine keeps its own bookkeeping - DHT
+     * state and every per-torrent marker - in the config directory beside settings.json, not in
+     * the download directory a user browses (design_docs/0028's 2026-08-30 addendum). */
+    @Inject
+    AppDirectories directories;
 
     @Inject
     TorrentEventListener eventListener;
@@ -87,9 +76,9 @@ public class TorrentEngineProducer {
         int verificationPermits = maxConcurrentPieceVerifications > 0
                 ? maxConcurrentPieceVerifications
                 : Runtime.getRuntime().availableProcessors();
-        return new TorrentEngine(Path.of(downloadDirectory), listenPort, eventListener,
+        return new TorrentEngine(directories.downloads(), listenPort, eventListener,
                 settings.dhtEnabled(), settings.acceptIncomingConnections(), settingsStore,
-                new FileHandlePool(maxOpenFiles), verificationPermits, eventStore, Path.of(watchDirectory),
-                Path.of(configDirectory), settings.lsdEnabled());
+                new FileHandlePool(maxOpenFiles), verificationPermits, eventStore, directories.watch(),
+                directories.config(), settings.lsdEnabled());
     }
 }

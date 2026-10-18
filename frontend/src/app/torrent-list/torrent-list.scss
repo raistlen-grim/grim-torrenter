@@ -44,7 +44,7 @@
   display: none;
 }
 
-/* Selection bar (README.md "Toolbar - selection state", design_docs/0083): takes the
+/* Selection bar (the style guide's "Toolbar - selection state", design_docs/0083): takes the
  * toolbar's exact place - same outer margins, so nothing below it moves - with the guide's own
  * 10% accent wash, padding and gap. min-height matches the toolbar's tallest control so the
  * swap doesn't shift the list by a pixel or two. */
@@ -114,7 +114,7 @@
   gap: var(--space-2);
 }
 
-/* The bonded add unit (ADD_CONTROL.md / ADDENDUM_02): one paste field plus a primary
+/* The bonded add unit (the add-control guide, design_docs/0032): one paste field plus a primary
  * button that follows the field's contents, reading as a single object rather than two
  * controls. `align-items: stretch` (inherited from flex default) makes the field and the
  * p-button match height without hardcoding one. */
@@ -273,7 +273,7 @@ th {
 
 .sort-header .pi {
   font-size: 0.7rem;
-  /* Not one of README.md Motion's own named three (that list is row action opacity/row
+  /* Not one of the style guide's Motion section's own named three (that list is row action opacity/row
    * background/tab underline specifically), but the same 120ms fade applied here too for
    * task 8's consistency goal - every other hover-revealed thing in these views now animates,
    * and an instant snap here would be the one visible exception. */
@@ -411,7 +411,7 @@ th {
 }
 
 /* Full-width strip below the toolbar, shown whenever the add field is dirty
- * (ADD_CONTROL.md's "Echo strip" section). Tints derive from the same two tokens as the
+ * (the add-control guide's "Echo strip" section). Tints derive from the same two tokens as the
  * field border above, so the two stay visually paired. */
 .echo-strip {
   display: flex;
@@ -444,7 +444,7 @@ th {
   opacity: 0.5;
 }
 
-/* Full-window drop target (ADD_CONTROL.md: "Drop a .torrent anywhere on the window").
+/* Full-window drop target (the add-control guide (design_docs/0032): "Drop a .torrent anywhere on the window").
  * pointer-events: none so the overlay never blocks the drop event itself from reaching
  * the window listener that toggles isDraggingFile. */
 .drop-overlay {
@@ -486,9 +486,9 @@ th {
   opacity: 0.45;
 }
 
-/* README.md's Assets list names a Lucide `skull` glyph for this exact spot ("Glyphs used: ...
+/* The style guide's Assets list names a Lucide `skull` glyph for this exact spot ("Glyphs used: ...
  * skull", "reserved for empty states and the about screen") - shared/skull-mark is this app's
- * own constructed equivalent (STYLE_GUIDE_NOTES.md's six-rectangle spec; this app uses
+ * own constructed equivalent (the style guide's six-rectangle spec; this app uses
  * PrimeIcons, not Lucide, so there's no literal skull icon-font glyph to reach for instead).
  * The guide only allows the reaper theme in four places, and this is one of them ("wordmark
  * ... empty states ... only") - reusing the same constructed mark as the wordmark, not a new

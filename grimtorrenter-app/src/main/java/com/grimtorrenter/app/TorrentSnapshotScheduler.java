@@ -27,6 +27,9 @@ public class TorrentSnapshotScheduler {
     @Inject
     SessionTokenStore sessionTokenStore;
 
+    @Inject
+    WebSocketBroadcaster broadcaster;
+
     /** SKIP (not the default PROCEED) so a slow tick - e.g. broadcast() blocked on a
      * connection that never responds - can't overlap with the next one and pile up
      * worker threads. Defense in depth: broadcast() itself is non-blocking now (see its
@@ -44,9 +47,9 @@ public class TorrentSnapshotScheduler {
     @Scheduled(every = "2s", concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
     void broadcastSnapshot() {
         if (settingsStore.current().authEnabled()) {
-            TorrentWebSocket.closeConnectionsWhoseTokenFails(sessionTokenStore::isValid);
+            broadcaster.closeConnectionsWhoseTokenFails(sessionTokenStore::isValid, TorrentWebSocket.SESSION_ENDED);
         }
-        if (!TorrentWebSocket.hasConnections()) {
+        if (!broadcaster.hasConnections()) {
             return;
         }
         List<TorrentView> views = Stream.concat(
@@ -55,12 +58,12 @@ public class TorrentSnapshotScheduler {
                 .toList();
         try {
             String json = objectMapper.writeValueAsString(new TorrentEventMessage("snapshot", views));
-            TorrentWebSocket.broadcast(json);
+            broadcaster.broadcast(json);
             // The label list rides the same tick (design_docs/0077) so another open browser
             // sees a create/rename/delete within ~2s without a mutation-time hook - tiny
             // payload, and torrents carry ids only, so a rename changes nothing in the
             // snapshot above.
-            TorrentWebSocket.broadcast(objectMapper.writeValueAsString(
+            broadcaster.broadcast(objectMapper.writeValueAsString(
                     new TorrentEventMessage("labels", torrentEngine.labels().list())));
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("Failed to serialize torrent snapshot", e);

@@ -92,7 +92,7 @@ const SERVICE_DISPLAY: Record<string, { label: string; icon: string }> = {
  * every other status display in this app already uses (see StatusTone's own Javadoc) -
  * DISABLED is 'dim' like STOPPED/Paused, a deliberately inert state, not a problem. DEGRADED
  * also reuses 'dim' rather than adding a 4th tone (confirmed with the user, staying within
- * the style guide's deliberate 3-tone cap) - it isn't a problem either (DHT is running and
+ * The style guide's deliberate 3-tone cap) - it isn't a problem either (DHT is running and
  * self-healing), just not yet fully populated. Reusing 'dim' alone would read identically to
  * DISABLED though, so services-page.html adds its own explicit "sparse" text for DEGRADED
  * rows, the same way it already adds an explicit checkmark for RUNNING rather than relying on

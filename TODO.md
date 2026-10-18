@@ -42,6 +42,27 @@ are not listed here.
   via "Remove and delete files…" left open in one tab.
 - Behind a reverse proxy: live updates connect, or `GRIMTORRENTER_ALLOWED_ORIGINS` fixes it
   (`design_docs/0093`).
+- Engine clean-up (`design_docs/0099`), which touched every per-torrent marker and the magnet fetch:
+  - Restart with a mix of running, paused and labelled torrents that have file priorities and
+    limits set: all come back as they were.
+  - A magnet resolves, both one with trackers and a trackerless one.
+  - The Files tab and peer list of a large torrent still show the right progress.
+- App clean-up (`design_docs/0100`), which moved WebSocket push into a shared bean and the
+  directories into one place:
+  - Live updates still arrive in two browsers at once, and closing one tab doesn't stop the other.
+  - Logging out in one browser still ends the other's live updates within ~2 s.
+  - Health page storage checks and free space match the mounted directories.
+  - A bad `.torrent` upload and a malformed magnet still show the 400 message.
+- Frontend clean-up (`design_docs/0101`), which moved the add control's logic and both torrent
+  menus:
+  - Add: paste anywhere, drop a `.torrent`, Add file…, a duplicate magnet's "Show existing", and
+    several magnets at once. The placeholder row appears and clears.
+  - A magnet that fails in the background still toasts once, and not again after leaving the
+    list and coming back.
+  - The details panel's "⋯" menu has Torrent limits… and Labels…, and both dialogs open from it.
+    Remove from the panel closes it.
+  - Pause all/Resume all: rows show pending, and there's no info toast any more.
+  - Footer ratio matches the panel's after a server restart.
 
 **Open, decide whether it blocks beta:**
 - Does a VPN container such as gluetun work as the alternative to `network_mode: host` behind a

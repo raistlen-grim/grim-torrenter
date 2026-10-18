@@ -1,13 +1,17 @@
 package com.grimtorrenter.engine.tracker;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.stream.Collectors;
 
 /**
  * Announces to every configured tracker concurrently on every call, aggregating peers from
@@ -73,7 +77,7 @@ public final class MultiTrackerClient implements TrackerClient {
 
         Set<PeerAddress> peers = new LinkedHashSet<>();
         long minInterval = Long.MAX_VALUE;
-        List<Throwable> failures = new java.util.ArrayList<>();
+        List<Throwable> failures = new ArrayList<>();
         boolean anySucceeded = false;
         for (Future<TrackerResponse> future : futures) {
             try {
@@ -102,7 +106,7 @@ public final class MultiTrackerClient implements TrackerClient {
      * ~20 trackers, ~10 of them dead, would otherwise need a page of stack traces to read.
      * The last failure is still attached as the cause for anyone who does want the trace. */
     private static String summarizeFailures(List<Throwable> failures) {
-        java.util.Map<String, Integer> counts = new java.util.LinkedHashMap<>();
+        Map<String, Integer> counts = new LinkedHashMap<>();
         for (Throwable failure : failures) {
             Throwable root = failure;
             while (root.getCause() != null && root.getCause() != root) {
@@ -112,7 +116,7 @@ public final class MultiTrackerClient implements TrackerClient {
         }
         return "All " + failures.size() + " trackers failed - "
                 + counts.entrySet().stream().map(e -> e.getValue() + "x " + e.getKey())
-                        .collect(java.util.stream.Collectors.joining("; "));
+                        .collect(Collectors.joining("; "));
     }
 
     /** Aggregates every wrapped tracker's own status - announce() above now actually reaches

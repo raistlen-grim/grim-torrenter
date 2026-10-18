@@ -9,26 +9,20 @@ import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryMXBean;
-import java.nio.file.Files;
 import java.util.List;
 
 /** Global, torrent-independent host state - same "separate small resource" shape as
- * DhtResource, since this isn't scoped to any one torrent either. See design_docs/0043.
- *
- * <p>Reads grimtorrenter.download-directory directly (the same property
- * TorrentEngineProducer reads) rather than through TorrentEngine - it's deploy-time config
- * already safe to read from the app layer, so no new engine accessor was needed. */
+ * DhtResource, since this isn't scoped to any one torrent either. See design_docs/0043. */
 @Path("/api/system")
 public class SystemResource {
 
-    @ConfigProperty(name = "grimtorrenter.download-directory", defaultValue = "downloads")
-    String downloadDirectory;
+    @Inject
+    AppDirectories directories;
 
     @Inject
     TorrentEngine torrentEngine;
@@ -36,22 +30,14 @@ public class SystemResource {
     @Inject
     HealthService healthService;
 
-    /** Creates the directory itself first rather than assuming TorrentEngine already has -
-     * it only creates it as an incidental side effect of persisting a DHT node id marker
-     * (TorrentEngine.loadOrGenerateDhtNodeId), which never runs at all when DHT is disabled
-     * (the default in this project's own test suite, and a legitimate user setting in
-     * production) and even then only on a first-ever boot, with failures swallowed. Real
-     * bug caught by SystemResourceTest failing with NoSuchFileException against a fresh
-     * target/test-downloads before this fix. */
+    /** Free space on the downloads volume - the same figure as the Health page's freeSpace
+     * check (AppDirectories.downloadsUsableSpace()). */
     @GET
     @Path("/disk-usage")
     @Produces(MediaType.APPLICATION_JSON)
     public DiskUsageView diskUsage() {
         try {
-            java.nio.file.Path directory = java.nio.file.Path.of(downloadDirectory);
-            Files.createDirectories(directory);
-            long freeBytes = Files.getFileStore(directory).getUsableSpace();
-            return new DiskUsageView(freeBytes);
+            return new DiskUsageView(directories.downloadsUsableSpace());
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }

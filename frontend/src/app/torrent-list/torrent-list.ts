@@ -2,10 +2,8 @@ import { DOCUMENT } from '@angular/common';
 import {
   ChangeDetectionStrategy,
   Component,
-  DestroyRef,
   ElementRef,
   computed,
-  effect,
   inject,
   signal,
   viewChild,
@@ -35,28 +33,16 @@ import {
   matchesSearchText,
   matchesStatusFilter,
 } from '../services/torrent-filter.service';
-import { TorrentService } from '../services/torrent.service';
 import { FormatBytesPipe } from '../shared/format-bytes.pipe';
-import { generateLocalId } from '../shared/local-id';
 import { apiErrorMessage } from '../shared/api-error';
-import { magnetDisplayName, normalizeMagnetCandidate, shortInfoHash } from '../shared/magnet';
 import { pluralTorrentCount } from '../shared/plural-torrent-count';
 import { SkullMark } from '../shared/skull-mark/skull-mark';
 import { StatusIndicator } from '../shared/status-indicator/status-indicator';
-import { AddState, resolveAddState } from './add-state';
+import { AddTorrentController, PendingUpload } from './add-torrent-controller';
 import { BulkLabelsDialog } from './bulk-labels-dialog/bulk-labels-dialog';
 import { SelectionSummary } from './selection-summary/selection-summary';
+import { TorrentCommands } from './torrent-commands';
 import { TorrentRow } from './torrent-row/torrent-row';
-
-/** A brief "request in flight" placeholder, for either an upload or a magnet add - both now
- * resolve synchronously (design_docs/0070 gave magnet-add the same immediate-response shape
- * upload always had), so this only ever masks normal request latency, not metadata-fetch
- * latency. No infoHash needed any more - there's nothing left to correlate against once the
- * add's own subscribe() already applies the result directly. See design_docs/0029/0070. */
-interface PendingUpload {
-  id: string;
-  fileName: string;
-}
 
 /** A discriminated union rather than injecting a synthetic "pending" torrent into
  * TorrentWithRate's own shape - a pending upload genuinely doesn't have most of that
@@ -66,14 +52,6 @@ type TableRow = { kind: 'pending'; upload: PendingUpload } | { kind: 'torrent'; 
 
 type SortField = 'name' | 'size' | 'status' | 'progress';
 type SortDirection = 'asc' | 'desc';
-
-interface EchoState {
-  tone: 'accent' | 'alarm';
-  icon: string;
-  name: string;
-  meta: string;
-  hint: string;
-}
 
 /** A torrent Pause can act on: running, or still starting (design_docs/0098) - a pause then
  * cancels the start. */
@@ -100,7 +78,7 @@ function isPausable(torrent: TorrentWithRate): boolean {
     TooltipModule,
     TorrentRow,
   ],
-  providers: [ConfirmationService, MessageService],
+  providers: [ConfirmationService, MessageService, AddTorrentController, TorrentCommands],
   templateUrl: './torrent-list.html',
   styleUrl: './torrent-list.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -110,7 +88,6 @@ function isPausable(torrent: TorrentWithRate): boolean {
   },
 })
 export class TorrentList {
-  private readonly torrentService = inject(TorrentService);
   private readonly actions = inject(TorrentActionsService);
   private readonly messageService = inject(MessageService);
   private readonly events = inject(TorrentEventsService);
@@ -118,9 +95,10 @@ export class TorrentList {
   private readonly route = inject(ActivatedRoute);
   private readonly document = inject(DOCUMENT);
   private readonly host: ElementRef<HTMLElement> = inject(ElementRef);
-  private readonly destroyRef = inject(DestroyRef);
   readonly filter = inject(TorrentFilterService);
   private readonly labelService = inject(LabelService);
+  /** The add control (see AddTorrentController); its markup is in this component's template. */
+  readonly add = inject(AddTorrentController);
 
   private readonly formatBytes = new FormatBytesPipe();
 
@@ -165,8 +143,6 @@ export class TorrentList {
     this.router.navigate(['/']);
   }
 
-  private readonly pendingUploads = signal<PendingUpload[]>([]);
-
   readonly sortField = signal<SortField>('name');
   readonly sortDirection = signal<SortDirection>('asc');
 
@@ -195,7 +171,7 @@ export class TorrentList {
     this.filter.clearLabels();
   }
 
-  /** README.md's Copy section: `No matches for "debain"` - the literal example is search-text
+  /** The style guide's Copy section: `No matches for "debain"` - the literal example is search-text
    * specific, so that's the only case that gets the exact quoted-query form; a status-only
    * filter (no search text) with zero matches falls back to naming the filter instead, since
    * `No matches for ""` would read as broken. */
@@ -218,7 +194,7 @@ export class TorrentList {
     return names.join(this.filter.labelMatchMode() === 'all' ? ' and ' : ' or ');
   });
 
-  /** "a note that filters are also narrowing the list" (STYLE_GUIDE_NOTES.md's empty-state
+  /** "a note that filters are also narrowing the list" (the style guide's empty-state
    * spec) - only said when a search AND a status filter are both active; either alone gets
    * its own single-cause phrasing instead, so "also" never appears with nothing else to add
    * to. */
@@ -271,7 +247,7 @@ export class TorrentList {
     const sorted = [...filtered].sort((a, b) => sign * this.compare(a, b, field));
 
     return [
-      ...this.pendingUploads().map((upload): TableRow => ({ kind: 'pending', upload })),
+      ...this.add.pendingUploads().map((upload): TableRow => ({ kind: 'pending', upload })),
       ...sorted.map((torrent): TableRow => ({ kind: 'torrent', torrent })),
     ];
   });
@@ -485,7 +461,7 @@ export class TorrentList {
    * confirming it removes, even if the list changes underneath while it is open. */
   private readonly removeTargets = signal<TorrentWithRate[]>([]);
 
-  /** README.md "Copy": `Remove 3 torrents?`, and the body/button below - the singular forms
+  /** The style guide's "Copy": `Remove 3 torrents?`, and the body/button below - the singular forms
    * are this app's own, the guide only spells out the plural. */
   readonly removeDialogTitle = computed(() => `Remove ${pluralTorrentCount(this.removeTargets().length)}?`);
   readonly removeDialogBody = computed(
@@ -564,7 +540,7 @@ export class TorrentList {
   }
 
   // --- List keyboard shortcuts (design_docs/0083's third addendum) ----------------------
-  // README.md "Interactions": Delete/Backspace, Up/Down, `/` and `I`, plus Space and Enter as
+  // The style guide's "Interactions": Delete/Backspace, Up/Down, `/` and `I`, plus Space and Enter as
   // the user asked for them (the guide has Space pause/resume). The guide has one
   // "selection"; here the ticked set and the current row are separate, so each shortcut acts
   // on the ticked rows when there are any and on the current row otherwise.
@@ -715,7 +691,7 @@ export class TorrentList {
     }
   }
 
-  /** The guide's Esc order (README.md "Interactions"): clear the filter if it's focused, else
+  /** The guide's Esc order (the style guide's "Interactions"): clear the filter if it's focused, else
    * close the panel, else clear the selection. The first is the field's own handler; this is
    * the other two. Left alone while a dialog or menu is open (Esc belongs to that) and while
    * typing in any other field. */
@@ -736,378 +712,33 @@ export class TorrentList {
     }
   }
 
-  /** Loops the existing per-torrent pause() call rather than needing a new bulk backend
-   * endpoint - fired concurrently, not sequentially. Goes through TorrentActionsService so
-   * each affected row shows the same pending feedback a click on its own button gets. A
-   * failure isn't toasted per torrent here (one toast per row of a large list would bury the
-   * screen); the row simply stays in its old state. See design_docs/0043. */
+  /** The toolbar's Pause all/Resume all: every torrent in the list, not just the filtered or
+   * ticked ones. Same path as the selection bar - one request per torrent through
+   * TorrentActionsService (so each row shows its own pending state), skipping torrents that
+   * already have a request in flight, and one summary toast if any fail. See design_docs/0043
+   * and 0101. */
   pauseAll(): void {
-    const targets = this.events.torrents().filter(isPausable);
-    if (targets.length === 0) {
-      return;
-    }
-    targets.forEach((t) => this.actions.pause(t.infoHash).subscribe({ error: () => undefined }));
-    this.messageService.add({ severity: 'info', summary: 'Pausing', detail: pluralTorrentCount(targets.length) });
+    const idle = (t: TorrentWithRate) => this.actions.pendingFor(t.infoHash) === null;
+    this.runOnEach(
+      this.events.torrents().filter((t) => isPausable(t) && idle(t)),
+      (infoHash) => this.actions.pause(infoHash),
+      'pause',
+    );
   }
 
   resumeAll(): void {
-    const targets = this.events.torrents().filter((t) => t.state === 'STOPPED');
-    if (targets.length === 0) {
-      return;
-    }
-    targets.forEach((t) => this.actions.resume(t.infoHash).subscribe({ error: () => undefined }));
-    this.messageService.add({ severity: 'info', summary: 'Resuming', detail: pluralTorrentCount(targets.length) });
+    const idle = (t: TorrentWithRate) => this.actions.pendingFor(t.infoHash) === null;
+    this.runOnEach(
+      this.events.torrents().filter((t) => t.state === 'STOPPED' && idle(t)),
+      (infoHash) => this.actions.resume(infoHash),
+      'resume',
+    );
   }
-
-  // --- Add control (ADD_CONTROL.md / ADDENDUM_02: one bonded field + primary, not the
-  // former separate Add Torrent / Add Magnet buttons) ---------------------------------
-
-  readonly addValue = signal('');
-  readonly addPending = signal(false);
-  readonly addError = signal<string | null>(null);
-  readonly isDraggingFile = signal(false);
-
-  readonly addState = computed<AddState>(() => resolveAddState(this.addValue(), this.events.torrents()));
-
-  readonly addFieldTone = computed<'idle' | 'accent' | 'alarm'>(() => {
-    switch (this.addState().kind) {
-      case 'empty':
-        return 'idle';
-      case 'magnet':
-      case 'multi-magnet':
-        return 'accent';
-      case 'invalid':
-      case 'torrent-url':
-        return 'alarm';
-    }
-  });
-
-  readonly addPrimary = computed<{ icon: string; label: string; disabled: boolean }>(() => {
-    const state = this.addState();
-    if (this.addPending()) {
-      const label =
-        state.kind === 'multi-magnet' ? `Add ${state.uris.length} magnets` : state.kind === 'magnet' ? 'Add magnet' : 'Add file…';
-      return { icon: 'pi pi-spinner pi-spin', label, disabled: true };
-    }
-    switch (state.kind) {
-      case 'empty':
-        return { icon: 'pi pi-file-plus', label: 'Add file…', disabled: false };
-      case 'magnet':
-        return state.duplicate
-          ? { icon: 'pi pi-plus', label: 'Show existing', disabled: false }
-          : { icon: 'pi pi-plus', label: 'Add magnet', disabled: false };
-      case 'multi-magnet':
-        return { icon: 'pi pi-plus', label: `Add ${state.uris.length} magnets`, disabled: false };
-      case 'torrent-url':
-        return { icon: 'pi pi-plus', label: 'Add link', disabled: true };
-      case 'invalid':
-        return { icon: 'pi pi-plus', label: 'Add magnet', disabled: true };
-    }
-  });
-
-  readonly echo = computed<EchoState | null>(() => {
-    const error = this.addError();
-    if (error) {
-      return { tone: 'alarm', icon: 'pi pi-exclamation-triangle', name: error, meta: '', hint: 'Enter to retry · Esc to clear' };
-    }
-
-    const state = this.addState();
-    switch (state.kind) {
-      case 'empty':
-        return null;
-      case 'invalid':
-        return {
-          tone: 'alarm',
-          icon: 'pi pi-exclamation-triangle',
-          name: "That isn't a magnet link or a .torrent file.",
-          meta: '',
-          hint: 'Paste starts magnet:?xt=urn:btih:…',
-        };
-      case 'torrent-url':
-        return {
-          tone: 'alarm',
-          icon: 'pi pi-exclamation-triangle',
-          name: "Adding by URL isn't supported yet.",
-          meta: '',
-          hint: 'Save the .torrent file and use Add file… instead',
-        };
-      case 'magnet': {
-        if (state.duplicate) {
-          return {
-            tone: 'alarm',
-            icon: 'pi pi-exclamation-triangle',
-            name: `Already in the list — ${state.duplicate.name}`,
-            meta: '',
-            hint: 'Enter to open · Esc to clear',
-          };
-        }
-        const name =
-          state.displayName ?? (state.infoHash ? shortInfoHash(state.infoHash) : 'Unnamed magnet link');
-        const metaParts: string[] = [];
-        if (state.lengthBytes !== null) {
-          metaParts.push(this.formatBytes.transform(state.lengthBytes));
-        }
-        if (state.trackerCount > 0) {
-          metaParts.push(`${state.trackerCount} tracker${state.trackerCount === 1 ? '' : 's'}`);
-        }
-        return { tone: 'accent', icon: 'pi pi-check', name, meta: metaParts.join(' · '), hint: 'Enter to add · Esc to clear' };
-      }
-      case 'multi-magnet':
-        return {
-          tone: 'accent',
-          icon: 'pi pi-check',
-          name: `${state.firstName ?? 'Magnet link'} and ${state.uris.length - 1} more`,
-          meta: `${state.uris.length} magnet links`,
-          hint: 'Enter to add · Esc to clear',
-        };
-    }
-  });
-
-  /** A magnet's row is a real FETCHING_METADATA torrent (design_docs/0070), so when the
-   * background fetch gives up the backend just drops it - the only signal is the
-   * MAGNET_ADD_FAILED library event, which nothing here surfaced. Toasts each one live
-   * (design_docs/0060's original intent, lost when its pending-row effect was superseded).
-   * The cursor starts at the newest event already buffered so re-creating this component
-   * (navigating back to the list) doesn't replay old failures. */
-  private lastToastedEventTimestamp = this.events.libraryEvents()[0]?.timestamp ?? '';
-  private readonly magnetFailureToastEffect = effect(() => {
-    const fresh = this.events
-      .libraryEvents()
-      .filter((e) => e.type === 'MAGNET_ADD_FAILED' && e.timestamp > this.lastToastedEventTimestamp);
-    const newest = this.events.libraryEvents()[0]?.timestamp;
-    if (newest && newest > this.lastToastedEventTimestamp) {
-      this.lastToastedEventTimestamp = newest;
-    }
-    for (const event of fresh.reverse()) {
-      this.messageService.add({
-        severity: 'error',
-        summary: 'Magnet add failed',
-        detail: event.message ?? event.infoHash ?? undefined,
-        life: 8000,
-      });
-    }
-  });
 
   constructor() {
-    const pasteHandler = (event: ClipboardEvent) => this.onGlobalPaste(event);
-    const dragOverHandler = (event: DragEvent) => this.onWindowDragOver(event);
-    const dragLeaveHandler = (event: DragEvent) => this.onWindowDragLeave(event);
-    const dropHandler = (event: DragEvent) => this.onWindowDrop(event);
-
-    // Global rather than scoped to the add field, per ADD_CONTROL.md: "Cmd/Ctrl-V anywhere
-    // on the page ... This is the single most important interaction in the control." Must
-    // ignore paste/drop events targeting another text input, textarea or contenteditable
-    // (the filter field, a rename dialog) so this doesn't hijack them.
-    this.document.addEventListener('paste', pasteHandler);
-    this.document.defaultView?.addEventListener('dragover', dragOverHandler);
-    this.document.defaultView?.addEventListener('dragleave', dragLeaveHandler);
-    this.document.defaultView?.addEventListener('drop', dropHandler);
-    this.destroyRef.onDestroy(() => {
-      this.document.removeEventListener('paste', pasteHandler);
-      this.document.defaultView?.removeEventListener('dragover', dragOverHandler);
-      this.document.defaultView?.removeEventListener('dragleave', dragLeaveHandler);
-      this.document.defaultView?.removeEventListener('drop', dropHandler);
-    });
-  }
-
-  onAddInput(event: Event): void {
-    this.addValue.set((event.target as HTMLInputElement).value);
-    this.addError.set(null);
-  }
-
-  onAddKeydownEnter(): void {
-    this.onPrimaryClick();
-  }
-
-  onAddKeydownEscape(): void {
-    this.clearAdd();
-  }
-
-  clearAdd(): void {
-    this.addValue.set('');
-    this.addError.set(null);
-  }
-
-  onPrimaryClick(): void {
-    if (this.addPending() || this.addPrimary().disabled) {
-      return;
-    }
-    const state = this.addState();
-    switch (state.kind) {
-      case 'empty':
-        this.fileInput()?.nativeElement.click();
-        break;
-      case 'magnet':
-        if (state.duplicate) {
-          this.router.navigate(['/torrents', state.duplicate.infoHash]);
-        } else {
-          this.submitMagnet(state.uri);
-        }
-        break;
-      case 'multi-magnet':
-        this.submitMultipleMagnets(state.uris);
-        break;
-      case 'torrent-url':
-      case 'invalid':
-        break;
-    }
-  }
-
-  onFilesPicked(event: Event): void {
-    const input = event.target as HTMLInputElement;
-    const files = input.files ? Array.from(input.files) : [];
-    files.forEach((file) => this.uploadFile(file));
-    input.value = '';
-  }
-
-  private uploadFile(file: File): void {
-    const pendingId = generateLocalId();
-    this.pendingUploads.update((uploads) => [...uploads, { id: pendingId, fileName: file.name }]);
-
-    this.torrentService.upload(file).subscribe({
-      next: (response) => {
-        this.removePendingUpload(pendingId);
-        // Applied immediately rather than waiting for the next periodic snapshot -
-        // that's the whole point of showing a placeholder in the meantime.
-        this.events.upsert(response.torrent);
-        if (response.alreadyExisted) {
-          this.messageService.add({
-            severity: 'info',
-            summary: 'Already added',
-            detail: `"${response.torrent.name}" is already in your list.`,
-          });
-        }
-      },
-      error: (error: unknown) => {
-        this.removePendingUpload(pendingId);
-        this.messageService.add({
-          severity: 'error',
-          summary: 'Upload failed',
-          detail: apiErrorMessage(error, 'Could not add torrent'),
-        });
-      },
-    });
-  }
-
-  /** Resolves synchronously now (design_docs/0070) - a magnet add returns a real, insertable
-   * Torrent (state 'FETCHING_METADATA' until it resolves, or the already-existing torrent if
-   * this info hash was already added) in the same response, same shape uploadFile() already
-   * has. No success toast: per ADD_CONTROL.md, "the new row appearing *is* the confirmation."
-   * A synchronous error response (no usable tracker and DHT off, or a malformed URI) keeps the
-   * echo strip open in its alarm state instead of a toast, naming the reason, per the same
-   * doc's behaviour table. */
-  private submitMagnet(uri: string): void {
-    const pendingId = generateLocalId();
-    this.pendingUploads.update((uploads) => [...uploads, { id: pendingId, fileName: magnetDisplayName(uri) }]);
-    this.addPending.set(true);
-    this.torrentService.addMagnet(uri).subscribe({
-      next: (response) => {
-        this.removePendingUpload(pendingId);
-        this.addPending.set(false);
-        this.addValue.set('');
-        this.events.upsert(response.torrent);
-      },
-      error: (error: unknown) => {
-        this.removePendingUpload(pendingId);
-        this.addPending.set(false);
-        this.addError.set(apiErrorMessage(error, 'Invalid magnet link'));
-      },
-    });
-  }
-
-  /** Same synchronous-response reasoning as submitMagnet() above, per uri - see
-   * design_docs/0070. */
-  private submitMultipleMagnets(uris: string[]): void {
-    this.addPending.set(true);
-    let remaining = uris.length;
-    let failed = 0;
-    uris.forEach((uri) => {
-      const pendingId = generateLocalId();
-      this.pendingUploads.update((uploads) => [...uploads, { id: pendingId, fileName: magnetDisplayName(uri) }]);
-      this.torrentService.addMagnet(uri).subscribe({
-        next: (response) => {
-          this.removePendingUpload(pendingId);
-          this.events.upsert(response.torrent);
-          remaining--;
-          if (remaining === 0) {
-            this.finishMultiAdd(failed);
-          }
-        },
-        error: () => {
-          this.removePendingUpload(pendingId);
-          failed++;
-          remaining--;
-          if (remaining === 0) {
-            this.finishMultiAdd(failed);
-          }
-        },
-      });
-    });
-  }
-
-  private finishMultiAdd(failed: number): void {
-    this.addPending.set(false);
-    if (failed > 0) {
-      this.addError.set(`${failed} of the pasted links couldn't be added.`);
-    } else {
-      this.addValue.set('');
-    }
-  }
-
-  private onGlobalPaste(event: ClipboardEvent): void {
-    const target = event.target as HTMLElement | null;
-    if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
-      return;
-    }
-    const text = event.clipboardData?.getData('text/plain');
-    if (!text?.trim()) {
-      return;
-    }
-    event.preventDefault();
-    this.addValue.set(text);
-    this.addError.set(null);
-    this.addFieldInput()?.nativeElement.focus();
-  }
-
-  private onWindowDragOver(event: DragEvent): void {
-    if (!event.dataTransfer?.types.includes('Files')) {
-      return;
-    }
-    event.preventDefault();
-    this.isDraggingFile.set(true);
-  }
-
-  private onWindowDragLeave(event: DragEvent): void {
-    if (event.relatedTarget === null) {
-      this.isDraggingFile.set(false);
-    }
-  }
-
-  private onWindowDrop(event: DragEvent): void {
-    if (event.dataTransfer?.types.includes('Files')) {
-      event.preventDefault();
-    }
-    this.isDraggingFile.set(false);
-
-    const files = event.dataTransfer?.files;
-    if (files && files.length > 0) {
-      Array.from(files)
-        .filter((file) => file.name.toLowerCase().endsWith('.torrent'))
-        .forEach((file) => this.uploadFile(file));
-      return;
-    }
-
-    // Dropped text (rather than a file) that looks like a magnet fills the field so the
-    // echo strip can confirm it before anything is added, rather than adding blind.
-    const text = event.dataTransfer?.getData('text/plain');
-    if (text && normalizeMagnetCandidate(text.trim())) {
-      event.preventDefault();
-      this.addValue.set(text.trim());
-      this.addError.set(null);
-    }
-  }
-
-  private removePendingUpload(id: string): void {
-    this.pendingUploads.update((uploads) => uploads.filter((u) => u.id !== id));
+    this.add.attachElements(
+      () => this.fileInput()?.nativeElement,
+      () => this.addFieldInput()?.nativeElement,
+    );
   }
 }

@@ -1,7 +1,7 @@
 <p-toast />
 <p-confirmDialog />
 
-<!-- The guide's bulk remove dialog (README.md "Copy"): one confirmation with a delete-data
+<!-- The guide's bulk remove dialog (the style guide's "Copy"): one confirmation with a delete-data
      checkbox, for the selection only - the per-torrent Remove flows are unchanged.
      design_docs/0083. Kept out of .list-panel-grid below - there it would become a grid item
      of its own. -->
@@ -30,7 +30,7 @@
   (visibleChange)="showBulkLabelsDialog.set($event)"
 />
 
-@if (isDraggingFile()) {
+@if (add.isDraggingFile()) {
   <div class="drop-overlay" aria-hidden="true">
     <div class="drop-overlay-label">Drop to add</div>
   </div>
@@ -41,7 +41,7 @@
 <div class="list-panel-grid" [class.panel-open]="isPanelOpen()">
   <div class="list-column">
     @if (selectedCount() > 0) {
-      <!-- Replaces the toolbar in place while rows are selected (README.md "Toolbar - selection
+      <!-- Replaces the toolbar in place while rows are selected (the style guide's "Toolbar - selection
            state"). The toolbar below stays in the DOM, hidden, so the add field keeps its
            contents and its file input stays reachable. design_docs/0083. -->
       <div class="selection-bar" role="toolbar" aria-label="Actions for the selected torrents">
@@ -98,37 +98,37 @@
 
     <div class="toolbar" [class.toolbar-replaced]="selectedCount() > 0">
       <div class="add-unit">
-        <label class="add-field" [class.tone-accent]="addFieldTone() === 'accent'" [class.tone-alarm]="addFieldTone() === 'alarm'">
+        <label class="add-field" [class.tone-accent]="add.fieldTone() === 'accent'" [class.tone-alarm]="add.fieldTone() === 'alarm'">
           <i class="pi pi-link add-field-icon" aria-hidden="true"></i>
           <input
             #addFieldInput
             type="text"
-            [value]="addValue()"
-            (input)="onAddInput($event)"
-            (keydown.enter)="onAddKeydownEnter()"
-            (keydown.escape)="onAddKeydownEscape()"
+            [value]="add.value()"
+            (input)="add.onInput($event)"
+            (keydown.enter)="add.submit()"
+            (keydown.escape)="add.clear()"
             placeholder="Paste a magnet link, or drop a .torrent anywhere"
             aria-label="Magnet link or .torrent file"
           />
           <button
             type="button"
             class="add-clear"
-            [class.visible]="addValue().length > 0"
+            [class.visible]="add.value().length > 0"
             title="Clear"
             aria-label="Clear"
-            (click)="clearAdd()"
+            (click)="add.clear()"
           >
             <i class="pi pi-times" aria-hidden="true"></i>
           </button>
         </label>
         <p-button
           class="add-primary"
-          [icon]="addPrimary().icon"
-          [label]="addPrimary().label"
-          [disabled]="addPrimary().disabled"
-          (onClick)="onPrimaryClick()"
+          [icon]="add.primary().icon"
+          [label]="add.primary().label"
+          [disabled]="add.primary().disabled"
+          (onClick)="add.submit()"
         />
-        <input #fileInput type="file" accept=".torrent" multiple hidden (change)="onFilesPicked($event)" />
+        <input #fileInput type="file" accept=".torrent" multiple hidden (change)="add.onFilesPicked($event)" />
       </div>
 
       <p-iconField class="search-field" iconPosition="left">
@@ -215,7 +215,7 @@
       </div>
     </div>
 
-    @if (echo(); as echoState) {
+    @if (add.echo(); as echoState) {
       <div class="echo-strip" [class.tone-alarm]="echoState.tone === 'alarm'">
         <i class="echo-icon" [class]="echoState.icon" aria-hidden="true"></i>
         <span class="echo-name">{{ echoState.name }}</span>
@@ -334,7 +334,7 @@
                 <div class="empty-state-body">
                   Drop a .torrent file anywhere on this window, or paste a magnet link.
                 </div>
-                <p-button label="Add torrent" (onClick)="onPrimaryClick()" />
+                <p-button label="Add torrent" (onClick)="add.submit()" />
               }
             </div>
           </td>

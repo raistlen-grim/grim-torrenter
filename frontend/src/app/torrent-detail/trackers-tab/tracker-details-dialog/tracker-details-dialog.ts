@@ -1,30 +1,14 @@
 import { DatePipe } from '@angular/common';
-import { ChangeDetectionStrategy, Component, LOCALE_ID, Signal, computed, inject, input, output } from '@angular/core';
-import { toObservable, toSignal } from '@angular/core/rxjs-interop';
+import { ChangeDetectionStrategy, Component, LOCALE_ID, computed, inject, input, output } from '@angular/core';
 import { DialogModule } from 'primeng/dialog';
-import { EMPTY, Observable, switchMap } from 'rxjs';
 
 import { Peer, Tracker } from '../../../models/torrent.model';
 import { TorrentService } from '../../../services/torrent.service';
 import { FormatBytesPipe } from '../../../shared/format-bytes.pipe';
 import { activityDetail, activityLabel, comparePeersByActivity } from '../../../shared/peer-activity';
-import { pollEvery } from '../../../shared/poll';
+import { pollWhileVisible } from '../../../shared/poll';
 
 const POLL_INTERVAL_MS = 3000;
-
-/** Polls fetch() every POLL_INTERVAL_MS while visible is true, stopping (no request in flight)
- * the moment it becomes false - unlike shared/poll-while-input.ts, which is keyed to a
- * Signal<string> and restarts on value change, this gates on a plain boolean. Kept local to
- * this component rather than promoted into that shared file - both call sites needing it live
- * here, and it's not yet clear another dialog will need the same shape. See design_docs/0073. */
-function pollWhileVisible<T>(visible: Signal<boolean>, fetch: () => Observable<T>, initialValue: T): Signal<T> {
-  return toSignal(
-    toObservable(visible).pipe(
-      switchMap((isVisible) => (isVisible ? pollEvery(POLL_INTERVAL_MS, fetch) : EMPTY)),
-    ),
-    { initialValue },
-  );
-}
 
 /** No existing "counts as seeding" convention anywhere in this frontend (checked peers-tab and
  * torrent.model.ts) - a peer with the complete torrent (percentAvailable === 1) is a seed by
@@ -61,7 +45,7 @@ interface PeerSourceCount {
  * own layout, which shows DHT/PeX/LSD *inside* its trackers view, not as a separate screen).
  *
  * <p>Fully self-sufficient - fetches both trackers and peers itself, each via its own
- * visibility-gated poll (pollWhileVisible() above), so any host tab only ever needs to pass
+ * visibility-gated poll (shared/poll.ts's pollWhileVisible()), so any host tab only ever needs to pass
  * `infoHash`/`visible`/`visibleChange` and gets an identical result regardless of which tab
  * opened it.
  */
@@ -80,8 +64,8 @@ export class TrackerDetailsDialog {
   readonly visible = input.required<boolean>();
   readonly visibleChange = output<boolean>();
 
-  readonly trackers = pollWhileVisible<Tracker[]>(this.visible, () => this.torrentService.trackers(this.infoHash()), []);
-  private readonly peers = pollWhileVisible<Peer[]>(this.visible, () => this.torrentService.peers(this.infoHash()), []);
+  readonly trackers = pollWhileVisible<Tracker[]>(this.visible, POLL_INTERVAL_MS, () => this.torrentService.trackers(this.infoHash()), []);
+  private readonly peers = pollWhileVisible<Peer[]>(this.visible, POLL_INTERVAL_MS, () => this.torrentService.peers(this.infoHash()), []);
 
   readonly peerSourceCounts = computed<PeerSourceCount[]>(() => {
     const peers = this.peers();

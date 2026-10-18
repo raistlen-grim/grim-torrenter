@@ -71,6 +71,7 @@ class TorrentEventListenerTest {
         // (design_docs/0057); a bare ObjectMapper() throws on that with no module for it.
         listener.objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
         listener.eventStore = eventStore;
+        listener.broadcaster = new WebSocketBroadcaster();
         return listener;
     }
 

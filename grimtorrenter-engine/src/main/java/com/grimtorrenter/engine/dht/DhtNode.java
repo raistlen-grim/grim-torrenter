@@ -1,5 +1,6 @@
 package com.grimtorrenter.engine.dht;
 
+import com.grimtorrenter.engine.Hashing;
 import com.grimtorrenter.engine.bencode.BDictionary;
 import com.grimtorrenter.engine.bencode.BList;
 import com.grimtorrenter.engine.bencode.BString;
@@ -16,8 +17,6 @@ import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketException;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
@@ -97,6 +96,12 @@ public final class DhtNode implements AutoCloseable {
     private static final Duration REPLACEMENT_PING_TIMEOUT = Duration.ofSeconds(5);
     /** Same 5s convention, for the single find_node lookup a periodic bucket refresh issues. */
     private static final Duration REFRESH_QUERY_TIMEOUT = Duration.ofSeconds(5);
+    /** Below this many known nodes, refreshRoutingTable() re-runs full bootstrap instead of
+     * a narrow single-bucket refresh - see that method's own Javadoc for why. Reuses
+     * RoutingTable.BUCKET_SIZE as a natural "at least one healthy bucket's worth" cutoff,
+     * not because it means anything more specific than "clearly still too sparse to be
+     * worth a targeted refresh." */
+    private static final int MIN_HEALTHY_NODE_COUNT = RoutingTable.BUCKET_SIZE;
 
     private final NodeId ourId;
     private final DatagramSocket socket;
@@ -184,13 +189,6 @@ public final class DhtNode implements AutoCloseable {
                 .map(node -> new InetSocketAddress(node.address(), node.port()))
                 .toList();
     }
-
-    /** Below this many known nodes, refreshRoutingTable() re-runs full bootstrap instead of
-     * a narrow single-bucket refresh - see that method's own Javadoc for why. Reuses
-     * RoutingTable.BUCKET_SIZE as a natural "at least one healthy bucket's worth" cutoff,
-     * not because it means anything more specific than "clearly still too sparse to be
-     * worth a targeted refresh." */
-    private static final int MIN_HEALTHY_NODE_COUNT = RoutingTable.BUCKET_SIZE;
 
     /** Populates our routing table from cold start (BEP 5's well-known bootstrap nodes,
      * then an iterative find_node lookup for our own id - see Bootstrap/NodeLookup). Safe
@@ -603,14 +601,7 @@ public final class DhtNode implements AutoCloseable {
      * actually answered for that same address, with no server-side per-token state to
      * store or expire. */
     private static BString computeToken(byte[] secret, InetAddress requesterAddress) {
-        try {
-            MessageDigest sha1 = MessageDigest.getInstance("SHA-1");
-            sha1.update(secret);
-            sha1.update(requesterAddress.getAddress());
-            return BString.of(sha1.digest());
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-1 not available", e);
-        }
+        return BString.of(Hashing.sha1(secret, requesterAddress.getAddress()));
     }
 
     private BValue idValue() {

@@ -53,9 +53,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * PeerWireCodec; writes are serialized under writeLock so concurrent
  * senders can't interleave bytes on the wire.
  *
- * <p>State is bidirectional from Phase 1 (design_docs/0008) even though
- * nothing yet drives am_choking to false or calls sendPiece for real -
- * that's Phase 2's choking algorithm, not this class's job.
+ * <p>Choke and interest state is tracked in both directions (design_docs/0008). Deciding
+ * whom to unchoke, and answering their requests, is TorrentSession's choking and upload
+ * logic, not this class's.
  */
 public final class PeerConnection implements AutoCloseable {
 
@@ -669,6 +669,14 @@ public final class PeerConnection implements AutoCloseable {
     public boolean peerHasPiece(int index) {
         synchronized (peerPieces) {
             return peerPieces.get(index);
+        }
+    }
+
+    /** A copy of the pieces the peer has said it has, among the first pieceCount - a bitfield's
+     * spare trailing bits, or a Have for an index we don't have, are left out. */
+    public BitSet peerPieces(int pieceCount) {
+        synchronized (peerPieces) {
+            return peerPieces.get(0, pieceCount);
         }
     }
 

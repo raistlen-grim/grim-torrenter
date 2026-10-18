@@ -112,3 +112,13 @@ which deliberately has zero Quarkus dependency per
   the self-managed `Set<WebSocketConnection>` only relies on parts of the
   API already being used elsewhere in this file (`@OnOpen`/`@OnClose`
   parameter injection), reducing the surface that could be wrong.
+
+## 2026-10-18 addendum: broadcaster bean and one mapper class
+
+Two parts of this decision are superseded by [[0100-app-shared-beans-and-rest-contract]]:
+- **The connection registry** is no longer a static field on `TorrentWebSocket`. It lives in an
+  `@ApplicationScoped` `WebSocketBroadcaster`, which the push sources inject. That gives the same
+  "one registry, whatever the endpoint's instancing" guarantee without the static.
+- **The per-type `ExceptionMapper` classes** are now one `EngineExceptionMappers` class, with one
+  `@ServerExceptionMapper` method per exact type. They are still matched per type, so the
+  `RuntimeException` pitfall above can't come back.

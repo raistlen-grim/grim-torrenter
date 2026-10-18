@@ -199,6 +199,16 @@ immutable state record.
 
 ## C. Code smells, duplication and bad practices
 
+**Status (2026-10-18): C2, C4, C5 and C6 fixed. See design_docs/0099.**
+- **C1 and C3 stay in TECH_DEBT:** the overloads and the two god classes each touch most of the
+  test suite.
+- **C4:** the listed drift is fixed. The full comment-hygiene pass is in TECH_DEBT.
+- **C5:** done, except moving `Settings`' app-only fields, which is in TECH_DEBT.
+  - `pauseTorrent`/`resumeTorrent` now write the marker first.
+  - A torrent whose trackers are all unsupported now falls back to DHT; a private one is still
+    rejected.
+- **C2:** the DHT backstop's duplicate branches had already gone with 0092.
+
 ### C1. Telescoping overloads everywhere
 - `TorrentEngine`: 13 constructors, from 3 to 13 parameters. The longest takes
   `boolean, boolean, …, boolean` positionally.

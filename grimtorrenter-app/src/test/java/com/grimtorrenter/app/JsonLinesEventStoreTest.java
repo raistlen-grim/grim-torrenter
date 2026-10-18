@@ -29,7 +29,8 @@ class JsonLinesEventStoreTest {
 
     private static JsonLinesEventStore createStore(Path configDirectory, int retentionDays) {
         JsonLinesEventStore store = new JsonLinesEventStore();
-        store.configDirectory = configDirectory.toString();
+        store.directories = AppDirectories.of(configDirectory.resolve("downloads"), configDirectory, configDirectory.resolve("watch"));
+        store.broadcaster = new WebSocketBroadcaster();
         store.objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
         store.settingsStore = new InMemorySettingsStore(settingsWithRetention(retentionDays));
         store.init();

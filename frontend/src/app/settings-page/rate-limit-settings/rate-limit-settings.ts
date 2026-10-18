@@ -56,7 +56,7 @@ export type RateLimitSettingsForm = FormGroup<{
  * same fact, just easier to act on as a toggle than as a magic number. `true` means "the cap is
  * active," matching Seeding's own ratioLimitEnabled/timeLimitEnabled naming exactly - renamed
  * from the previous uploadUnlimited/downloadUnlimited (inverted sense) as part of the settings
- * redesign unifying every "number + enable-toggle" row onto one shape/semantic (SETTINGS_PAGE.md,
+ * redesign unifying every "number + enable-toggle" row onto one shape/semantic (the settings guide (design_docs/0045),
  * design_docs/0045's addendum): the design's toggle is "on = capped" everywhere on the page, so
  * this group's own fields needed to match rather than being the one place "on" meant the
  * opposite. The schedule window's start/end are plain "HH:mm" strings straight from Settings - a

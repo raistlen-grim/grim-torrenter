@@ -1,7 +1,10 @@
 package com.grimtorrenter.app;
 
+import com.grimtorrenter.engine.bencode.BencodeException;
 import com.grimtorrenter.engine.engine.TorrentEngineException;
 import com.grimtorrenter.engine.engine.TorrentEngineIoException;
+import com.grimtorrenter.engine.magnet.MagnetLinkException;
+import com.grimtorrenter.engine.metainfo.MetainfoException;
 import io.quarkus.test.common.QuarkusTestResource;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.ws.rs.core.Response;
@@ -18,13 +21,20 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 @QuarkusTest
 @QuarkusTestResource(CleanDownloadsResource.class)
 @QuarkusTestResource(TestSettingsResource.class)
-class TorrentEngineExceptionMapperTest {
+class EngineExceptionMappersTest {
 
-    private final TorrentEngineExceptionMapper mapper = new TorrentEngineExceptionMapper();
+    private final EngineExceptionMappers mappers = new EngineExceptionMappers();
+
+    @Test
+    void malformedUploadsAndMagnetsAreA400() {
+        assertEquals(400, mappers.bencode(new BencodeException("bad")).getStatus());
+        assertEquals(400, mappers.metainfo(new MetainfoException("bad")).getStatus());
+        assertEquals(Map.of("error", "bad"), mappers.magnetLink(new MagnetLinkException("bad")).getEntity());
+    }
 
     @Test
     void badInputIsA400() {
-        Response response = mapper.toResponse(new TorrentEngineException("No usable tracker"));
+        Response response = mappers.torrentEngine(new TorrentEngineException("No usable tracker"));
 
         assertEquals(400, response.getStatus());
         assertEquals(Map.of("error", "No usable tracker"), response.getEntity());
@@ -32,7 +42,7 @@ class TorrentEngineExceptionMapperTest {
 
     @Test
     void anEngineIoFailureIsA500() {
-        Response response = mapper.toResponse(
+        Response response = mappers.torrentEngine(
                 new TorrentEngineIoException("Could not delete x: busy", new IOException("busy")));
 
         assertEquals(500, response.getStatus());

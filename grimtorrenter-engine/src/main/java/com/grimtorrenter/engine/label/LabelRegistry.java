@@ -1,10 +1,11 @@
 package com.grimtorrenter.engine.label;
 
+import com.grimtorrenter.engine.AtomicFiles;
+
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.NoSuchElementException;
@@ -145,15 +146,7 @@ public final class LabelRegistry {
             content.append(label.id()).append('=').append(label.name()).append('\n');
         }
         try {
-            Path directory = file.getParent();
-            Files.createDirectories(directory);
-            Path temp = Files.createTempFile(directory, FILENAME, ".tmp");
-            try {
-                Files.writeString(temp, content.toString());
-                Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-            } finally {
-                Files.deleteIfExists(temp);
-            }
+            AtomicFiles.write(file, content.toString());
         } catch (IOException e) {
             throw new UncheckedIOException("Could not persist labels to " + file + ": " + e.getMessage(), e);
         }

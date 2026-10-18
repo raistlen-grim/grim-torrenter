@@ -17,6 +17,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 
@@ -120,7 +121,7 @@ public final class UdpTrackerClient implements TrackerClient {
                     socket.setSoTimeout(timeoutMs);
                     DatagramPacket in = new DatagramPacket(buffer, buffer.length);
                     socket.receive(in);
-                    return java.util.Arrays.copyOf(in.getData(), in.getLength());
+                    return Arrays.copyOf(in.getData(), in.getLength());
                 }
             };
             long connectionId = connect(datagrams);

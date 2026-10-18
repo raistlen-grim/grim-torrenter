@@ -3,7 +3,7 @@ import Aura from '@primeuix/themes/aura';
 
 /**
  * Extends PrimeNG's Aura preset with the GrimTorrenter style guide's tokens
- * (style/torrent_list's STYLE_GUIDE_NOTES.md/README.md - colors, border radius, and, as of
+ * (the style guide, design_docs/0032 - colors, border radius, and, as of
  * task 8, the guide's explicit focus/hover/disabled interaction-state values. Component
  * structure and spacing stay exactly what Aura already ships, per the agreed rule: the style
  * guide is a starting point, but PrimeNG's own vanilla component behavior takes precedence
@@ -45,7 +45,7 @@ export const GrimTorrenterPreset = definePreset(Aura, {
     borderRadius: { none: '0px', xs: '0px', sm: '0px', md: '0px', lg: '0px', xl: '0px' },
   },
   semantic: {
-    /** design_docs/0032 task 8, README.md "Interaction states": `outline: 2px solid
+    /** design_docs/0032 task 8, the style guide's "Interaction states": `outline: 2px solid
      * var(--color-accent); outline-offset: 2px` on every `:focus-visible`, "never the browser
      * default." Aura's own default focusRing is `{width:"1px", style:"solid",
      * color:"{primary.color}", offset:"2px", shadow:"none"}` - style/color/offset already
@@ -56,7 +56,7 @@ export const GrimTorrenterPreset = definePreset(Aura, {
      * see styles.scss's own `:focus-visible` rule for the hand-rolled elements this doesn't
      * reach. */
     focusRing: { width: '2px' },
-    /** README.md "Interaction states": "Disabled: 45% opacity" - Aura's own default is 60%
+    /** The style guide's "Interaction states": "Disabled: 45% opacity" - Aura's own default is 60%
      * (`disabledOpacity: "0.6"`, read from @primeuix/themes/dist/aura/base). One token,
      * applies to every disabled PrimeNG control app-wide. */
     disabledOpacity: '0.45',
@@ -121,7 +121,7 @@ export const GrimTorrenterPreset = definePreset(Aura, {
       },
     },
   },
-  /** design_docs/0032 task 8, README.md "Interaction states": "Hover: ... 12% accent on ghost
+  /** design_docs/0032 task 8, the style guide's "Interaction states": "Hover: ... 12% accent on ghost
    * controls." "Ghost controls" = PrimeNG's `text` button severity (every icon-only row
    * action, pause/resume-all, the panel's footer-menu button) - Aura's own default text-button
    * hover/active backgrounds are much fainter (`{primary.50}`/`{primary.100}` in light,
@@ -143,7 +143,7 @@ export const GrimTorrenterPreset = definePreset(Aura, {
    * (row hover, row selection, this same ghost hover) being a translucent wash rather than a
    * solid fill. */
   components: {
-    /** Settings-page redesign (SETTINGS_PAGE.md, design_docs/0045's addendum): the guide's
+    /** Settings-page redesign (the settings guide (design_docs/0045), design_docs/0045's addendum): the guide's
      * toggle is 34x20px, square-cornered, hairline-bordered - Aura's own default ships a
      * hardcoded 30px `borderRadius` on this one component (independent of the app-wide
      * `primitive.borderRadius: 0` override above, which only reaches `sm/md/lg/xl`-referenced

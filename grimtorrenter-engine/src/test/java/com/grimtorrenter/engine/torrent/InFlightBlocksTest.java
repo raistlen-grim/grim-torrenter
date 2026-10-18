@@ -10,7 +10,7 @@ import org.junit.jupiter.api.Test;
 class InFlightBlocksTest {
 
     private static final long TIMEOUT = 1_000;
-    private final InFlightBlocks blocks = new InFlightBlocks(TIMEOUT);
+    private final InFlightBlocks<Object> blocks = new InFlightBlocks<>(TIMEOUT);
     private final Object peerA = new Object();
     private final Object peerB = new Object();
     private final Object peerC = new Object();

@@ -152,4 +152,34 @@ class PieceManagerFilePrioritiesTest {
 
         assertEquals(FilePriority.MEDIUM.tier(), manager.priorityTier(0));
     }
+
+    /** design_docs/0099: the byte and piece totals are running counters now - they must follow
+     * verification, a priority change, a repeated verify and a reset exactly as a full count
+     * would. */
+    @Test
+    void runningTotalsFollowVerifyPriorityChangesAndReset() {
+        PieceManager manager = new PieceManager(metadata(),
+                priorities(FilePriority.MEDIUM, FilePriority.SKIP, FilePriority.SKIP));
+        // A wants pieces 0 and 1; piece 2 belongs only to the skipped B and C.
+        assertEquals(20, manager.wantedBytes());
+        assertEquals(0, manager.wantedBytesCompleted());
+
+        assertTrue(manager.verify(0, pieceBytes(0)));
+        assertTrue(manager.verify(2, pieceBytes(2)));
+        assertTrue(manager.verify(0, pieceBytes(0)));
+        assertEquals(20, manager.completedBytes());
+        assertEquals(10, manager.wantedBytesCompleted());
+        assertFalse(manager.isWantedComplete());
+        assertEquals(1, manager.stillNeededPieces().cardinality());
+
+        manager.setFilePriorities(priorities(FilePriority.SKIP, FilePriority.SKIP, FilePriority.HIGH));
+        assertEquals(10, manager.wantedBytes());
+        assertEquals(10, manager.wantedBytesCompleted());
+        assertTrue(manager.isWantedComplete());
+
+        manager.resetCompletion();
+        assertEquals(0, manager.completedBytes());
+        assertEquals(0, manager.wantedBytesCompleted());
+        assertFalse(manager.isWantedComplete());
+    }
 }

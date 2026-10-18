@@ -151,7 +151,7 @@ public final class KrpcCodec {
         try {
             return NodeId.of(requireString(dict, key).bytes());
         } catch (IllegalArgumentException e) {
-            throw new KrpcException("Malformed '" + key + "' field: " + e.getMessage());
+            throw new KrpcException("Malformed '" + key + "' field: " + e.getMessage(), e);
         }
     }
 
@@ -159,7 +159,7 @@ public final class KrpcCodec {
         try {
             return InfoHash.of(requireString(dict, key).bytes());
         } catch (IllegalArgumentException e) {
-            throw new KrpcException("Malformed '" + key + "' field: " + e.getMessage());
+            throw new KrpcException("Malformed '" + key + "' field: " + e.getMessage(), e);
         }
     }
 

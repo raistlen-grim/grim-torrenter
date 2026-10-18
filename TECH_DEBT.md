@@ -34,15 +34,18 @@ came from so the context can be found again.
   the engine record. Replace nullable `Boolean`/`Integer` "absent in old JSON" components with
   defaults applied at deserialisation in the app.
 - **Unify per-torrent persistence.** Use one tolerant, atomically written file per torrent
-  (or a shared `KeyValueFile` helper) instead of ~10 bespoke markers with inconsistent
-  throw/log behaviour. Share one `AtomicFiles.write(path, content)` helper across the five
-  current copies.
+  instead of ~10 markers. *Partly done in engine C (design_docs/0099):* `AtomicFiles` replaces
+  the five copies, and `KeyValueFile` plus `readMarker`/`writeMarker` give the markers one
+  format and one tolerance. The single file per torrent (a layout change, with a migration) is
+  still open.
 - **Unify HTTP fetching.** HttpTrackerClient (two paths), Blocklist (two paths) and MiniHttp
   each implement their own size and deadline limits. One `HttpFetcher` that handles both
   proxied and direct requests, with a mandatory size cap.
-- **Generic Kademlia iterative lookup** shared by `NodeLookup` and `PeerLookup`.
-- **Shared `Hashing.sha1()`** instead of the five copies.
-- **Typed `InFlightBlocks`** (`PeerConnection` or generic) instead of `Object` plus casts.
+- ~~**Generic Kademlia iterative lookup** shared by `NodeLookup` and `PeerLookup`.~~ Done in
+  engine C (`IterativeLookup`, design_docs/0099).
+- ~~**Shared `Hashing.sha1()`** instead of the five copies.~~ Done in engine C.
+- ~~**Typed `InFlightBlocks`** (`PeerConnection` or generic) instead of `Object` plus casts.~~
+  Done in engine C (`InFlightBlocks<O>`).
 - **Test hooks.** Many package-private "for tests" methods and setters
   (`checkSeedingLimits`, `scanWatchFolder`, `setStartRetryInitialMillisForTesting`, …).
   Injecting a `Clock` and a scheduler would let tests drive time without widening visibility.
@@ -66,16 +69,18 @@ came from so the context can be found again.
   chose simplicity deliberately; revisit once there's real-world data).
 - **Tracker tiers:** BEP 12 tier order isn't honoured (every tracker is announced to at
   once). Fine by design today, but worth noting.
-- **`selectTrackerTiers`:** a torrent whose trackers are all unsupported (e.g. `wss://`)
-  should fall back to DHT instead of being rejected.
+- ~~**`selectTrackerTiers`:** a torrent whose trackers are all unsupported (e.g. `wss://`)
+  should fall back to DHT instead of being rejected.~~ Done in engine C (design_docs/0099);
+  a private torrent is still rejected, since it can't use DHT.
 
 ### Performance
-- Running counters for `bytesDownloaded`, `wantedBytes` and `wantedBytesCompleted` instead of
-  O(pieces) scans on every call.
-- `TorrentSession.files()`: walk pieces once and attribute each to its files, instead of
-  O(files × pieces).
-- `peers()` snapshot: O(peers × pieces) per call. Cache availability per connection, updated
-  on Have/Bitfield.
+- ~~Running counters for `bytesDownloaded`, `wantedBytes` and `wantedBytesCompleted` instead of
+  O(pieces) scans on every call.~~ Done in engine C (design_docs/0099).
+- ~~`TorrentSession.files()`: walk pieces once and attribute each to its files, instead of
+  O(files × pieces).~~ Done in engine C.
+- `peers()` snapshot: now BitSet arithmetic with one lock per call (engine C), but still
+  O(peers × pieces / 64). Per-connection availability counts updated on Have/Bitfield would
+  make it O(peers); worth it with rarest-first, which needs the same counts.
 - `InfoHash` stores hex and re-parses it on every `bytes()` call. Store the bytes and render
   hex lazily.
 - `FileHandlePool.acquire` opens files while holding the pool-wide lock.
@@ -99,19 +104,18 @@ came from so the context can be found again.
 ## App (from code_review/02-app.md)
 
 ### Structure
-- **One `@ConfigMapping`** for `grimtorrenter.*` deploy-time properties, instead of
-  `@ConfigProperty` with repeated default strings in six classes.
-- **`WebSocketBroadcaster` bean** in place of `TorrentWebSocket`'s static `CONNECTIONS` set
-  and static `broadcast()`.
-- **`JsonFileStore<T>`**: shared read-or-seed / atomic write-then-swap code for
-  `JsonSettingsStore` and `JsonAuthStore`.
+- ~~**One `@ConfigMapping`**~~ Done for what was actually duplicated: the three directory
+  properties live in `AppDirectories` (design_docs/0100). The other `grimtorrenter.*`
+  properties are each read in one place.
+- ~~**`WebSocketBroadcaster` bean**~~ Done (design_docs/0100).
+- ~~**`JsonFileStore<T>`**~~ Done as `AtomicJsonFile.readOrSeed()` plus the atomic `write()`
+  (design_docs/0100).
 - ~~**Split `SessionTokenStore`** into a token store and a login throttle.~~ Done in app B2
   (`LoginThrottle`, design_docs/0094).
-- **Collapse the four identical exception mappers** into one. (B6's unified `{"error": ...}`
-  body is done: `WebApplicationExceptionMapper`, design_docs/0094.)
-- **Decide the DTO policy explicitly.** Either always wrap engine types in app-side views, or
-  document which engine records are public API. Today it's case by case
-  (design_docs/0045), so the REST contract has no single place to read.
+- ~~**Collapse the four identical exception mappers**~~ Done: `EngineExceptionMappers`
+  (design_docs/0100).
+- ~~**Decide the DTO policy explicitly.**~~ Decided in design_docs/0100 section 6: the engine
+  records on the wire are listed there as public API, and new endpoints default to a view.
 - ~~**Error typing in the engine**~~ Done in app B5 (`TorrentEngineIoException`,
   design_docs/0094).
 
@@ -132,23 +136,27 @@ came from so the context can be found again.
   on when snapshots happen to arrive. Expose `downloadRateBytesPerSec`/`uploadRateBytesPerSec`
   (and ETA) on `TorrentView` from the engine's own counters; the client keeps only the
   sparkline history.
-- **Copy magnet link** is assembled client-side in two places. A `magnetUri` field on
-  `TorrentView` would be one line server-side.
+- **Copy magnet link** is assembled client-side (now in one place, `magnetLinkFor()`,
+  design_docs/0101). A `magnetUri` field on `TorrentView` would be one line server-side.
 
 ### Structure
-- **Split `torrent-list.ts`** (~1100 lines): the magnet parsing has moved out
-  (`shared/magnet.ts`, `add-state.ts`, design_docs/0096); the add control as its own component
-  and a keyboard-shortcut directive remain.
+- **Split `torrent-list.ts`**: mostly done. The magnet parsing moved out in design_docs/0096,
+  and the add control's logic is `AddTorrentController` (design_docs/0101), leaving ~740 lines.
+  What remains:
+  - Moving the add control's markup into a component of its own. It needs browser
+    verification, because its pieces sit in three places in the list's layout.
+  - The keyboard shortcuts. They read most of the list's state, so a directive was judged not
+    worth it (0101).
 - **Component tests.** The pure logic has unit tests (design_docs/0096); no component has a
   TestBed test yet. Start with `TorrentList`'s selection and keyboard handling, and
   `TorrentEventsService`'s message handling and reconnect rules.
-- **One torrent action menu** shared by `TorrentRow` and `TorrentDetail`, plus confirm/copy
-  helpers in `TorrentActionsService`.
+- ~~**One torrent action menu** shared by `TorrentRow` and `TorrentDetail`~~ Done:
+  `TorrentCommands` (design_docs/0101).
 - **Generated API types.** `models/*.ts` are hand-written copies of the backend DTOs, with no
   check that they match. An OpenAPI document from Quarkus (`quarkus-smallrye-openapi`) plus a
   generator, or at least a contract test, would catch drift.
-- **Commit the style guide** referenced from comments (`ADD_CONTROL.md`, `STYLE_GUIDE_NOTES.md`,
-  `SETTINGS_PAGE.md`), or replace those citations with design_docs.
+- **Commit the style guide.** Comments no longer cite its missing files by name; they point at
+  design_docs/0032 and 0045 (design_docs/0101). Committing the guide itself is still open.
 
 ### Features and hardening (post-release)
 - **Events page renders the whole retention window** in one list. Pair with the app's events
@@ -161,7 +169,6 @@ came from so the context can be found again.
 - **Accessibility isn't checked automatically**, though `frontend/.claude/CLAUDE.md` requires
   AXE and WCAG AA. Add an axe check to the component tests, or a Lighthouse pass to the
   regression checklist.
-- **Validate WebSocket messages** before use (a type guard per message type), so one bad frame
-  can't throw out of `onmessage`.
+- ~~**Validate WebSocket messages**~~ Done: `parseEventMessage()` (design_docs/0101).
 - Comment hygiene pass for the frontend (same as the engine and app items).
 

@@ -1149,3 +1149,12 @@ loop; the removal-mid-fetch check still runs every iteration.
   `TorrentMetadata`) can even be constructed. Deferred to the same
   add-to-visible latency gap already accepted for regular uploads.
   Revisit if a magnet add's silence proves confusing in practice.
+
+## Addendum (2026-10-18): shared lookup and fetch loop
+
+Two calls in this doc were revisited in [[0099-engine-shared-helpers-and-hot-path-counters]]:
+- **`NodeLookup` and `PeerLookup` now share `IterativeLookup<R>`**, reversing "kept as its own
+  class rather than sharing a base". The shared part was everything but the query and the
+  per-answer handling, and the copies had started to drift.
+- **The tracker and DHT magnet fetch loops are one loop**, `fetchMagnetMetadataThenAdd()`, fed
+  by a per-path candidate source. The behaviour described above is unchanged.

@@ -1,5 +1,6 @@
 package com.grimtorrenter.engine.proxy;
 
+import com.grimtorrenter.engine.AtomicFiles;
 import com.grimtorrenter.engine.settings.Settings;
 import com.grimtorrenter.engine.settings.SettingsStore;
 
@@ -8,7 +9,6 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.PosixFilePermission;
 import java.util.Optional;
 import java.util.Set;
@@ -76,16 +76,11 @@ public final class ProxyConfig implements ProxyProvider {
             return;
         }
         try {
-            Path directory = passwordFile.getParent();
-            Files.createDirectories(directory);
-            Path temp = Files.createTempFile(directory, PASSWORD_FILENAME, ".tmp");
-            try {
+            AtomicFiles.write(passwordFile, temp -> {
+                // Owner-only before the password is in it.
                 restrictToOwner(temp);
                 Files.writeString(temp, newPassword, StandardCharsets.UTF_8);
-                Files.move(temp, passwordFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-            } finally {
-                Files.deleteIfExists(temp);
-            }
+            });
         } catch (IOException e) {
             throw new UncheckedIOException("Could not save the proxy password: " + e.getMessage(), e);
         }

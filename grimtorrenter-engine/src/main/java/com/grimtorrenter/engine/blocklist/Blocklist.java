@@ -1,5 +1,6 @@
 package com.grimtorrenter.engine.blocklist;
 
+import com.grimtorrenter.engine.AtomicFiles;
 import com.grimtorrenter.engine.ClientIdentity;
 import com.grimtorrenter.engine.events.EventStore;
 import com.grimtorrenter.engine.events.EventType;
@@ -20,15 +21,16 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * The engine-wide IP blocklist (design_docs/0078): loads a list from a local file or an
@@ -223,20 +225,22 @@ public final class Blocklist implements IpFilter {
         if (!stale) {
             return;
         }
-        Files.createDirectories(configDirectory);
-        Path temp = Files.createTempFile(configDirectory, CACHE_FILENAME, ".tmp");
-        try {
-            download(source, temp);
-            BlocklistParser.Result result;
-            try (InputStream in = Files.newInputStream(temp)) {
-                result = BlocklistParser.parse(in);
+        // Downloaded and parsed in the temp file; it replaces the cache only if both succeed.
+        AtomicReference<BlocklistParser.Result> parsed = new AtomicReference<>();
+        AtomicFiles.write(cache, temp -> {
+            try {
+                download(source, temp);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Interrupted while downloading the blocklist", e);
             }
-            Files.move(temp, cache, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-            Files.writeString(configDirectory.resolve(CACHE_META_FILENAME), "source=" + source + "\n");
-            publish(result.ranges(), source, System.currentTimeMillis(), true, result);
-        } finally {
-            Files.deleteIfExists(temp);
-        }
+            try (InputStream in = Files.newInputStream(temp)) {
+                parsed.set(BlocklistParser.parse(in));
+            }
+        });
+        AtomicFiles.write(configDirectory.resolve(CACHE_META_FILENAME), "source=" + source + "\n");
+        BlocklistParser.Result result = parsed.get();
+        publish(result.ranges(), source, System.currentTimeMillis(), true, result);
     }
 
     private void download(String url, Path target) throws IOException, InterruptedException {
@@ -360,7 +364,7 @@ public final class Blocklist implements IpFilter {
     }
 
     private static boolean isUrl(String source) {
-        String lower = source.toLowerCase();
+        String lower = source.toLowerCase(Locale.ROOT);
         return lower.startsWith("http://") || lower.startsWith("https://");
     }
 

@@ -163,6 +163,11 @@ connections.
 
 ## C. Code smells and duplication
 
+**Status (2026-10-18): all fixed. See design_docs/0100.** The directories went into an
+`AppDirectories` bean instead of a whole-prefix `@ConfigMapping` (only they were duplicated). The
+DTO policy is decided and listed there, not rewrapped. The module-wide comment pass stays in
+TECH_DEBT.
+
 - **Config properties are duplicated.** `grimtorrenter.config-directory`,
   `download-directory` and `watch-directory` are declared with their default strings
   separately in `TorrentEngineProducer`, `SystemResource`, `HealthService`,

@@ -21,14 +21,16 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>Lock-free (ConcurrentHashMap only, holder lists are immutable and swapped atomically via
  * compute), per design_docs/0007. Bounded by the torrent's block count times the duplicate cap;
  * entries are removed when the block arrives, the holder chokes us, or the holder disconnects.
+ *
+ * @param <O> who holds a claim - a PeerConnection in TorrentSession; compared by identity
  */
-final class InFlightBlocks {
+final class InFlightBlocks<O> {
 
     private record Key(int index, int begin) {}
 
-    private record Claim(Object owner, long claimedAtMillis) {}
+    private record Claim<O>(O owner, long claimedAtMillis) {}
 
-    private final ConcurrentHashMap<Key, List<Claim>> claims = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Key, List<Claim<O>>> claims = new ConcurrentHashMap<>();
     private final long timeoutMillis;
 
     InFlightBlocks(long timeoutMillis) {
@@ -42,18 +44,18 @@ final class InFlightBlocks {
     /** Read-only check, for choosing which piece to work on - tryClaim() is what actually
      * reserves a block. Free means: nobody holds it, or every holder has sat on it past the
      * timeout and none of them is owner. */
-    boolean isFreeFor(int index, int begin, Object owner, long nowMillis) {
+    boolean isFreeFor(int index, int begin, O owner, long nowMillis) {
         return takeable(claims.get(new Key(index, begin)), owner, nowMillis);
     }
 
     /** Atomically reserves the block exclusively for owner (replacing any expired holders).
      * False if someone else holds a live claim, or owner itself already holds it. */
-    boolean tryClaim(int index, int begin, Object owner, long nowMillis) {
+    boolean tryClaim(int index, int begin, O owner, long nowMillis) {
         boolean[] won = new boolean[1];
         claims.compute(new Key(index, begin), (key, holders) -> {
             if (takeable(holders, owner, nowMillis)) {
                 won[0] = true;
-                return List.of(new Claim(owner, nowMillis));
+                return List.of(new Claim<>(owner, nowMillis));
             }
             return holders;
         });
@@ -62,18 +64,18 @@ final class InFlightBlocks {
 
     /** Endgame: whether owner could be added as an extra holder - not already one, and the
      * block has fewer than maxHolders. */
-    boolean canDuplicate(int index, int begin, Object owner, int maxHolders) {
-        List<Claim> holders = claims.get(new Key(index, begin));
+    boolean canDuplicate(int index, int begin, O owner, int maxHolders) {
+        List<Claim<O>> holders = claims.get(new Key(index, begin));
         return holders != null && holders.size() < maxHolders && holders.stream().noneMatch(c -> c.owner() == owner);
     }
 
     /** Endgame: adds owner as an additional holder of an already-in-flight block. */
-    boolean tryClaimDuplicate(int index, int begin, Object owner, long nowMillis, int maxHolders) {
+    boolean tryClaimDuplicate(int index, int begin, O owner, long nowMillis, int maxHolders) {
         boolean[] won = new boolean[1];
         claims.computeIfPresent(new Key(index, begin), (key, holders) -> {
             if (holders.size() < maxHolders && holders.stream().noneMatch(c -> c.owner() == owner)) {
-                List<Claim> extended = new ArrayList<>(holders);
-                extended.add(new Claim(owner, nowMillis));
+                List<Claim<O>> extended = new ArrayList<>(holders);
+                extended.add(new Claim<>(owner, nowMillis));
                 won[0] = true;
                 return List.copyOf(extended);
             }
@@ -84,28 +86,28 @@ final class InFlightBlocks {
 
     /** Whether owner currently holds a claim on the block - i.e. we asked owner for it and
      * haven't since released or handed the claim to someone else. */
-    boolean isHeldBy(int index, int begin, Object owner) {
-        List<Claim> holders = claims.get(new Key(index, begin));
+    boolean isHeldBy(int index, int begin, O owner) {
+        List<Claim<O>> holders = claims.get(new Key(index, begin));
         return holders != null && holders.stream().anyMatch(c -> c.owner() == owner);
     }
 
     /** Drops the block's claims (it arrived) and returns everyone who held one, so the caller
      * can cancel the now-redundant requests still outstanding on the others. */
-    List<Object> release(int index, int begin) {
-        List<Claim> removed = claims.remove(new Key(index, begin));
+    List<O> release(int index, int begin) {
+        List<Claim<O>> removed = claims.remove(new Key(index, begin));
         return removed == null ? List.of() : removed.stream().map(Claim::owner).toList();
     }
 
-    void releaseAll(Object owner) {
+    void releaseAll(O owner) {
         for (Key key : claims.keySet()) {
             claims.computeIfPresent(key, (k, holders) -> {
-                List<Claim> remaining = holders.stream().filter(c -> c.owner() != owner).toList();
+                List<Claim<O>> remaining = holders.stream().filter(c -> c.owner() != owner).toList();
                 return remaining.isEmpty() ? null : remaining;
             });
         }
     }
 
-    private boolean takeable(List<Claim> holders, Object owner, long nowMillis) {
+    private boolean takeable(List<Claim<O>> holders, O owner, long nowMillis) {
         if (holders == null) {
             return true;
         }

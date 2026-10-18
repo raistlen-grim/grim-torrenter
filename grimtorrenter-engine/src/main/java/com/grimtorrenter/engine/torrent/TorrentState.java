@@ -10,5 +10,11 @@ package com.grimtorrenter.engine.torrent;
  * retryable ERROR state stays in ERROR while it runs. See design_docs/0098.
  */
 public enum TorrentState {
-    DOWNLOADING, VERIFYING, SEEDING, STOPPED, ERROR, STARTING
+    DOWNLOADING, VERIFYING, SEEDING, STOPPED, ERROR, STARTING;
+
+    /** DOWNLOADING or SEEDING: announced, with peer connections, choking and PEX running. Every
+     * other state has no peers. */
+    public boolean isRunning() {
+        return this == DOWNLOADING || this == SEEDING;
+    }
 }

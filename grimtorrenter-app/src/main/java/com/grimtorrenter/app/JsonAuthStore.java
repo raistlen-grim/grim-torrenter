@@ -6,14 +6,11 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Optional;
 
 /**
- * File-backed AuthStore - auth.json, in the same grimtorrenter.config-directory as
+ * File-backed AuthStore - auth.json, in the same config directory as
  * settings.json but deliberately a separate file, so a password hash can never end up
  * reachable through GET /api/settings (which echoes that whole record back verbatim). Same
  * "write-then-swap on update, read-or-create-default on init" shape as JsonSettingsStore. See
@@ -32,8 +29,8 @@ public class JsonAuthStore implements AuthStore {
 
     private static final String AUTH_FILENAME = "auth.json";
 
-    @ConfigProperty(name = "grimtorrenter.config-directory", defaultValue = "config")
-    String configDirectory;
+    @Inject
+    AppDirectories directories;
 
     /** Optional&lt;String&gt;, not a plain String with defaultValue = "" - Quarkus/SmallRye's
      * build-time config validation treats an empty-string defaultValue on a String-typed
@@ -50,18 +47,12 @@ public class JsonAuthStore implements AuthStore {
     private volatile StoredAuth current;
 
     /** Package-private (not private), same reason as JsonSettingsStore's own init() - a test
-     * can call it directly after setting configDirectory/bootstrapPassword/objectMapper
+     * can call it directly after setting directories/bootstrapPassword/objectMapper
      * itself, without going through CDI. */
     @PostConstruct
     void init() {
-        Path directory = Path.of(configDirectory);
-        try {
-            Files.createDirectories(directory);
-        } catch (IOException e) {
-            throw new UncheckedIOException("Could not create config directory " + directory, e);
-        }
-        authFile = directory.resolve(AUTH_FILENAME);
-        current = readOrSeed();
+        authFile = directories.config().resolve(AUTH_FILENAME);
+        current = AtomicJsonFile.readOrSeed(objectMapper, authFile, StoredAuth.class, this::seed, true);
         AtomicJsonFile.restrictToOwner(authFile);
     }
 
@@ -87,19 +78,11 @@ public class JsonAuthStore implements AuthStore {
         current = updated;
     }
 
-    private StoredAuth readOrSeed() {
-        if (Files.exists(authFile)) {
-            try {
-                return objectMapper.readValue(authFile.toFile(), StoredAuth.class);
-            } catch (IOException e) {
-                throw new UncheckedIOException("Could not read " + authFile, e);
-            }
-        }
-        StoredAuth seeded = bootstrapPassword.filter(password -> !password.isBlank())
+    /** The first auth.json: the bootstrap password if one was given, otherwise none. */
+    private StoredAuth seed() {
+        return bootstrapPassword.filter(password -> !password.isBlank())
                 .map(password -> new StoredAuth(PasswordHasher.hash(password)))
                 .orElseGet(() -> new StoredAuth(null));
-        writeToDisk(seeded);
-        return seeded;
     }
 
     /** Atomic, and owner-only like the proxy password file. See design_docs/0093. */

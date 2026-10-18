@@ -1,5 +1,6 @@
 package com.grimtorrenter.engine.mse;
 
+import com.grimtorrenter.engine.Hashing;
 import com.grimtorrenter.engine.metainfo.InfoHash;
 
 import java.io.ByteArrayInputStream;
@@ -11,8 +12,6 @@ import java.io.SequenceInputStream;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.util.Arrays;
 import java.util.Collection;
@@ -55,14 +54,14 @@ public final class MseHandshake {
         byte[] sBytes = dh.sharedSecretBytes(peerPublicKey);
         byte[] infoHashBytes = infoHash.bytes();
 
-        byte[] keyA = sha1(bytes("keyA"), sBytes, infoHashBytes);
-        byte[] keyB = sha1(bytes("keyB"), sBytes, infoHashBytes);
+        byte[] keyA = Hashing.sha1(bytes("keyA"), sBytes, infoHashBytes);
+        byte[] keyB = Hashing.sha1(bytes("keyB"), sBytes, infoHashBytes);
 
         Rc4Cipher outgoingCipher = new Rc4Cipher(keyA);
         outgoingCipher.discard(Rc4Cipher.DISCARD_BYTES);
 
-        byte[] req1 = sha1(bytes("req1"), sBytes);
-        byte[] req2Xor3 = xor(sha1(bytes("req2"), infoHashBytes), sha1(bytes("req3"), sBytes));
+        byte[] req1 = Hashing.sha1(bytes("req1"), sBytes);
+        byte[] req2Xor3 = xor(Hashing.sha1(bytes("req2"), infoHashBytes), Hashing.sha1(bytes("req3"), sBytes));
 
         int cryptoProvide = requireEncryption ? RC4_BIT : (PLAINTEXT_BIT | RC4_BIT);
         byte[] padC = randomPad(random);
@@ -105,16 +104,16 @@ public final class MseHandshake {
         out.write(randomPad(random));
         out.flush();
 
-        byte[] req1 = sha1(bytes("req1"), sBytes);
+        byte[] req1 = Hashing.sha1(bytes("req1"), sBytes);
         findLiteralMarker(in, req1);
 
         byte[] receivedReq2Xor3 = readExactly(in, 20);
-        byte[] req3 = sha1(bytes("req3"), sBytes);
+        byte[] req3 = Hashing.sha1(bytes("req3"), sBytes);
         InfoHash matched = matchInfoHash(candidateInfoHashes, receivedReq2Xor3, req3);
         byte[] infoHashBytes = matched.bytes();
 
-        byte[] keyA = sha1(bytes("keyA"), sBytes, infoHashBytes);
-        byte[] keyB = sha1(bytes("keyB"), sBytes, infoHashBytes);
+        byte[] keyA = Hashing.sha1(bytes("keyA"), sBytes, infoHashBytes);
+        byte[] keyB = Hashing.sha1(bytes("keyB"), sBytes, infoHashBytes);
 
         Rc4Cipher incomingCipher = new Rc4Cipher(keyA);
         incomingCipher.discard(Rc4Cipher.DISCARD_BYTES);
@@ -181,7 +180,7 @@ public final class MseHandshake {
     private static InfoHash matchInfoHash(Collection<InfoHash> candidates, byte[] receivedReq2Xor3, byte[] req3)
             throws MseNegotiationException {
         for (InfoHash candidate : candidates) {
-            byte[] candidateReq2 = sha1(bytes("req2"), candidate.bytes());
+            byte[] candidateReq2 = Hashing.sha1(bytes("req2"), candidate.bytes());
             if (Arrays.equals(xor(candidateReq2, req3), receivedReq2Xor3)) {
                 return candidate;
             }
@@ -329,17 +328,5 @@ public final class MseHandshake {
 
     private static byte[] bytes(String literal) {
         return literal.getBytes(StandardCharsets.US_ASCII);
-    }
-
-    private static byte[] sha1(byte[]... parts) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-1");
-            for (byte[] part : parts) {
-                digest.update(part);
-            }
-            return digest.digest();
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-1 not available on this JVM", e);
-        }
     }
 }

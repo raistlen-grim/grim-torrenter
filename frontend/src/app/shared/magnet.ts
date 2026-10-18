@@ -88,3 +88,9 @@ export function magnetDisplayName(uri: string): string {
 export function shortInfoHash(infoHash: string): string {
   return `btih:${infoHash.slice(0, 4)}…${infoHash.slice(-4)}`;
 }
+
+/** The magnet link "Copy magnet link" hands out: the info hash, which is all a magnet needs, and
+ * the name as a display hint. */
+export function magnetLinkFor(infoHash: string, name: string): string {
+  return `magnet:?xt=urn:btih:${infoHash}&dn=${encodeURIComponent(name)}`;
+}

@@ -1296,3 +1296,11 @@ rule, so `.nav-count` is untouched; `.tab-count` needed an explicit reset back t
 body)`/400 weight, since its bare-text sibling ("Files"/"Peers"/etc.) has no wrapping element of
 its own to scope the new rule to instead. Torrent list's column headers have no such sibling data
 in the same element, so `.sort-header`/`.header-label` needed no equivalent carve-out.
+
+## 2026-10-18 addendum: the guide's files aren't in the repo
+
+The style guide's own files (`ADD_CONTROL.md`, `STYLE_GUIDE_NOTES.md`, `SETTINGS_PAGE.md`,
+`ADDENDUM_02`, and the guide's `README.md`) were never committed; `style/torrent_list/` is empty.
+Frontend comments used to cite them by name. They now say "the style guide" (or "the add-control
+guide", "the settings guide") and point here or at [[0045-settings-page]], which record what was
+taken from it. See [[0101-frontend-shared-actions-and-add-controller]].

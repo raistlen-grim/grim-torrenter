@@ -2,19 +2,12 @@ import { Injectable, computed, inject, signal } from '@angular/core';
 import { Router } from '@angular/router';
 
 import { LibraryEvent } from '../models/events.model';
-import { Label, Torrent, TorrentWithRate } from '../models/torrent.model';
+import { Torrent, TorrentWithRate } from '../models/torrent.model';
+import { TorrentEventMessage, parseEventMessage } from '../shared/event-message';
 import { RateTracker } from '../shared/rate-tracker';
 import { AuthService } from './auth.service';
 import { LabelService } from './label.service';
 import { TorrentService } from './torrent.service';
-
-/** type is "state-changed" (payload: a single Torrent), "snapshot" (payload: Torrent[]),
- * "event" (payload: a single LibraryEvent, design_docs/0055), or "labels" (payload: the full
- * Label[], design_docs/0077) - matches the backend's TorrentEventMessage envelope. */
-interface TorrentEventMessage {
-  type: 'state-changed' | 'snapshot' | 'event' | 'labels';
-  payload: Torrent | Torrent[] | LibraryEvent | Label[];
-}
 
 /** Caps how many live-pushed library events this tab keeps in memory - a long-running tab
  * shouldn't accumulate unbounded history client-side just because the backend's own retention
@@ -155,7 +148,14 @@ export class TorrentEventsService {
     const token = this.authService.authEnabled() === false ? null : this.authService.token();
     const subprotocols = token ? ['bearer', token] : undefined;
     this.socket = new WebSocket(`${protocol}://${location.host}/ws/torrents`, subprotocols);
-    this.socket.onmessage = (event) => this.handleMessage(JSON.parse(event.data));
+    this.socket.onmessage = (event) => {
+      const message = parseEventMessage(event.data);
+      if (message === null) {
+        console.warn('[events] ignoring a WebSocket message this client does not understand');
+        return;
+      }
+      this.handleMessage(message);
+    };
     this.socket.onclose = (event) => {
       // Code distinguishes who ended it: 1006 = dropped without a close frame (network/proxy),
       // 1008 = Origin rejected, 4401 = no valid auth token (logged out, expired, revoked, or
@@ -179,17 +179,23 @@ export class TorrentEventsService {
     };
   }
 
+  /** Messages arrive already checked (parseEventMessage), so no casts here. */
   private handleMessage(message: TorrentEventMessage): void {
-    if (message.type === 'snapshot') {
-      this.replaceAll(message.payload as Torrent[]);
-    } else if (message.type === 'labels') {
-      this.labelService.applyServerList(message.payload as Label[]);
-    } else if (message.type === 'event') {
-      this.recentLibraryEvents.update((events) =>
-        [message.payload as LibraryEvent, ...events].slice(0, MAX_BUFFERED_LIBRARY_EVENTS),
-      );
-    } else {
-      this.upsert(message.payload as Torrent);
+    switch (message.type) {
+      case 'snapshot':
+        this.replaceAll(message.payload);
+        break;
+      case 'labels':
+        this.labelService.applyServerList(message.payload);
+        break;
+      case 'event': {
+        const event = message.payload;
+        this.recentLibraryEvents.update((events) => [event, ...events].slice(0, MAX_BUFFERED_LIBRARY_EVENTS));
+        break;
+      }
+      case 'state-changed':
+        this.upsert(message.payload);
+        break;
     }
   }
 

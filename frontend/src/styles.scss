@@ -17,7 +17,7 @@
 }
 
 /* Style guide type scale - see grimtorrenter-preset.ts for the matching PrimeNG color/radius
-   tokens. Three distinct roles per STYLE_GUIDE_NOTES.md, not two: --font-display (Cinzel -
+   tokens. Three distinct roles per the style guide, not two: --font-display (Cinzel -
    the app's own voice only, wordmark and page/section headings - "never a filename"),
    --font-heading (Barlow Condensed - sub-headings and control labels), --font-body (Barlow -
    everything else, including all data). Exposed as custom properties, not just utility
@@ -54,7 +54,7 @@
   --color-bg: #f2f2f3;
   --field-ink: #f2f2f3;
 
-  /* Row/structural hairlines - 9% and 18% ink respectively, per STYLE_GUIDE_NOTES.md.
+  /* Row/structural hairlines - 9% and 18% ink respectively, per the style guide.
      color-mix against --color-text so both stay theme-aware without a separate dark override. */
   --rule: color-mix(in srgb, var(--color-text) 9%, transparent);
   --color-divider: color-mix(in srgb, var(--color-text) 18%, transparent);
@@ -86,7 +86,7 @@
   --color-accent-700: var(--p-primary-200);
 }
 
-/* README.md's "Motion" section: exactly three 120ms ease-out transitions in these views (row
+/* The style guide's "Motion" section: exactly three 120ms ease-out transitions in these views (row
  * action opacity, row background, tab underline) plus one 1s linear one (the progress
  * underlay's width, so it creeps with each data refresh rather than jumping) - "Respect
  * prefers-reduced-motion: reduce by dropping all four to 0ms." Centralized here as custom
@@ -104,7 +104,7 @@
   }
 }
 
-/* Universal keyboard-focus ring (STYLE_GUIDE_NOTES.md "Interaction states": "Focus: outline:
+/* Universal keyboard-focus ring (the style guide "Interaction states": "Focus: outline:
  * 2px solid var(--color-accent); outline-offset: 2px on :focus-visible... never the browser
  * default"). PrimeNG's own components (every p-button, p-select, etc.) already draw this same
  * ring via Aura's shared `focusRing` semantic token, bumped to the guide's 2px width in
@@ -137,7 +137,7 @@ body {
 }
 
 /* The app's own voice only - wordmark, page/section headings. Never a filename or other
-   data value (STYLE_GUIDE_NOTES.md: "Filenames are data, never display type... never
+   data value (the style guide: "Filenames are data, never display type... never
    Cinzel"). */
 .display-font {
   font-family: var(--font-display);
@@ -248,12 +248,12 @@ h1.display-font {
 }
 
 /* ══════════════════════════════════════════════════════════════════════
-   Settings page redesign - shared foundation (SETTINGS_PAGE.md,
+   Settings page redesign - shared foundation (the settings guide (design_docs/0045),
    design_docs/0045's addendum). Global, not per-group .scss, because every
    settings group component needs the exact same row shell/control shapes -
    a component-scoped copy is exactly the drift the redesign exists to fix.
    Literal px values throughout, taken directly from the design's own
-   Industry-system scale (SETTINGS_PAGE.md / the prototype's own :root),
+   Industry-system scale (the settings guide (design_docs/0045) / the prototype's own :root),
    not this app's --space-* tokens - same "match the guide's own exact
    measurements" precedent torrent-detail.scss's hand-tuned pixel values
    already set, not a new one.
@@ -397,7 +397,7 @@ h1.display-font {
 /* Control 1/4: toggle - see grimtorrenter-preset.ts's own `components.toggleswitch` override;
  * `p-toggleswitch` itself needs no per-usage class. */
 
-/* Control 2/4: select - a native <select>, not p-select (SETTINGS_PAGE.md: "No PrimeNG
+/* Control 2/4: select - a native <select>, not p-select (the settings guide (design_docs/0045): "No PrimeNG
  * dropdown chrome to match - style the native element directly"; confirmed against the actual
  * prototype's own <select> markup, not a paraphrase). Bordered like every other control here
  * rather than left at the browser's own default chrome. */

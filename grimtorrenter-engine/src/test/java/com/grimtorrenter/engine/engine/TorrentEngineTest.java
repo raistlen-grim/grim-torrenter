@@ -194,10 +194,22 @@ class TorrentEngineTest {
                 TorrentEngine.selectTrackerTiers(metadata));
     }
 
+    /** design_docs/0099: trackers that are all unsupported (wss://, say) leave DHT to find peers,
+     * the same as a torrent with no trackers at all. */
     @Test
-    void selectTrackerTiersThrowsWhenNoUsableTrackerAnywhere() {
+    void selectTrackerTiersFallsBackToDhtWhenNoDeclaredTrackerIsUsable() {
         TorrentMetadata metadata = new SingleFileTorrent("x", 1, 1, new PieceHashes(fill(20, 0)),
-                InfoHash.of(fill(20, 1)), null, List.of(List.of("ftp://tracker1/announce")));
+                InfoHash.of(fill(20, 1)), null, List.of(List.of("wss://tracker1/announce")));
+
+        assertEquals(List.of(), TorrentEngine.selectTrackerTiers(metadata));
+    }
+
+    /** A private torrent can't use DHT (BEP 27), so with no usable tracker it could never find a
+     * peer - that still fails the add. */
+    @Test
+    void selectTrackerTiersThrowsForAPrivateTorrentWithNoUsableTracker() {
+        TorrentMetadata metadata = new SingleFileTorrent("x", 1, 1, new PieceHashes(fill(20, 0)),
+                InfoHash.of(fill(20, 1)), null, List.of(List.of("wss://tracker1/announce")), true);
 
         assertThrows(TorrentEngineException.class, () -> TorrentEngine.selectTrackerTiers(metadata));
     }

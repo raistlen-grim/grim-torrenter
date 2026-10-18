@@ -1,5 +1,6 @@
 package com.grimtorrenter.engine.metainfo;
 
+import com.grimtorrenter.engine.Hashing;
 import com.grimtorrenter.engine.bencode.BDictionary;
 import com.grimtorrenter.engine.bencode.BInteger;
 import com.grimtorrenter.engine.bencode.BList;
@@ -8,8 +9,6 @@ import com.grimtorrenter.engine.bencode.BValue;
 import com.grimtorrenter.engine.bencode.BencodeDecoder;
 import com.grimtorrenter.engine.bencode.BencodeEncoder;
 
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -35,7 +34,7 @@ public final class MetainfoParser {
             throw new MetainfoException("Missing or invalid 'info' dictionary");
         }
 
-        InfoHash infoHash = InfoHash.of(sha1(BencodeEncoder.encode(info)));
+        InfoHash infoHash = InfoHash.of(Hashing.sha1(BencodeEncoder.encode(info)));
 
         String name = requirePathComponent(requireString(info, "name"), "name");
         long pieceLength = requireLong(info, "piece length");
@@ -67,13 +66,6 @@ public final class MetainfoParser {
         return value;
     }
 
-    private static byte[] sha1(byte[] data) {
-        try {
-            return MessageDigest.getInstance("SHA-1").digest(data);
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-1 not available on this JVM", e);
-        }
-    }
 
     private static String requireString(BDictionary dict, String key) {
         return requireBString(dict, key).utf8();

@@ -2,7 +2,7 @@ import { DatePipe, DecimalPipe } from '@angular/common';
 import { ChangeDetectionStrategy, Component, computed, inject, input, signal, viewChild } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { Router } from '@angular/router';
-import { ConfirmationService, MenuItem, MessageService } from 'primeng/api';
+import { MenuItem } from 'primeng/api';
 import { ButtonModule } from 'primeng/button';
 import { ContextMenu, ContextMenuModule } from 'primeng/contextmenu';
 import { TabsModule } from 'primeng/tabs';
@@ -11,17 +11,19 @@ import { map } from 'rxjs';
 
 import { Torrent } from '../models/torrent.model';
 import { TorrentEventsService } from '../services/torrent-events.service';
-import { PendingTorrentAction, TorrentActionsService } from '../services/torrent-actions.service';
+import { TorrentActionsService } from '../services/torrent-actions.service';
 import { DetailTab, TorrentDetailTabService } from '../services/torrent-detail-tab.service';
 import { TorrentService } from '../services/torrent.service';
 import { ActiveContextMenuRegistry } from '../shared/active-context-menu-registry';
-import { copyToClipboard } from '../shared/clipboard';
-import { apiErrorMessage } from '../shared/api-error';
 import { FormatBytesPipe } from '../shared/format-bytes.pipe';
 import { FormatDurationPipe } from '../shared/format-duration.pipe';
 import { FormatRatePipe } from '../shared/format-rate.pipe';
 import { pollWhileInput } from '../shared/poll-while-input';
+import { progressPercent } from '../shared/progress-percent';
+import { TorrentCommands } from '../torrent-list/torrent-commands';
 import { SeedingLimitsDialog } from '../torrent-list/torrent-row/seeding-limits-dialog/seeding-limits-dialog';
+import { TorrentLabelsDialog } from '../torrent-list/torrent-row/torrent-labels-dialog/torrent-labels-dialog';
+import { TorrentLimitsDialog } from '../torrent-list/torrent-row/torrent-limits-dialog/torrent-limits-dialog';
 import { FilesTab } from './files-tab/files-tab';
 import { PeersTab } from './peers-tab/peers-tab';
 import { PieceMap } from './piece-map/piece-map';
@@ -35,13 +37,10 @@ const FILE_COUNT_POLL_INTERVAL_MS = 3000;
  * header reuses TorrentEventsService's existing live data rather than a dedicated "summary"
  * endpoint - everything shown here is already part of the list's own data.
  *
- * <p>Pause/resume/remove go through the shared TorrentActionsService (as TorrentRow's do), so
- * both show the same pending state; the handlers, menu and confirm dialog around them are still
- * this component's own. ConfirmationService/MessageService are
- * injected, not provided here - this component is always rendered inside TorrentList's
- * <router-outlet> (see torrent-list.html), so it resolves TorrentList's own instances via
- * Angular's hierarchical DI and its existing <p-toast>/<p-confirmDialog> already catch
- * whatever this component adds to them, the same way TorrentRow already does.
+ * <p>The actions, their menu and their toasts are TorrentCommands', shared with TorrentRow, so the
+ * two offer the same things and show the same pending state. That service comes from
+ * TorrentList: this component always renders inside TorrentList's <router-outlet>, so
+ * hierarchical DI finds it (and the toast and confirm dialog it uses). See design_docs/0101.
  */
 @Component({
   selector: 'app-torrent-detail',
@@ -59,6 +58,8 @@ const FILE_COUNT_POLL_INTERVAL_MS = 3000;
     SeedingLimitsDialog,
     TabsModule,
     TooltipModule,
+    TorrentLabelsDialog,
+    TorrentLimitsDialog,
     TrackersTab,
   ],
   templateUrl: './torrent-detail.html',
@@ -70,8 +71,7 @@ export class TorrentDetail {
   private readonly tabMemory = inject(TorrentDetailTabService);
   private readonly torrentService = inject(TorrentService);
   private readonly actions = inject(TorrentActionsService);
-  private readonly confirmationService = inject(ConfirmationService);
-  private readonly messageService = inject(MessageService);
+  private readonly commands = inject(TorrentCommands);
   private readonly activeContextMenus = inject(ActiveContextMenuRegistry);
   private readonly router = inject(Router);
   /** Instantiated directly (not via the template pipe binding) so avgDownloadTooltip()/
@@ -85,13 +85,7 @@ export class TorrentDetail {
 
   readonly torrent = computed(() => this.events.torrents().find((t) => t.infoHash === this.infoHash()));
 
-  readonly progressPercent = computed(() => {
-    const torrent = this.torrent();
-    if (!torrent || torrent.progress <= 0) {
-      return 0;
-    }
-    return Math.max(1, Math.round(torrent.progress * 100));
-  });
+  readonly progressPercent = computed(() => progressPercent(this.torrent()?.progress ?? 0));
 
   readonly isVerifying = computed(() => this.torrent()?.state === 'VERIFYING');
 
@@ -99,9 +93,8 @@ export class TorrentDetail {
    * (downloading/verifying) - "never open a completed torrent on Pieces." Once the user picks
    * a tab for this torrent explicitly, that choice wins over the default from then on for the
    * rest of the session - see TorrentDetailTabService. A magnet still fetching metadata (the
-   * guide's other reason to hide Pieces) can't actually happen here: this app only ever
-   * registers a torrent - making it visible/selectable at all - once its metadata is already
-   * fully known (see design_docs/0028), so there's no in-between state to guard against. */
+   * guide's other reason to hide Pieces) never gets here: its row doesn't open the panel, and
+   * neither do the keyboard shortcuts (design_docs/0070). */
   readonly activeTab = computed<DetailTab>(() => {
     const remembered = this.tabMemory.get(this.infoHash());
     if (remembered) {
@@ -180,118 +173,45 @@ export class TorrentDetail {
    * TorrentRow, so either one shows an action the other started. See design_docs/0033's addenda. */
   readonly pendingAction = computed(() => this.actions.pendingFor(this.infoHash()));
   readonly showSeedingLimitsDialog = signal(false);
+  readonly showTorrentLimitsDialog = signal(false);
+  readonly showTorrentLabelsDialog = signal(false);
 
   private readonly detailContextMenu = viewChild.required<ContextMenu>('detailMenu');
 
-  /** Same trimmed set as TorrentRow's own contextMenuItems - see that component's comment
-   * for why (only what's actually backed by something real today, design_docs/0043). */
+  /** The same menu as TorrentRow's (TorrentCommands). A remove from here also closes the
+   * panel - the row that disappears there is the whole view here. */
   readonly contextMenuItems = computed<MenuItem[]>(() => {
     const torrent = this.torrent();
-    const disabled = this.isVerifying() || this.pendingAction() !== null;
-    const isRunning = torrent?.state === 'DOWNLOADING' || torrent?.state === 'SEEDING';
-    const toggleItem: MenuItem =
-      torrent?.state === 'STOPPED'
-        ? { label: 'Resume', icon: 'pi pi-play', disabled, command: () => this.onResume() }
-        : { label: 'Pause', icon: 'pi pi-pause', disabled, command: () => this.onPause() };
-    return [
-      toggleItem,
-      { label: 'Copy magnet link', icon: 'pi pi-copy', command: () => this.copyMagnetLink() },
+    if (!torrent) {
+      return [];
+    }
+    const infoHash = torrent.infoHash;
+    return this.commands.menuItems(
+      torrent,
       {
-        label: 'Force reannounce',
-        icon: 'pi pi-megaphone',
-        disabled: !isRunning || this.pendingAction() !== null,
-        command: () => this.onReannounce(),
+        seedingLimits: () => this.showSeedingLimitsDialog.set(true),
+        torrentLimits: () => this.showTorrentLimitsDialog.set(true),
+        labels: () => this.showTorrentLabelsDialog.set(true),
       },
-      { label: 'Force recheck', icon: 'pi pi-refresh', disabled, command: () => this.onRecheck() },
-      { separator: true },
-      { label: 'Seeding limits…', icon: 'pi pi-gauge', command: () => this.showSeedingLimitsDialog.set(true) },
-      { separator: true },
-      { label: 'Remove', icon: 'pi pi-trash', disabled, command: () => this.onRemove() },
-      {
-        label: 'Remove and delete files…',
-        icon: 'pi pi-exclamation-triangle',
-        disabled,
-        command: () => this.confirmRemoveWithData(),
-      },
-    ];
+      () => this.closeIfStillShowing(infoHash),
+    );
   });
 
   onMenuClick(event: MouseEvent): void {
     this.activeContextMenus.show(this.detailContextMenu(), event);
   }
 
-  copyMagnetLink(): void {
+  /** The footer's Pause/Resume button. */
+  onToggle(): void {
     const torrent = this.torrent();
     if (!torrent) {
       return;
     }
-    const magnetUri = `magnet:?xt=urn:btih:${torrent.infoHash}&dn=${encodeURIComponent(torrent.name)}`;
-    copyToClipboard(magnetUri).then(
-      () => this.messageService.add({ severity: 'success', summary: 'Magnet link copied', detail: torrent.name }),
-      () => this.messageService.add({ severity: 'error', summary: 'Could not copy magnet link', detail: torrent.name }),
-    );
-  }
-
-  onPause(): void {
-    const infoHash = this.infoHash();
-    const name = this.torrent()?.name;
-    this.actions.pause(infoHash).subscribe({ error: (e: unknown) => this.notifyActionFailed('pause', name, e) });
-  }
-
-  onResume(): void {
-    const infoHash = this.infoHash();
-    const name = this.torrent()?.name;
-    this.actions.resume(infoHash).subscribe({ error: (e: unknown) => this.notifyActionFailed('resume', name, e) });
-  }
-
-  /** Same two actions, and the same reasoning, as TorrentRow's own onRecheck()/onReannounce(). */
-  onRecheck(): void {
-    const name = this.torrent()?.name;
-    this.actions.recheck(this.infoHash()).subscribe({ error: (e: unknown) => this.notifyActionFailed('recheck', name, e) });
-  }
-
-  onReannounce(): void {
-    const name = this.torrent()?.name;
-    this.actions.reannounce(this.infoHash()).subscribe({
-      next: () => this.messageService.add({ severity: 'info', summary: 'Reannouncing', detail: name }),
-      error: (e: unknown) => this.notifyActionFailed('reannounce', name, e),
-    });
-  }
-
-  /** Unlike TorrentRow's own onRemove(), this also navigates back to the list - the row
-   * that disappears on removal there is the whole view here, and there's nothing left to
-   * show once torrent() stops resolving. */
-  onRemove(): void {
-    const infoHash = this.infoHash();
-    const name = this.torrent()?.name;
-    this.actions.remove(infoHash).subscribe({
-      next: () => this.closeIfStillShowing(infoHash),
-      error: (e: unknown) => this.notifyActionFailed('remove', name, e),
-    });
-  }
-
-  /** Same wording, and the same reason, as TorrentRow's own confirmRemoveWithData(). */
-  private confirmRemoveWithData(): void {
-    const torrent = this.torrent();
-    const infoHash = this.infoHash();
-    if (!torrent) {
-      return;
+    if (torrent.state === 'STOPPED') {
+      this.commands.resume(torrent);
+    } else {
+      this.commands.pause(torrent);
     }
-    this.confirmationService.confirm({
-      header: 'Delete downloaded files?',
-      message: `Downloaded files for "${torrent.name}" will be permanently deleted from disk.`,
-      icon: 'pi pi-exclamation-triangle',
-      acceptLabel: 'Delete',
-      rejectLabel: 'Cancel',
-      acceptButtonProps: { severity: 'danger' },
-      accept: () => {
-        const name = torrent.name;
-        this.actions.remove(infoHash, true).subscribe({
-          next: () => this.closeIfStillShowing(infoHash),
-          error: (e: unknown) => this.notifyActionFailed('remove', name, e),
-        });
-      },
-    });
   }
 
   /** A slow remove can finish after the panel has moved on to another torrent - closing it then
@@ -300,19 +220,5 @@ export class TorrentDetail {
     if (this.infoHash() === infoHash) {
       this.router.navigate(['/']);
     }
-  }
-
-  /** Takes the name captured when the action started - by the time a slow request fails, the
-   * panel may be showing a different torrent. */
-  private notifyActionFailed(
-    action: PendingTorrentAction | 'recheck' | 'reannounce',
-    name: string | undefined,
-    error: unknown,
-  ): void {
-    this.messageService.add({
-      severity: 'error',
-      summary: name ? `Could not ${action} "${name}"` : `Could not ${action} torrent`,
-      detail: apiErrorMessage(error, 'Please try again.'),
-    });
   }
 }

@@ -23,7 +23,7 @@ class JsonSettingsStoreTest {
 
     private static JsonSettingsStore createStore(Path configDirectory) {
         JsonSettingsStore store = new JsonSettingsStore();
-        store.configDirectory = configDirectory.toString();
+        store.directories = AppDirectories.of(configDirectory.resolve("downloads"), configDirectory, configDirectory.resolve("watch"));
         store.objectMapper = new ObjectMapper();
         store.init();
         return store;

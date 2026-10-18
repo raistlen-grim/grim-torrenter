@@ -4,6 +4,7 @@ import com.grimtorrenter.engine.metainfo.InfoHash;
 
 import java.nio.charset.StandardCharsets;
 import java.util.HexFormat;
+import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
 
@@ -85,7 +86,7 @@ public final class LsdCodec {
             // elsewhere in this codebase is minted. A peer sending uppercase hex would
             // otherwise produce an InfoHash that fails equals()/hashCode() lookups against our
             // own lowercase-keyed session map.
-            infoHash = InfoHash.of(HexFormat.of().parseHex(infoHashValue.toLowerCase(java.util.Locale.ROOT)));
+            infoHash = InfoHash.of(HexFormat.of().parseHex(infoHashValue.toLowerCase(Locale.ROOT)));
         } catch (IllegalArgumentException e) {
             throw new LsdException("BT-SEARCH announcement has an invalid Infohash header");
         }

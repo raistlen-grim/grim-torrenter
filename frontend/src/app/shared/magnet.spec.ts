@@ -1,4 +1,4 @@
-import { magnetDisplayName, normalizeMagnetCandidate, parseMagnetParams } from './magnet';
+import { magnetDisplayName, magnetLinkFor, normalizeMagnetCandidate, parseMagnetParams } from './magnet';
 
 const HEX = '0123456789abcdef0123456789abcdef01234567';
 const BASE32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
@@ -56,5 +56,14 @@ describe('magnetDisplayName', () => {
     expect(magnetDisplayName(`magnet:?xt=urn:btih:${HEX}&dn=Name`)).toBe('Name');
     expect(magnetDisplayName(`magnet:?xt=urn:btih:${HEX}`)).toBe('btih:0123…4567');
     expect(magnetDisplayName(`magnet:?xt=urn:btih:${BASE32}`)).toBe('Magnet link');
+  });
+});
+
+describe('magnetLinkFor', () => {
+  it('builds a link the add field reads back to the same hash and name', () => {
+    const link = magnetLinkFor(HEX, 'A & B 50%');
+    expect(link).toBe(`magnet:?xt=urn:btih:${HEX}&dn=A%20%26%20B%2050%25`);
+    expect(parseMagnetParams(link)?.displayName).toBe('A & B 50%');
+    expect(parseMagnetParams(link)?.infoHash).toBe(HEX);
   });
 });

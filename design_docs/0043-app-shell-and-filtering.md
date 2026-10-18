@@ -280,3 +280,11 @@ actions now dim each affected row too - see [[0033-per-entry-action-feedback]]'s
 - Fixed a latent bug in `TorrentList.selectedInfoHash` (the row-selected highlight above): loading
   or refreshing directly on `/torrents/:infoHash` threw while constructing the list, because the
   child route's `snapshot` isn't populated yet at that point. Both reads now use `snapshot?.`.
+
+## 2026-10-18 addendum: Pause all/Resume all share the selection bar's path
+
+Revised by [[0101-frontend-shared-actions-and-add-controller]]. Pause all/Resume all now go
+through the same `runOnEach()` as the selection bar. They skip torrents that already have a
+request in flight, and show one summary toast if any request fails. The "Pausing N torrents"
+info toast is gone; each row's own pending state is the feedback. They still act on every
+torrent, not just the filtered ones.

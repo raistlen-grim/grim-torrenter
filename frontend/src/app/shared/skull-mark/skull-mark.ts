@@ -1,7 +1,7 @@
 import { ChangeDetectionStrategy, Component } from '@angular/core';
 
 /**
- * The style guide's constructed skull mark (STYLE_GUIDE_NOTES.md "The mark") - six
+ * The style guide's constructed skull mark (the style guide "The mark") - six
  * absolutely-positioned rectangles (cranium, two sockets, a nasal notch, a toothed jaw), pure
  * CSS, no image/icon-font glyph. Shared (not duplicated per use site) because it's five parts
  * of nontrivial, position-critical CSS, unlike the single-rule shapes this app usually inlines

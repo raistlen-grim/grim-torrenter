@@ -9,7 +9,6 @@ import io.quarkus.logging.Log;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -29,7 +28,7 @@ import java.util.function.Predicate;
 
 /**
  * File-backed EventStore - one JSON-Lines file per calendar day (JVM default time zone) under
- * {@code {grimtorrenter.config-directory}/events/}, append-only (no read-modify-rewrite-whole-
+ * {@code {config directory}/events/}, append-only (no read-modify-rewrite-whole-
  * file cost on every event, unlike JsonSettingsStore's swap-the-whole-value approach, which
  * doesn't fit an append-heavy log). Retention is enforced by deleting whole day-files older
  * than the live {@code Settings.eventLogRetentionDays} window - see prune()'s own Javadoc and
@@ -45,8 +44,8 @@ public class JsonLinesEventStore implements EventStore {
     private static final String FILE_SUFFIX = ".jsonl";
     private static final DateTimeFormatter FILE_DATE_FORMAT = DateTimeFormatter.ISO_LOCAL_DATE;
 
-    @ConfigProperty(name = "grimtorrenter.config-directory", defaultValue = "config")
-    String configDirectory;
+    @Inject
+    AppDirectories directories;
 
     @Inject
     ObjectMapper objectMapper;
@@ -54,13 +53,16 @@ public class JsonLinesEventStore implements EventStore {
     @Inject
     SettingsStore settingsStore;
 
+    @Inject
+    WebSocketBroadcaster broadcaster;
+
     private Path eventsDirectory;
 
     /** Package-private (not private) so a test can call it directly after setting the above
      * fields itself, without going through CDI - matching JsonSettingsStore's own init(). */
     @PostConstruct
     void init() {
-        eventsDirectory = Path.of(configDirectory).resolve(EVENTS_SUBDIRECTORY);
+        eventsDirectory = directories.config().resolve(EVENTS_SUBDIRECTORY);
         try {
             Files.createDirectories(eventsDirectory);
         } catch (IOException e) {
@@ -69,8 +71,8 @@ public class JsonLinesEventStore implements EventStore {
         prune();
     }
 
-    /** Appends to today's file, then broadcasts immediately over the same WebSocket
-     * TorrentEventListener/TorrentSnapshotScheduler already use - this is the one place both
+    /** Appends to today's file, then broadcasts immediately through the same
+     * WebSocketBroadcaster TorrentEventListener/TorrentSnapshotScheduler use - this is the one place both
      * persistence and live push happen, so no caller needs to remember to do both. synchronized
      * so two concurrent events can't interleave their writes to the same day's file - not a hot
      * path (events fire on state transitions and engine decisions, not per-packet or
@@ -95,7 +97,7 @@ public class JsonLinesEventStore implements EventStore {
 
     private void broadcast(LibraryEvent event) {
         try {
-            TorrentWebSocket.broadcast(objectMapper.writeValueAsString(new TorrentEventMessage("event", event)));
+            broadcaster.broadcast(objectMapper.writeValueAsString(new TorrentEventMessage("event", event)));
         } catch (JsonProcessingException | RuntimeException e) {
             Log.errorf(e, "Could not push %s event to connected clients", event.type());
         }

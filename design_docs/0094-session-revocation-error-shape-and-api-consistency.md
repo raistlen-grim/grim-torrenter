@@ -55,8 +55,8 @@ went stale (typically after a laptop sleep). It's now closed too.
 New `TorrentEngineIoException extends TorrentEngineException`, carrying the `IOException` as its
 cause. All 14 throw sites that wrap an `IOException` (marker writes, deletes, directory
 creation, the config-directory scan) use it. The two bad-input sites (no usable tracker) keep the
-parent. `TorrentEngineExceptionMapper` maps the subclass to 500 with its cause logged, and the
-parent to 400 as before.
+parent. `TorrentEngineExceptionMapper` (now `EngineExceptionMappers.torrentEngine()`, 0100) maps
+the subclass to 500 with its cause logged, and the parent to 400 as before.
 
 A subclass rather than a "kind" field so every existing `catch (TorrentEngineException)` and
 `assertThrows` keeps working unchanged.

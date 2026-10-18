@@ -1,21 +1,21 @@
 import { ChangeDetectionStrategy, Component, computed, inject, input, output, signal, viewChild } from '@angular/core';
 import { Router } from '@angular/router';
-import { ConfirmationService, MenuItem, MessageService } from 'primeng/api';
+import { MenuItem } from 'primeng/api';
 import { ButtonModule } from 'primeng/button';
 import { ContextMenu, ContextMenuModule } from 'primeng/contextmenu';
 
 import { TorrentWithRate } from '../../models/torrent.model';
 import { LabelService } from '../../services/label.service';
-import { PendingTorrentAction, TorrentActionsService } from '../../services/torrent-actions.service';
-import { copyToClipboard } from '../../shared/clipboard';
-import { apiErrorMessage } from '../../shared/api-error';
+import { TorrentActionsService } from '../../services/torrent-actions.service';
 import { splitFileName } from '../../shared/file-name';
 import { FormatBytesPipe } from '../../shared/format-bytes.pipe';
 import { FormatEtaPipe } from '../../shared/format-eta.pipe';
 import { FormatRatePipe } from '../../shared/format-rate.pipe';
+import { progressPercent } from '../../shared/progress-percent';
 import { ActiveContextMenuRegistry } from '../../shared/active-context-menu-registry';
 import { RateTrend } from '../../shared/rate-trend/rate-trend';
 import { torrentStateDisplay } from '../../shared/status-display';
+import { TorrentCommands } from '../torrent-commands';
 import { SeedingLimitsDialog } from './seeding-limits-dialog/seeding-limits-dialog';
 import { TorrentLabelsDialog } from './torrent-labels-dialog/torrent-labels-dialog';
 import { TorrentLimitsDialog } from './torrent-limits-dialog/torrent-limits-dialog';
@@ -72,8 +72,7 @@ const MAX_VISIBLE_LABEL_CHIPS = 2;
 })
 export class TorrentRow {
   private readonly actions = inject(TorrentActionsService);
-  private readonly confirmationService = inject(ConfirmationService);
-  private readonly messageService = inject(MessageService);
+  private readonly commands = inject(TorrentCommands);
   private readonly activeContextMenus = inject(ActiveContextMenuRegistry);
   private readonly router = inject(Router);
   private readonly labelService = inject(LabelService);
@@ -174,20 +173,7 @@ export class TorrentRow {
    * set of actions. */
   readonly isFetchingMetadata = computed(() => this.state() === 'FETCHING_METADATA');
 
-  /** Only a torrent that is actually announcing has an announce to bring forward - the backend
-   * rejects a forced reannounce in any other state. See design_docs/0082. */
-  readonly isRunning = computed(() => this.state() === 'DOWNLOADING' || this.state() === 'SEEDING');
-
-  /** Rounds any genuinely nonzero progress up to at least 1 - Math.round alone would sit at
-   * 0 for a long time on a large file (both in the Done% cell and the underlay's width),
-   * looking indistinguishable from "hasn't started" even once real data has arrived. */
-  readonly progressPercent = computed(() => {
-    const progress = this.torrent().progress;
-    if (progress <= 0) {
-      return 0;
-    }
-    return Math.max(1, Math.round(progress * 100));
-  });
+  readonly progressPercent = computed(() => progressPercent(this.torrent().progress));
 
   /** Ink-weight + icon, not a colored severity badge - see design_docs/0033's style-guide
    * reconciliation ("one hue, one alarm," never a five-color state legend). */
@@ -195,65 +181,17 @@ export class TorrentRow {
 
   private readonly rowContextMenu = viewChild.required<ContextMenu>('rowMenu');
 
-  /** Trimmed from the style guide's full §08 spec (Pause, Open folder, Limit rate…, Add
-   * label…, Copy magnet, Remove…) to only what's actually backed by something real today -
-   * see design_docs/0043. Supplements the row's existing inline buttons rather than
-   * replacing them, reusing their exact same handlers so there's one source of truth per
-   * action. */
-  readonly contextMenuItems = computed<MenuItem[]>(() => {
-    const disabled = this.isVerifying() || this.pendingAction() !== null;
-    const toggleDisabled = disabled || this.isFetchingMetadata();
-    const toggleItem: MenuItem =
-      this.state() === 'STOPPED'
-        ? { label: 'Resume', icon: 'pi pi-play', disabled: toggleDisabled, command: () => this.onResume() }
-        : { label: 'Pause', icon: 'pi pi-pause', disabled: toggleDisabled, command: () => this.onPause() };
-    return [
-      toggleItem,
-      { label: 'Copy magnet link', icon: 'pi pi-copy', command: () => this.copyMagnetLink() },
-      {
-        label: 'Force reannounce',
-        icon: 'pi pi-megaphone',
-        disabled: !this.isRunning() || this.pendingAction() !== null,
-        command: () => this.onReannounce(),
-      },
-      {
-        label: 'Force recheck',
-        icon: 'pi pi-refresh',
-        disabled: toggleDisabled,
-        command: () => this.onRecheck(),
-      },
-      { separator: true },
-      {
-        label: 'Seeding limits…',
-        icon: 'pi pi-gauge',
-        disabled: this.isFetchingMetadata(),
-        command: () => this.showSeedingLimitsDialog.set(true),
-      },
-      {
-        label: 'Torrent limits…',
-        icon: 'pi pi-sliders-h',
-        disabled: this.isFetchingMetadata(),
-        command: () => this.showTorrentLimitsDialog.set(true),
-      },
-      {
-        label: 'Labels…',
-        icon: 'pi pi-tag',
-        disabled: this.isFetchingMetadata(),
-        command: () => this.showTorrentLabelsDialog.set(true),
-      },
-      { separator: true },
-      { label: 'Remove', icon: 'pi pi-trash', disabled, command: () => this.onRemove() },
-      {
-        label: 'Remove and delete files…',
-        icon: 'pi pi-exclamation-triangle',
-        disabled,
-        command: () => this.confirmRemoveWithData(),
-      },
-    ];
-  });
+  /** The same menu as the details panel's (TorrentCommands). The "⋯" button opens it too. */
+  readonly contextMenuItems = computed<MenuItem[]>(() =>
+    this.commands.menuItems(this.torrent(), {
+      seedingLimits: () => this.showSeedingLimitsDialog.set(true),
+      torrentLimits: () => this.showTorrentLimitsDialog.set(true),
+      labels: () => this.showTorrentLabelsDialog.set(true),
+    }),
+  );
 
   /** Plain click opens the details panel as it always has; the two modifier clicks are the
-   * style guide's selection grammar (README.md "Interactions"). See design_docs/0083. */
+   * style guide's selection grammar (the style guide's "Interactions"). See design_docs/0083. */
   onRowClick(event: MouseEvent): void {
     if (event.shiftKey) {
       this.extendChecked.emit();
@@ -294,70 +232,11 @@ export class TorrentRow {
     this.activeContextMenus.show(this.rowContextMenu(), event);
   }
 
-  /** A magnet URI needs nothing beyond the info hash to be valid - dn is a display-name
-   * hint, not required. Built client-side; no backend endpoint needed. */
-  copyMagnetLink(): void {
-    const magnetUri = `magnet:?xt=urn:btih:${this.infoHash()}&dn=${encodeURIComponent(this.name())}`;
-    copyToClipboard(magnetUri).then(
-      () => this.messageService.add({ severity: 'success', summary: 'Magnet link copied', detail: this.name() }),
-      () => this.messageService.add({ severity: 'error', summary: 'Could not copy magnet link', detail: this.name() }),
-    );
-  }
-
   onPause(): void {
-    this.actions.pause(this.infoHash()).subscribe({ error: (e: unknown) => this.notifyActionFailed('pause', e) });
+    this.commands.pause(this.torrent());
   }
 
   onResume(): void {
-    this.actions.resume(this.infoHash()).subscribe({ error: (e: unknown) => this.notifyActionFailed('resume', e) });
-  }
-
-  /** No confirm dialog: a recheck drops the torrent's peers while it runs but destroys nothing,
-   * and the row switches to Verifying at once. See design_docs/0082. */
-  onRecheck(): void {
-    this.actions.recheck(this.infoHash()).subscribe({ error: (e: unknown) => this.notifyActionFailed('recheck', e) });
-  }
-
-  /** Nothing in the row changes when this succeeds, so it gets a toast of its own. */
-  onReannounce(): void {
-    this.actions.reannounce(this.infoHash()).subscribe({
-      next: () => this.messageService.add({ severity: 'info', summary: 'Reannouncing', detail: this.name() }),
-      error: (e: unknown) => this.notifyActionFailed('reannounce', e),
-    });
-  }
-
-  onRemove(): void {
-    this.actions.remove(this.infoHash()).subscribe({ error: (e: unknown) => this.notifyActionFailed('remove', e) });
-  }
-
-  /** No "Are you sure? This action cannot be undone." (STYLE_GUIDE_NOTES.md's Voice rules
-   * forbid it verbatim) - "permanently deleted" already says what matters, and the danger-
-   * severity Delete button (below) already names the consequence, so a redundant "cannot be
-   * undone" clause is exactly the boilerplate the guide is reacting against. */
-  private confirmRemoveWithData(): void {
-    const infoHash = this.infoHash();
-    this.confirmationService.confirm({
-      header: 'Delete downloaded files?',
-      message: `Downloaded files for "${this.name()}" will be permanently deleted from disk.`,
-      icon: 'pi pi-exclamation-triangle',
-      acceptLabel: 'Delete',
-      rejectLabel: 'Cancel',
-      acceptButtonProps: { severity: 'danger' },
-      accept: () => {
-        this.actions.remove(infoHash, true).subscribe({ error: (e: unknown) => this.notifyActionFailed('remove', e) });
-      },
-    });
-  }
-
-  /** Pause/Resume/Remove previously failed silently (no toast existed for them at all,
-   * unlike upload/magnet-add) - a failed action clearing its pending state with no
-   * explanation would read as even more confusing than doing nothing, so this closes that
-   * gap the same way 0029's upload/magnet toasts already do. */
-  private notifyActionFailed(action: PendingTorrentAction | 'recheck' | 'reannounce', error: unknown): void {
-    this.messageService.add({
-      severity: 'error',
-      summary: `Could not ${action} "${this.name()}"`,
-      detail: apiErrorMessage(error, 'Please try again.'),
-    });
+    this.commands.resume(this.torrent());
   }
 }

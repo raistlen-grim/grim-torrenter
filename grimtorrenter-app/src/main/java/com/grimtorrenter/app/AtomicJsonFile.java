@@ -9,9 +9,12 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.PosixFilePermission;
 import java.util.Set;
+import java.util.function.Supplier;
 
 /**
- * Writes a JSON file so that a crash or power cut mid-write leaves either the old file or the new
+ * The load and save code shared by JsonSettingsStore and JsonAuthStore (design_docs/0100).
+ *
+ * <p>Writes a JSON file so that a crash or power cut mid-write leaves either the old file or the new
  * one, never a truncated one: serialise to a temp file in the same directory, then rename over the
  * target atomically. settings.json and auth.json are read at startup and a torn one fails it, so
  * the container would restart-loop until someone repaired the file by hand. See design_docs/0093.
@@ -19,6 +22,30 @@ import java.util.Set;
 final class AtomicJsonFile {
 
     private AtomicJsonFile() {
+    }
+
+    /** Reads {@code file}, or - when it doesn't exist yet - writes {@code seed}'s value there and
+     * returns it. Creates the parent directory first. A file that exists but can't be read or
+     * parsed throws: for settings.json and auth.json, refusing to start is safer than silently
+     * starting on defaults (design_docs/0093). */
+    static <T> T readOrSeed(ObjectMapper objectMapper, Path file, Class<T> type, Supplier<T> seed,
+                            boolean ownerOnly) {
+        Path directory = file.getParent();
+        try {
+            Files.createDirectories(directory);
+        } catch (IOException e) {
+            throw new UncheckedIOException("Could not create config directory " + directory, e);
+        }
+        if (Files.exists(file)) {
+            try {
+                return objectMapper.readValue(file.toFile(), type);
+            } catch (IOException e) {
+                throw new UncheckedIOException("Could not read " + file, e);
+            }
+        }
+        T seeded = seed.get();
+        write(objectMapper, file, seeded, ownerOnly);
+        return seeded;
     }
 
     /** ownerOnly restricts the file to rw------- (where the filesystem supports POSIX

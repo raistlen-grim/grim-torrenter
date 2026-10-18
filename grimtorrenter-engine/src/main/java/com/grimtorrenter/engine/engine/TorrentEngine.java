@@ -1,5 +1,6 @@
 package com.grimtorrenter.engine.engine;
 
+import com.grimtorrenter.engine.AtomicFiles;
 import com.grimtorrenter.engine.GuardedTask;
 import com.grimtorrenter.engine.bencode.BDictionary;
 import com.grimtorrenter.engine.bencode.BList;
@@ -54,7 +55,6 @@ import com.grimtorrenter.engine.tracker.TrackerReachability;
 import com.grimtorrenter.engine.tracker.TrackerClient;
 import com.grimtorrenter.engine.tracker.TrackerEvent;
 import com.grimtorrenter.engine.tracker.TrackerRequest;
-import com.grimtorrenter.engine.tracker.TrackerResponse;
 import com.grimtorrenter.engine.tracker.TrackerStatusListener;
 import com.grimtorrenter.engine.tracker.UdpTrackerClient;
 import com.grimtorrenter.engine.utp.UtpSocket;
@@ -64,18 +64,15 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.NetworkInterface;
 import java.net.UnknownHostException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.FileTime;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
-import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -97,6 +94,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -217,17 +215,25 @@ public final class TorrentEngine {
     private static final String MAGNET_SOURCE = "magnet";
 
     private static final Duration DHT_QUERY_TIMEOUT = Duration.ofSeconds(5);
+    /** How long to wait before re-announcing/re-querying when a round found literally nothing
+     * new to try (every candidate that came back was already tried this attempt) - without
+     * this, that specific case would spin-loop re-announcing as fast as the tracker/DHT can
+     * answer, since (unlike a round that actually attempts connections) it costs no wall-clock
+     * time of its own to pace things. A round that DOES have fresh candidates needs no
+     * additional delay - racing them already costs roughly one candidate's connect-timeout
+     * worth of time, a reasonable re-announce cadence on its own. See design_docs/0028's
+     * addendum. */
+    private static final Duration EMPTY_ROUND_RETRY_DELAY = Duration.ofSeconds(5);
+    /** How long shutdown() waits, in total, for the sessions' background STOPPED announces. Kept
+     * well under a container runtime's default 10s stop grace period. See design_docs/0081. */
+    private static final Duration SHUTDOWN_ANNOUNCE_GRACE = Duration.ofSeconds(3);
 
     private final Path baseDownloadDirectory;
-    /** Where all engine bookkeeping lives, engine-wide (the two DHT marker files) and
-     * per-torrent alike (configTorrentDirectory() - see design_docs/0065). Defaults to
-     * baseDownloadDirectory for every caller/test that predates the engine-wide split (the
-     * ten-arg constructor below); production wiring (grimtorrenter-app's
-     * TorrentEngineProducer) passes grimtorrenter.config-directory instead - the same
-     * directory JsonSettingsStore/JsonLinesEventStore already use for settings.json/events/,
-     * keeping every bit of GrimTorrenter's own bookkeeping out of the download directory a
-     * user actually browses. See design_docs/0028's own 2026-08-30 addendum and
-     * design_docs/0065. */
+    /** Where all engine bookkeeping lives: engine-wide files (DHT node id and contacts, labels,
+     * blocklist cache, proxy password) and every per-torrent marker (configTorrentDirectory(),
+     * design_docs/0065). Defaults to baseDownloadDirectory for constructors that don't take it;
+     * production (grimtorrenter-app's TorrentEngineProducer) passes grimtorrenter.config-directory,
+     * keeping GrimTorrenter's own files out of the download directory a user browses. */
     private final Path configDirectory;
     private final LabelRegistry labelRegistry;
     private final Blocklist blocklist;
@@ -300,8 +306,8 @@ public final class TorrentEngine {
     /** Bounds simultaneous in-flight magnet metadata-fetch connection attempts across every
      * magnet-add happening at once, engine-wide - not per-magnet, per-round. Sized from
      * settingsStore.current().magnetFetchConcurrencyLimit() at construction, then resized to
-     * the live value at the start of each magnet-add attempt (see fetchMagnetMetadataViaTracker
-     * ThenAdd()/ViaDhtThenAdd()) - a Semaphore's initial permit count alone can't stay live the
+     * the live value at the start of each magnet-add attempt (see
+     * fetchMagnetMetadataThenAdd()) - a Semaphore's initial permit count alone can't stay live the
      * way a Supplier-read value can, so this uses LiveResizableSemaphore instead of a plain one.
      * See design_docs/0028's addendum. */
     private final LiveResizableSemaphore metadataFetchLimiter;
@@ -340,6 +346,15 @@ public final class TorrentEngine {
      * pre-existing caller/test is unaffected. */
     private final EventStore eventStore;
     private final TrackerReachability trackerReachability = new TrackerReachability();
+    /** How many inbound peer connections (TCP or µTP) have got as far as naming a torrent since
+     * this engine started - whether or not we had that torrent. Any at all is proof the listen
+     * port is reachable from outside, which is what the health report uses it for
+     * (design_docs/0086). */
+    private final AtomicLong incomingConnectionsSeen = new AtomicLong();
+    /** How many of those a torrent then kept - the rest named a torrent we don't have, one that
+     * is stopped or at its connection limit, a blocked address, or closed straight after the
+     * handshake. Seen-but-not-accepted growing fast is the signal worth a look. */
+    private final AtomicLong incomingConnectionsAccepted = new AtomicLong();
     /** Deploy-time config, same category as baseDownloadDirectory - see design_docs/0056.
      * Never read (and never even created on disk) unless Settings.watchFolderEnabled is true,
      * checked fresh on every scanWatchFolder() tick. */
@@ -791,13 +806,24 @@ public final class TorrentEngine {
      * an event, the outcome of the subsequent housekeeping move is not. Dispatches on extension
      * - a .torrent file is added synchronously (addTorrent() itself has already fully resolved
      * success/failure by the time it returns/throws), a .magnet file only ever accepted or
-     * rejected synchronously (see processWatchedMagnetFile()'s own Javadoc for why "added" here
+     * rejected synchronously (see addWatchedMagnetFile()'s own Javadoc for why "added" here
      * doesn't mean "resolved"). See design_docs/0056. */
     private void processWatchedFile(Path file, Path addedDir, Path failedDir) {
         String filename = file.getFileName().toString();
-        boolean added = filename.toLowerCase(Locale.ROOT).endsWith(MAGNET_FILE_EXTENSION)
-                ? processWatchedMagnetFile(file, filename)
-                : processWatchedTorrentFile(file, filename);
+        boolean added;
+        try {
+            if (filename.toLowerCase(Locale.ROOT).endsWith(MAGNET_FILE_EXTENSION)) {
+                addWatchedMagnetFile(file);
+            } else {
+                addTorrent(Files.readAllBytes(file), WATCH_FOLDER_SOURCE);
+            }
+            added = true;
+        } catch (IOException | RuntimeException e) {
+            LOG.log(System.Logger.Level.WARNING, "Watch folder could not add " + filename, e);
+            eventStore.record(new LibraryEvent(Instant.now(), EventType.ERROR, null, null,
+                    "Watch folder: could not add " + filename + " (" + e.getMessage() + ")"));
+            added = false;
+        }
         try {
             moveWithCollisionSuffix(file, added ? addedDir : failedDir);
         } catch (IOException e) {
@@ -806,42 +832,17 @@ public final class TorrentEngine {
         }
     }
 
-    private boolean processWatchedTorrentFile(Path file, String filename) {
-        try {
-            byte[] torrentFileBytes = Files.readAllBytes(file);
-            addTorrent(torrentFileBytes, WATCH_FOLDER_SOURCE);
-            return true;
-        } catch (IOException | RuntimeException e) {
-            LOG.log(System.Logger.Level.WARNING, "Watch folder could not add " + filename, e);
-            eventStore.record(new LibraryEvent(Instant.now(), EventType.ERROR, null, null,
-                    "Watch folder: could not add " + filename + " (" + e.getMessage() + ")"));
-            return false;
-        }
-    }
-
     /** "Added" here means only that a metadata-fetch attempt was successfully kicked off
      * (addMagnet() returned without throwing) - not that the magnet has actually resolved into
      * a real torrent yet, since that happens on a background virtual thread with its own
-     * bounded retry budget (see addMagnet()'s own Javadoc). This is the same "success at
-     * request time isn't the same as success" shape the REST magnet-add endpoint and its own
-     * optimistic pending-row UI already embrace (design_docs/0060) - waiting here for the real
-     * outcome would mean blocking this whole scan tick for up to
-     * Settings.magnetFetchTimeBudgetSeconds per file, serializing every other watch-folder
-     * candidate behind it. A background failure still surfaces - just as a MAGNET_ADD_FAILED
-     * library event (message prefixed "Watch folder: ", see recordMagnetAddFailed()) rather
-     * than by this file's on-disk location. */
-    private boolean processWatchedMagnetFile(Path file, String filename) {
-        try {
-            String content = Files.readString(file).trim();
-            MagnetLink magnet = MagnetLink.parse(content);
-            addMagnet(magnet, WATCH_FOLDER_SOURCE);
-            return true;
-        } catch (IOException | RuntimeException e) {
-            LOG.log(System.Logger.Level.WARNING, "Watch folder could not add " + filename, e);
-            eventStore.record(new LibraryEvent(Instant.now(), EventType.ERROR, null, null,
-                    "Watch folder: could not add " + filename + " (" + e.getMessage() + ")"));
-            return false;
-        }
+     * bounded retry budget (see addMagnet()'s own Javadoc). Waiting here for the real outcome
+     * would hold up this whole scan tick for up to Settings.magnetFetchTimeBudgetSeconds per
+     * file, serializing every other watch-folder candidate behind it. A background failure
+     * still surfaces - as a MAGNET_ADD_FAILED library event (message prefixed "Watch folder: ",
+     * see recordMagnetAddFailed()) rather than by this file's on-disk location. See
+     * design_docs/0060. */
+    private void addWatchedMagnetFile(Path file) throws IOException {
+        addMagnet(MagnetLink.parse(Files.readString(file).trim()), WATCH_FOLDER_SOURCE);
     }
 
     /** Guards against destinationDir having been deleted (by the user, or anything else)
@@ -916,22 +917,9 @@ public final class TorrentEngine {
         }
     }
 
-    /** How many inbound peer connections (TCP or µTP) have got as far as naming a torrent since
-     * this engine started - whether or not we had that torrent. Any at all is proof the listen
-     * port is reachable from outside, which is what the health report uses it for
-     * (design_docs/0086). */
-    private final java.util.concurrent.atomic.AtomicLong incomingConnectionsSeen =
-            new java.util.concurrent.atomic.AtomicLong();
-
     public long incomingConnectionsSeen() {
         return incomingConnectionsSeen.get();
     }
-
-    /** How many of those a torrent then kept - the rest named a torrent we don't have, one that
-     * is stopped or at its connection limit, a blocked address, or closed straight after the
-     * handshake. Seen-but-not-accepted growing fast is the signal worth a look. */
-    private final java.util.concurrent.atomic.AtomicLong incomingConnectionsAccepted =
-            new java.util.concurrent.atomic.AtomicLong();
 
     public long incomingConnectionsAccepted() {
         return incomingConnectionsAccepted.get();
@@ -982,13 +970,6 @@ public final class TorrentEngine {
         }
     }
 
-    /** DOWNLOADING/SEEDING only - the two states a torrent is actually reachable/worth
-     * announcing in. Shared by activeInfoHashesForLsd() below and announceOnLsdActivation()'s
-     * own oldState/newState check, so both agree on exactly the same definition of "active." */
-    private static boolean isDownloadingOrSeeding(TorrentState state) {
-        return state == TorrentState.DOWNLOADING || state == TorrentState.SEEDING;
-    }
-
     /** Non-private, currently DOWNLOADING/SEEDING torrents only - BEP 27 privacy (a private
      * torrent's info hash must never be broadcast to the LAN, same reasoning as
      * TorrentSession.dhtEligible()'s DHT/PEX gating) and no point announcing a paused/errored/
@@ -999,7 +980,7 @@ public final class TorrentEngine {
     private Collection<InfoHash> activeInfoHashesForLsd() {
         return sessions.values().stream()
                 .filter(session -> !session.metadata().isPrivate())
-                .filter(session -> isDownloadingOrSeeding(session.state()))
+                .filter(session -> session.state().isRunning())
                 .map(session -> session.metadata().infoHash())
                 .toList();
     }
@@ -1051,7 +1032,7 @@ public final class TorrentEngine {
             @Override
             public void onStateChanged(TorrentSession session, TorrentState oldState, TorrentState newState) {
                 delegate.onStateChanged(session, oldState, newState);
-                if (lsdService != null && !isDownloadingOrSeeding(oldState) && isDownloadingOrSeeding(newState)
+                if (lsdService != null && !oldState.isRunning() && newState.isRunning()
                         && !session.metadata().isPrivate()) {
                     InfoHash infoHash = session.metadata().infoHash();
                     Thread.ofVirtual().start(() -> lsdService.announce(List.of(infoHash)));
@@ -1100,8 +1081,7 @@ public final class TorrentEngine {
         }
         NodeId generated = NodeId.random();
         try {
-            Files.createDirectories(configDirectory);
-            writeAtomically(marker, generated.hex());
+            AtomicFiles.write(marker, generated.hex());
         } catch (IOException e) {
             LOG.log(System.Logger.Level.WARNING, "Could not persist DHT node id - it will regenerate next restart", e);
         }
@@ -1164,8 +1144,7 @@ public final class TorrentEngine {
             content.append(contact.getAddress().getHostAddress()).append(',').append(contact.getPort()).append('\n');
         }
         try {
-            Files.createDirectories(configDirectory);
-            writeAtomically(marker, content.toString());
+            AtomicFiles.write(marker, content.toString());
         } catch (IOException e) {
             LOG.log(System.Logger.Level.WARNING, "Could not persist DHT routing table", e);
         }
@@ -1293,73 +1272,22 @@ public final class TorrentEngine {
                 // hash - harmless no-op for a direct (non-magnet-originated) add, which never
                 // had one. See design_docs/0070.
                 concludePendingMagnet(infoHash);
-                // A path this same info hash already resolved once - e.g. a torrent removed
-                // with "keep files" and now being re-added - may already hold a real,
-                // possibly-complete download on disk. restoreAsync() re-verifies it in the
-                // background (same path a process restart already uses) instead of
-                // create()'s always-fresh, everything-NEEDED PieceManager, which would
-                // otherwise silently re-download data that's already correct. See
-                // design_docs/0037.
-                //
-                // readSeedingLimitOverrideMarker() also covers that same reused-path case:
-                // removeTorrent(infoHash, false) (keep files) deliberately never deletes this
-                // marker (design_docs/0054), so a torrent re-added after that picks its
-                // previously-set override back up rather than silently reverting to the
-                // global default; a genuinely new torrent just gets INHERIT (no marker exists
-                // yet).
                 Files.createDirectories(configTorrentDirectory);
-                SeedingLimitOverride seedingLimitOverride = readSeedingLimitOverrideMarker(configTorrentDirectory);
-                // Same reused-path reasoning as the override just above, now extended to
-                // lifetime stats too (confirmed with the user) - NONE (all-zero) for a
-                // genuinely new torrent, since no marker exists yet. See design_docs/0064.
-                TorrentSession.PersistedLifetimeStats persistedLifetimeStats =
-                        readLifetimeStatsMarker(configTorrentDirectory);
-                // Same reused-path reasoning again, now for bandwidth/connection limits - see
-                // design_docs/0072.
-                TorrentLimitOverride torrentLimitOverride = readTorrentLimitOverrideMarker(configTorrentDirectory);
-                int effectiveMaxConnections = TorrentLimits.effectiveMaxConnections(settingsStore.current(), torrentLimitOverride);
-                // Same reused-path reasoning again, for per-file priorities - see design_docs/0075.
-                FilePriorities filePriorities =
-                        readFilePrioritiesMarker(configTorrentDirectory, metadata.files().size());
-                // RateLimiters.forTorrent() needs a live-readable override before the
-                // TorrentSession it belongs to exists yet - resolved with this AtomicReference
-                // rather than any restructuring inside TorrentSession itself. Safe: no peer
-                // connection (and therefore no acquire() call) can happen before create()/
-                // restoreAsync() returns and sessionRef.set(created) runs below. See
-                // design_docs/0072.
-                AtomicReference<TorrentSession> sessionRef = new AtomicReference<>();
-                RateLimiters perTorrentRateLimiters =
-                        RateLimiters.forTorrent(rateLimiters, settingsStore, () -> sessionRef.get().torrentLimits());
                 Instant addedAt = Instant.now();
                 // Declared - markers written - before the session is even constructed, let
-                // alone started: a crash (or a start() that fails outright) between here and
-                // a running session must still leave this torrent recognizable on the next
-                // restore(), not silently vanish with nothing on disk to say it was ever
-                // added. Confirmed with the user as the intended behavior, not just a crash-
-                // safety nicety - "added but not currently running" is a real, valid state
-                // for a torrent to be in, the same way a tracker/DHT failure already leaves it
-                // in ERROR rather than un-adding it. See design_docs/0069.
+                // alone started: a crash (or a start that fails outright) between here and a
+                // running session must still leave this torrent recognizable on the next
+                // restore(). "Added but not running" is a real state, like ERROR after a
+                // tracker failure. See design_docs/0069.
                 writeTorrentFileMarker(configTorrentDirectory, torrentFileBytes);
                 writeStateMarker(configTorrentDirectory, STATE_RUNNING);
                 writeAddedAtMarker(configTorrentDirectory, addedAt);
-                TorrentSession created = resolution.preExisting()
-                        ? TorrentSession.restoreAsync(metadata, trackerClient, torrentDirectory,
-                                ourPeerId, ourListenPort, listener, dhtNode, perTorrentRateLimiters, fileHandlePool,
-                                pieceVerificationLimiter, encryptionMode, seedingLimitOverride, addedAt,
-                                dhtReannounceIntervalSeconds, lsdService != null, true, persistedLifetimeStats,
-                                torrentLimitOverride, effectiveMaxConnections, effectiveUtpEnabled(),
-                                utpConnectTimeoutSeconds, filePriorities)
-                        : TorrentSession.create(metadata, trackerClient, torrentDirectory, ourPeerId,
-                                ourListenPort, listener, dhtNode, perTorrentRateLimiters, fileHandlePool,
-                                pieceVerificationLimiter, encryptionMode, seedingLimitOverride, addedAt,
-                                dhtReannounceIntervalSeconds, lsdService != null, persistedLifetimeStats,
-                                torrentLimitOverride, effectiveMaxConnections, effectiveUtpEnabled(),
-                                utpConnectTimeoutSeconds, filePriorities);
-                sessionRef.set(created);
-                created.setLabelIds(readLabelIdsMarker(configTorrentDirectory));
-                created.setIpFilter(blocklist);
-                created.setProxyProvider(proxyConfig);
-                directories.put(infoHash, contentPathFor(metadata, torrentDirectory));
+                // A path this info hash already resolved once (a torrent removed with "keep
+                // files", now re-added) may already hold real data: it is re-verified in the
+                // background rather than downloaded again from scratch. See design_docs/0037.
+                TorrentSession created = buildSession(metadata, trackerClient, torrentDirectory,
+                        configTorrentDirectory, addedAt,
+                        resolution.preExisting() ? SessionOrigin.READDED : SessionOrigin.NEW, true);
                 // Started below, once out of computeIfAbsent: the first announce can take a
                 // tracker timeout, and this lambda holds the map's bin lock. See design_docs/0092.
                 return created;
@@ -1383,6 +1311,59 @@ public final class TorrentEngine {
                     Instant.now(), EventType.ADDED, infoHash.hex(), metadata.name(), message));
         }
         return new AddTorrentResult(session, !wasNewlyCreated.get());
+    }
+
+    /** How a session comes into existence - see buildSession(). */
+    private enum SessionOrigin {
+        /** A fresh download into a new directory. */
+        NEW,
+        /** Added again over a directory this info hash already used: verified in the background,
+         * and missing files are put back. */
+        READDED,
+        /** Brought back after a restart: verified in the background, and missing files are
+         * reported rather than recreated (design_docs/0088). */
+        RESTORED
+    }
+
+    /** Builds a session from its per-torrent markers (overrides, lifetime stats, file priorities,
+     * labels) and wires it to the engine-wide collaborators. Shared by addTorrent() and
+     * restoreOne(); the caller registers it in sessions. A re-added torrent picks its old
+     * overrides and stats back up, because a "keep files" removal leaves those markers in place
+     * (design_docs/0054/0064/0072/0075). autoStart applies only to READDED/RESTORED; a NEW
+     * session is started by the caller. */
+    private TorrentSession buildSession(TorrentMetadata metadata, TrackerClient trackerClient, Path torrentDirectory,
+                                        Path configTorrentDirectory, Instant addedAt, SessionOrigin origin,
+                                        boolean autoStart) throws IOException {
+        SeedingLimitOverride seedingLimitOverride = readSeedingLimitOverrideMarker(configTorrentDirectory);
+        TorrentSession.PersistedLifetimeStats lifetimeStats = readLifetimeStatsMarker(configTorrentDirectory);
+        TorrentLimitOverride torrentLimitOverride = readTorrentLimitOverrideMarker(configTorrentDirectory);
+        int maxConnections = TorrentLimits.effectiveMaxConnections(settingsStore.current(), torrentLimitOverride);
+        FilePriorities filePriorities = readFilePrioritiesMarker(configTorrentDirectory, metadata.files().size());
+        // The per-torrent limiter reads the session's live limits, but the session needs the
+        // limiter to be built. No peer can call acquire() before the session exists, so the
+        // reference is filled in straight after. See design_docs/0072.
+        AtomicReference<TorrentSession> sessionRef = new AtomicReference<>();
+        RateLimiters perTorrentRateLimiters =
+                RateLimiters.forTorrent(rateLimiters, settingsStore, () -> sessionRef.get().torrentLimits());
+        TorrentSession session = origin == SessionOrigin.NEW
+                ? TorrentSession.create(metadata, trackerClient, torrentDirectory, ourPeerId,
+                        ourListenPort, listener, dhtNode, perTorrentRateLimiters, fileHandlePool,
+                        pieceVerificationLimiter, encryptionMode, seedingLimitOverride, addedAt,
+                        dhtReannounceIntervalSeconds, lsdService != null, lifetimeStats,
+                        torrentLimitOverride, maxConnections, effectiveUtpEnabled(),
+                        utpConnectTimeoutSeconds, filePriorities)
+                : TorrentSession.restoreAsync(metadata, trackerClient, torrentDirectory,
+                        ourPeerId, ourListenPort, listener, dhtNode, perTorrentRateLimiters, fileHandlePool,
+                        pieceVerificationLimiter, encryptionMode, seedingLimitOverride, addedAt,
+                        dhtReannounceIntervalSeconds, lsdService != null, autoStart, lifetimeStats,
+                        torrentLimitOverride, maxConnections, effectiveUtpEnabled(),
+                        utpConnectTimeoutSeconds, filePriorities, origin == SessionOrigin.RESTORED);
+        sessionRef.set(session);
+        session.setLabelIds(readLabelIdsMarker(configTorrentDirectory));
+        session.setIpFilter(blocklist);
+        session.setProxyProvider(proxyConfig);
+        directories.put(metadata.infoHash(), contentPathFor(metadata, torrentDirectory));
+        return session;
     }
 
     /**
@@ -1455,11 +1436,7 @@ public final class TorrentEngine {
      * difference between a fresh add and a restart-resumed one is where trackerUrls/source
      * came from, not what happens next. */
     private void startMagnetFetch(MagnetLink magnet, List<String> trackerUrls, String source) {
-        if (!trackerUrls.isEmpty()) {
-            Thread.ofVirtual().start(() -> fetchMagnetMetadataViaTrackerThenAdd(magnet, trackerUrls, source));
-        } else {
-            Thread.ofVirtual().start(() -> fetchMagnetMetadataViaDhtThenAdd(magnet, source));
-        }
+        Thread.ofVirtual().start(() -> fetchMagnetMetadataThenAdd(magnet, trackerUrls, source));
     }
 
     /** design_docs/0060. message is folded into the event rather than just infoHash/type
@@ -1472,7 +1449,7 @@ public final class TorrentEngine {
     /** source is folded in as a "Watch folder: " prefix rather than a generic "via " + source
      * tag (unlike addTorrent()'s ADDED message) - message here is already a full failure-reason
      * sentence ("No peer had the metadata..."), and this mirrors the exact prefix
-     * processWatchedTorrentFile()'s own ERROR event already uses for the identical situation on
+     * processWatchedFile()'s own ERROR event already uses for the identical situation on
      * the .torrent side. Assumes source, when non-null, is always WATCH_FOLDER_SOURCE - the only
      * non-null value that exists today.
      *
@@ -1496,48 +1473,103 @@ public final class TorrentEngine {
         deleteMagnetPendingMarker(configTorrentDirectory(infoHash));
     }
 
-    /** How long to wait before re-announcing/re-querying when a round found literally nothing
-     * new to try (every candidate that came back was already tried this attempt) - without
-     * this, that specific case would spin-loop re-announcing as fast as the tracker/DHT can
-     * answer, since (unlike a round that actually attempts connections) it costs no wall-clock
-     * time of its own to pace things. A round that DOES have fresh candidates needs no
-     * additional delay - racing them already costs roughly one candidate's connect-timeout
-     * worth of time, a reasonable re-announce cadence on its own. See design_docs/0028's
-     * addendum. */
-    private static final Duration EMPTY_ROUND_RETRY_DELAY = Duration.ofSeconds(5);
-    /** How long shutdown() waits, in total, for the sessions' background STOPPED announces. Kept
-     * well under a container runtime's default 10s stop grace period. See design_docs/0081. */
-    private static final Duration SHUTDOWN_ANNOUNCE_GRACE = Duration.ofSeconds(3);
+    /** Where one magnet fetch gets each round's candidate peers from. */
+    private interface MagnetCandidateSource {
+        /** This round's candidates (possibly empty). Throws MagnetFetchAbandoned to give up at
+         * once with that message. */
+        List<PeerAddress> nextRound();
 
-    private void fetchMagnetMetadataViaTrackerThenAdd(MagnetLink magnet, List<String> trackerUrls, String source) {
+        /** The MAGNET_ADD_FAILED message once the time budget runs out. */
+        String exhaustedMessage(int triedCount);
+    }
+
+    /** A candidate source that can't go on - the fetch fails with this message. */
+    private static final class MagnetFetchAbandoned extends RuntimeException {
+        MagnetFetchAbandoned(String message) {
+            super(message);
+        }
+    }
+
+    /** Announces to the magnet's trackers each round. A failed announce (commonly a transient
+     * DNS/network blip, e.g. EAI_AGAIN inside a container) counts as an empty round, not a
+     * failure: DHT is asked instead if it's running, otherwise the empty-round delay paces a
+     * retry, all within the same time budget. See design_docs/0028's addendum. */
+    private MagnetCandidateSource trackerCandidates(MagnetLink magnet, List<String> trackerUrls, int numWant) {
+        TrackerClient trackerClient = createTrackerClient(List.of(trackerUrls));
+        AtomicBoolean everAnnounced = new AtomicBoolean();
+        return new MagnetCandidateSource() {
+            @Override
+            public List<PeerAddress> nextRound() {
+                try {
+                    List<PeerAddress> peers = trackerClient.announce(new TrackerRequest(magnet.infoHash(), ourPeerId,
+                            ourListenPort, 0, 0, Long.MAX_VALUE, TrackerEvent.STARTED, numWant)).peers();
+                    everAnnounced.set(true);
+                    return peers;
+                } catch (RuntimeException e) {
+                    // Message only: MultiTrackerClient already condenses the per-tracker failures
+                    // into one line, and a stack trace per round would bury it.
+                    LOG.log(System.Logger.Level.WARNING, "Could not announce for magnet " + magnet.infoHash()
+                            + (dhtNode != null ? ", trying DHT" : ", will retry") + ": " + e.getMessage());
+                    return dhtNode != null ? dhtPeersOrEmpty(magnet) : List.of();
+                }
+            }
+
+            @Override
+            public String exhaustedMessage(int triedCount) {
+                return everAnnounced.get() || triedCount > 0
+                        ? "No peer had the metadata (tried " + triedCount + ")"
+                        : "Could not announce to any tracker";
+            }
+        };
+    }
+
+    /** A trackerless magnet: a DHT lookup each round. Unlike the tracker path, a failed lookup
+     * ends the fetch - there is nothing else to fall back to. */
+    private MagnetCandidateSource dhtCandidates(MagnetLink magnet) {
+        return new MagnetCandidateSource() {
+            @Override
+            public List<PeerAddress> nextRound() {
+                try {
+                    return dhtNode.findPeers(magnet.infoHash(), ourListenPort, false, DHT_QUERY_TIMEOUT);
+                } catch (RuntimeException e) {
+                    LOG.log(System.Logger.Level.WARNING, "DHT peer lookup failed for magnet " + magnet.infoHash(), e);
+                    throw new MagnetFetchAbandoned("DHT peer lookup failed");
+                }
+            }
+
+            @Override
+            public String exhaustedMessage(int triedCount) {
+                return "No peer had the metadata (tried " + triedCount + ")";
+            }
+        };
+    }
+
+    /** Rounds of: get candidates, drop blocked and already-tried ones, race the rest for the
+     * metadata. Ends when a peer delivers it, the time budget runs out, or the magnet is removed
+     * (removeTorrent() has then already recorded its own event and cleaned up, so this just
+     * stops). trackerUrls becomes the resulting torrent's announce-list; a trackerless magnet
+     * gets none and relies on the session's periodic DHT discovery from then on. */
+    private void fetchMagnetMetadataThenAdd(MagnetLink magnet, List<String> trackerUrls, String source) {
         Settings settings = settingsStore.current();
         metadataFetchLimiter.resizeTo(settings.magnetFetchConcurrencyLimit());
-        TrackerClient trackerClient = createTrackerClient(List.of(trackerUrls));
+        int perRound = settings.magnetFetchCandidatesPerRound();
+        MagnetCandidateSource candidates = trackerUrls.isEmpty()
+                ? dhtCandidates(magnet)
+                : trackerCandidates(magnet, trackerUrls, perRound);
         Instant deadline = Instant.now().plusSeconds(settings.magnetFetchTimeBudgetSeconds());
         Set<PeerAddress> alreadyTried = new HashSet<>();
-        boolean everAnnounced = false;
         do {
-            List<PeerAddress> candidates;
+            List<PeerAddress> fresh;
             try {
-                candidates = trackerClient.announce(new TrackerRequest(magnet.infoHash(), ourPeerId, ourListenPort,
-                        0, 0, Long.MAX_VALUE, TrackerEvent.STARTED, settings.magnetFetchCandidatesPerRound())).peers();
-                everAnnounced = true;
-            } catch (RuntimeException e) {
-                // A failed announce (commonly a transient DNS/network blip - e.g. EAI_AGAIN inside a
-                // container) is treated like an empty round rather than a permanent failure: fall
-                // back to DHT if it's running, and otherwise let the empty-round delay below pace a
-                // retry, all bounded by the same time budget. See design_docs/0028's addendum.
-                // Message only, no stack trace - MultiTrackerClient already condenses per-tracker
-                // failures into one line, and a trace per retry round buries it.
-                LOG.log(System.Logger.Level.WARNING, "Could not announce for magnet " + magnet.infoHash()
-                        + (dhtNode != null ? ", trying DHT" : ", will retry") + ": " + e.getMessage());
-                candidates = dhtNode != null ? dhtPeersOrEmpty(magnet) : List.of();
+                fresh = candidates.nextRound().stream()
+                        .filter(address -> !blocklist.isBlocked(address.address()))
+                        .filter(address -> !alreadyTried.contains(address))
+                        .limit(perRound)
+                        .toList();
+            } catch (MagnetFetchAbandoned e) {
+                recordMagnetAddFailed(magnet, e.getMessage(), source);
+                return;
             }
-            List<PeerAddress> fresh = candidates.stream()
-                    .filter(address -> !blocklist.isBlocked(address.address()))
-                    .filter(address -> !alreadyTried.contains(address))
-                    .limit(settings.magnetFetchCandidatesPerRound())
-                    .toList();
             alreadyTried.addAll(fresh);
             Optional<byte[]> infoDictBytes = raceOneRound(magnet, fresh);
             if (infoDictBytes.isPresent()) {
@@ -1547,19 +1579,13 @@ public final class TorrentEngine {
             if (fresh.isEmpty() && !sleepUnlessDeadlinePassed(EMPTY_ROUND_RETRY_DELAY, deadline)) {
                 break;
             }
-            // Checked once per round, same cadence as the deadline itself - a user-initiated
-            // removeTorrent() mid-fetch already recorded its own REMOVED event and cleaned up
-            // the marker, so this loop just needs to notice and stop, not fail a second time.
-            // See design_docs/0070.
         } while (pendingMagnets.containsKey(magnet.infoHash()) && Instant.now().isBefore(deadline));
         if (!pendingMagnets.containsKey(magnet.infoHash())) {
             return;
         }
         LOG.log(System.Logger.Level.WARNING, "Could not fetch metadata for magnet " + magnet.infoHash()
                 + " from any of " + alreadyTried.size() + " peer(s) tried");
-        recordMagnetAddFailed(magnet, everAnnounced || !alreadyTried.isEmpty()
-                ? "No peer had the metadata (tried " + alreadyTried.size() + ")"
-                : "Could not announce to any tracker", source);
+        recordMagnetAddFailed(magnet, candidates.exhaustedMessage(alreadyTried.size()), source);
     }
 
     private List<PeerAddress> dhtPeersOrEmpty(MagnetLink magnet) {
@@ -1569,48 +1595,6 @@ public final class TorrentEngine {
             LOG.log(System.Logger.Level.WARNING, "DHT peer lookup failed for magnet " + magnet.infoHash(), e);
             return List.of();
         }
-    }
-
-    private void fetchMagnetMetadataViaDhtThenAdd(MagnetLink magnet, String source) {
-        Settings settings = settingsStore.current();
-        metadataFetchLimiter.resizeTo(settings.magnetFetchConcurrencyLimit());
-        Instant deadline = Instant.now().plusSeconds(settings.magnetFetchTimeBudgetSeconds());
-        Set<PeerAddress> alreadyTried = new HashSet<>();
-        do {
-            List<PeerAddress> peers;
-            try {
-                peers = dhtNode.findPeers(magnet.infoHash(), ourListenPort, false, DHT_QUERY_TIMEOUT);
-            } catch (RuntimeException e) {
-                LOG.log(System.Logger.Level.WARNING, "DHT peer lookup failed for magnet " + magnet.infoHash(), e);
-                recordMagnetAddFailed(magnet, "DHT peer lookup failed", source);
-                return;
-            }
-            List<PeerAddress> fresh = peers.stream()
-                    .filter(address -> !blocklist.isBlocked(address.address()))
-                    .filter(address -> !alreadyTried.contains(address))
-                    .limit(settings.magnetFetchCandidatesPerRound())
-                    .toList();
-            alreadyTried.addAll(fresh);
-            Optional<byte[]> infoDictBytes = raceOneRound(magnet, fresh);
-            if (infoDictBytes.isPresent()) {
-                // A trackerless magnet has no announce-list to give the resulting torrent -
-                // it relies on the resulting TorrentSession's own periodic DHT peer discovery
-                // (discoverPeersViaDht(), design_docs/0036's own 2026-09-06 revision) from here
-                // on, same as it relied on DHT to find this first batch of peers.
-                addFetchedTorrentUnlessRemoved(magnet, infoDictBytes.get(), List.of(), source);
-                return;
-            }
-            if (fresh.isEmpty() && !sleepUnlessDeadlinePassed(EMPTY_ROUND_RETRY_DELAY, deadline)) {
-                break;
-            }
-            // See the tracker-fetch loop's own identical comment above - design_docs/0070.
-        } while (pendingMagnets.containsKey(magnet.infoHash()) && Instant.now().isBefore(deadline));
-        if (!pendingMagnets.containsKey(magnet.infoHash())) {
-            return;
-        }
-        LOG.log(System.Logger.Level.WARNING, "Could not fetch metadata for magnet " + magnet.infoHash()
-                + " from any of " + alreadyTried.size() + " peer(s) tried");
-        recordMagnetAddFailed(magnet, "No peer had the metadata (tried " + alreadyTried.size() + ")", source);
     }
 
     /** Sleeps up to delay, but never past deadline, and never at all if deadline has already
@@ -1763,39 +1747,16 @@ public final class TorrentEngine {
             TorrentMetadata metadata = MetainfoParser.parse(torrentFileBytes);
             TrackerClient trackerClient = createTrackerClient(metadata);
             boolean running = !STATE_STOPPED.equals(readStateMarker(configTorrentDirectory));
-            SeedingLimitOverride seedingLimitOverride = readSeedingLimitOverrideMarker(configTorrentDirectory);
             Instant addedAt = readAddedAtMarker(configTorrentDirectory);
-            TorrentSession.PersistedLifetimeStats persistedLifetimeStats =
-                    readLifetimeStatsMarker(configTorrentDirectory);
-            TorrentLimitOverride torrentLimitOverride = readTorrentLimitOverrideMarker(configTorrentDirectory);
-            int effectiveMaxConnections = TorrentLimits.effectiveMaxConnections(settingsStore.current(), torrentLimitOverride);
-            FilePriorities filePriorities = readFilePrioritiesMarker(configTorrentDirectory, metadata.files().size());
             Path torrentDirectory = readDownloadPathMarker(configTorrentDirectory);
             if (torrentDirectory == null) {
                 LOG.log(System.Logger.Level.WARNING,
                         "No download-path marker in " + configTorrentDirectory + " - skipping");
                 return;
             }
-            // See addTorrent()'s matching AtomicReference for why this indirection is needed -
-            // same reasoning applies here. See design_docs/0072.
-            AtomicReference<TorrentSession> sessionRef = new AtomicReference<>();
-            RateLimiters perTorrentRateLimiters =
-                    RateLimiters.forTorrent(rateLimiters, settingsStore, () -> sessionRef.get().torrentLimits());
-            TorrentSession session = TorrentSession.restoreAsync(
-                    metadata, trackerClient, torrentDirectory, ourPeerId, ourListenPort, listener, dhtNode,
-                    perTorrentRateLimiters, fileHandlePool, pieceVerificationLimiter, encryptionMode,
-                    seedingLimitOverride, addedAt, dhtReannounceIntervalSeconds, lsdService != null, running,
-                    persistedLifetimeStats, torrentLimitOverride, effectiveMaxConnections,
-                    effectiveUtpEnabled(), utpConnectTimeoutSeconds, filePriorities,
-                    // A torrent we already had: files gone from disk are reported, not quietly
-                    // downloaded again. See design_docs/0088.
-                    true);
-            sessionRef.set(session);
-            session.setLabelIds(readLabelIdsMarker(configTorrentDirectory));
-            session.setIpFilter(blocklist);
-            session.setProxyProvider(proxyConfig);
+            TorrentSession session = buildSession(metadata, trackerClient, torrentDirectory, configTorrentDirectory,
+                    addedAt, SessionOrigin.RESTORED, running);
             sessions.put(metadata.infoHash(), session);
-            directories.put(metadata.infoHash(), contentPathFor(metadata, torrentDirectory));
         } catch (IOException | RuntimeException e) {
             LOG.log(System.Logger.Level.WARNING, "Could not restore torrent from " + configTorrentDirectory, e);
         }
@@ -1843,7 +1804,7 @@ public final class TorrentEngine {
         // Checked first, before ever touching sessions/directories - a pending magnet never has
         // either populated. deleteData is meaningless here (nothing was ever downloaded) and is
         // ignored. The in-flight fetch thread, if any, notices via its own periodic
-        // pendingMagnets check (see fetchMagnetMetadataVia*ThenAdd()) rather than being
+        // pendingMagnets check (see fetchMagnetMetadataThenAdd()) rather than being
         // interrupted mid-network-call. See design_docs/0070.
         if (pendingMagnets.remove(infoHash) != null) {
             deleteMagnetPendingMarker(configTorrentDirectory(infoHash));
@@ -1894,30 +1855,33 @@ public final class TorrentEngine {
      *
      * <p>Returns whether the torrent exists (false for a pending magnet, which has nothing to
      * pause), so the REST layer can 404 like every other per-torrent endpoint.
+     *
+     * <p>Like every per-torrent setter, the marker is written first: if that fails, the call
+     * throws with nothing changed, instead of leaving a paused torrent that a restart resumes.
      */
     public boolean pauseTorrent(InfoHash infoHash) {
         TorrentSession session = sessions.get(infoHash);
         if (session == null) {
             return false;
         }
-        session.stop();
         writeStateMarker(configTorrentDirectory(infoHash), STATE_STOPPED);
+        session.stop();
         // A deliberate stop shouldn't wait on the next periodic tick to capture its final
         // lifetime totals. See design_docs/0064.
         flushLifetimeStats(session);
         return true;
     }
 
-    /** Returns whether the torrent exists - see pauseTorrent(). */
+    /** Returns whether the torrent exists; marker first - see pauseTorrent(). */
     public boolean resumeTorrent(InfoHash infoHash) {
         TorrentSession session = sessions.get(infoHash);
         if (session == null) {
             return false;
         }
+        writeStateMarker(configTorrentDirectory(infoHash), STATE_RUNNING);
         // Returns once the session is STARTING; the announce runs in the background, so a resume
         // never waits on a slow tracker. See design_docs/0098.
         session.startInBackground();
-        writeStateMarker(configTorrentDirectory(infoHash), STATE_RUNNING);
         return true;
     }
 
@@ -2179,230 +2143,257 @@ public final class TorrentEngine {
         }
     }
 
-    /** Every marker is written through here - temp file in the same directory, then an atomic
-     * rename - so a crash mid-write leaves the old marker or the new one, never a torn file that
-     * a reader then has to reject. See design_docs/0092. */
-    private static void writeAtomically(Path target, byte[] content) throws IOException {
-        Path temp = Files.createTempFile(target.getParent(), target.getFileName().toString(), ".tmp");
+    /** Writes one marker atomically (AtomicFiles). A failure surfaces as a
+     * TorrentEngineIoException naming what couldn't be saved: every marker but the lifetime
+     * stats records something a user just asked for, so failing loudly is right. */
+    private static void writeMarker(Path directory, String filename, String what, String content) {
         try {
-            Files.write(temp, content);
-            Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-        } finally {
-            Files.deleteIfExists(temp);
+            AtomicFiles.write(directory.resolve(filename), content);
+        } catch (IOException e) {
+            throw new TorrentEngineIoException("Could not persist " + what + " to " + directory + ": " + e.getMessage(), e);
         }
     }
 
-    private static void writeAtomically(Path target, String content) throws IOException {
-        writeAtomically(target, content.getBytes(StandardCharsets.UTF_8));
+    @FunctionalInterface
+    private interface MarkerParser<T> {
+        T parse(Path marker) throws IOException;
+    }
+
+    /** Reads one marker. fallback when it's absent (a new torrent, or one from before that
+     * marker existed), and fallback, logged, when it can't be read or parsed: a hand-edited or
+     * corrupt marker must never drop a torrent from restore. Never throws. See
+     * design_docs/0092. */
+    private static <T> T readMarker(Path directory, String filename, String what, T fallback, MarkerParser<T> parser) {
+        Path marker = directory.resolve(filename);
+        if (!Files.exists(marker)) {
+            return fallback;
+        }
+        try {
+            return parser.parse(marker);
+        } catch (IOException | RuntimeException e) {
+            LOG.log(System.Logger.Level.WARNING, "Could not read " + what + " in " + directory + " - using the default", e);
+            return fallback;
+        }
     }
 
     private static void writeTorrentFileMarker(Path directory, byte[] torrentFileBytes) throws IOException {
-        writeAtomically(directory.resolve(TORRENT_FILE_MARKER_FILENAME), torrentFileBytes);
+        AtomicFiles.write(directory.resolve(TORRENT_FILE_MARKER_FILENAME), torrentFileBytes);
     }
 
     private static void writeStateMarker(Path directory, String state) {
-        try {
-            writeAtomically(directory.resolve(STATE_MARKER_FILENAME), state);
-        } catch (IOException e) {
-            throw new TorrentEngineIoException("Could not persist state to " + directory + ": " + e.getMessage(), e);
-        }
+        writeMarker(directory, STATE_MARKER_FILENAME, "state", state);
     }
 
     /** RUNNING when absent or unreadable - the same default a torrent has before it was ever
-     * paused. Like every marker reader here, never throws: a bad preference file must not make a
-     * torrent disappear on restore. See design_docs/0092. */
+     * paused. */
     private static String readStateMarker(Path directory) {
-        Path stateMarker = directory.resolve(STATE_MARKER_FILENAME);
-        if (!Files.exists(stateMarker)) {
-            return STATE_RUNNING;
-        }
-        try {
-            return Files.readString(stateMarker).strip();
-        } catch (IOException e) {
-            LOG.log(System.Logger.Level.WARNING, "Could not read state marker in " + directory + " - treating as running", e);
-            return STATE_RUNNING;
-        }
+        return readMarker(directory, STATE_MARKER_FILENAME, "state marker", STATE_RUNNING,
+                marker -> Files.readString(marker).strip());
     }
 
     private static void writeSeedingLimitOverrideMarker(Path directory, SeedingLimitOverride override) {
-        try {
-            writeAtomically(directory.resolve(SEEDING_LIMIT_OVERRIDE_MARKER_FILENAME),
-                    "ratioLimit=" + override.ratioLimit() + "\ntimeLimitMinutes=" + override.timeLimitMinutes() + "\n");
-        } catch (IOException e) {
-            throw new TorrentEngineIoException(
-                    "Could not persist seeding limit override to " + directory + ": " + e.getMessage(), e);
-        }
+        writeMarker(directory, SEEDING_LIMIT_OVERRIDE_MARKER_FILENAME, "seeding limit override",
+                KeyValueFile.format(List.of(
+                        KeyValueFile.entry("ratioLimit", override.ratioLimit()),
+                        KeyValueFile.entry("timeLimitMinutes", override.timeLimitMinutes()))));
+    }
+
+    /** INHERIT (both metrics from the global default) when absent or unreadable. See
+     * design_docs/0054. */
+    private static SeedingLimitOverride readSeedingLimitOverrideMarker(Path directory) {
+        return readMarker(directory, SEEDING_LIMIT_OVERRIDE_MARKER_FILENAME, "seeding-limit override",
+                SeedingLimitOverride.INHERIT, marker -> {
+                    double ratioLimit = SeedingLimitOverride.INHERIT.ratioLimit();
+                    long timeLimitMinutes = SeedingLimitOverride.INHERIT.timeLimitMinutes();
+                    for (KeyValueFile.Entry entry : KeyValueFile.read(marker)) {
+                        switch (entry.key()) {
+                            case "ratioLimit" -> ratioLimit = Double.parseDouble(entry.value());
+                            case "timeLimitMinutes" -> timeLimitMinutes = Long.parseLong(entry.value());
+                            default -> {
+                            }
+                        }
+                    }
+                    return new SeedingLimitOverride(ratioLimit, timeLimitMinutes);
+                });
     }
 
     private static void writeTorrentLimitOverrideMarker(Path directory, TorrentLimitOverride override) {
-        try {
-            writeAtomically(directory.resolve(TORRENT_LIMIT_OVERRIDE_MARKER_FILENAME),
-                    "uploadBytesPerSecOverride=" + override.uploadBytesPerSecOverride()
-                            + "\ndownloadBytesPerSecOverride=" + override.downloadBytesPerSecOverride()
-                            + "\nmaxConnectionsOverride=" + override.maxConnectionsOverride() + "\n");
-        } catch (IOException e) {
-            throw new TorrentEngineIoException(
-                    "Could not persist torrent limit override to " + directory + ": " + e.getMessage(), e);
-        }
+        writeMarker(directory, TORRENT_LIMIT_OVERRIDE_MARKER_FILENAME, "torrent limit override",
+                KeyValueFile.format(List.of(
+                        KeyValueFile.entry("uploadBytesPerSecOverride", override.uploadBytesPerSecOverride()),
+                        KeyValueFile.entry("downloadBytesPerSecOverride", override.downloadBytesPerSecOverride()),
+                        KeyValueFile.entry("maxConnectionsOverride", override.maxConnectionsOverride()))));
+    }
+
+    /** INHERIT when absent or unreadable. See design_docs/0072. */
+    private static TorrentLimitOverride readTorrentLimitOverrideMarker(Path directory) {
+        return readMarker(directory, TORRENT_LIMIT_OVERRIDE_MARKER_FILENAME, "torrent limit override",
+                TorrentLimitOverride.INHERIT, marker -> {
+                    long upload = TorrentLimitOverride.INHERIT.uploadBytesPerSecOverride();
+                    long download = TorrentLimitOverride.INHERIT.downloadBytesPerSecOverride();
+                    int maxConnections = TorrentLimitOverride.INHERIT.maxConnectionsOverride();
+                    for (KeyValueFile.Entry entry : KeyValueFile.read(marker)) {
+                        switch (entry.key()) {
+                            case "uploadBytesPerSecOverride" -> upload = Long.parseLong(entry.value());
+                            case "downloadBytesPerSecOverride" -> download = Long.parseLong(entry.value());
+                            case "maxConnectionsOverride" -> maxConnections = Integer.parseInt(entry.value());
+                            default -> {
+                            }
+                        }
+                    }
+                    return new TorrentLimitOverride(upload, download, maxConnections);
+                });
     }
 
     private static void writeAddedAtMarker(Path directory, Instant addedAt) {
-        try {
-            writeAtomically(directory.resolve(ADDED_AT_MARKER_FILENAME), addedAt.toString());
-        } catch (IOException e) {
-            throw new TorrentEngineIoException(
-                    "Could not persist added-at timestamp to " + directory + ": " + e.getMessage(), e);
-        }
+        writeMarker(directory, ADDED_AT_MARKER_FILENAME, "added-at timestamp", addedAt.toString());
     }
 
-    /** Null when the marker is absent (every directory added before this field existed) -
-     * see ADDED_AT_MARKER_FILENAME's own comment on why that's left unknown rather than
-     * backfilled. A corrupt/unparseable marker (hand-edited, truncated by a crash mid-write)
-     * is treated the same way rather than failing the whole restore over one cosmetic fact. */
+    /** Null when absent or unreadable - see ADDED_AT_MARKER_FILENAME on why an unknown date
+     * stays unknown rather than being backfilled. */
     private static Instant readAddedAtMarker(Path directory) {
-        Path marker = directory.resolve(ADDED_AT_MARKER_FILENAME);
-        if (!Files.exists(marker)) {
-            return null;
-        }
-        try {
-            return Instant.parse(Files.readString(marker).strip());
-        } catch (IOException | DateTimeParseException e) {
-            LOG.log(System.Logger.Level.WARNING, "Could not read added-at marker in " + directory, e);
-            return null;
-        }
+        return readMarker(directory, ADDED_AT_MARKER_FILENAME, "added-at marker", null,
+                marker -> Instant.parse(Files.readString(marker).strip()));
     }
 
     private static void writeDownloadPathMarker(Path configTorrentDirectory, Path downloadPath) {
-        try {
-            writeAtomically(configTorrentDirectory.resolve(DOWNLOAD_PATH_MARKER_FILENAME), downloadPath.toString());
-        } catch (IOException e) {
-            throw new TorrentEngineIoException(
-                    "Could not persist download path to " + configTorrentDirectory + ": " + e.getMessage(), e);
-        }
+        writeMarker(configTorrentDirectory, DOWNLOAD_PATH_MARKER_FILENAME, "download path", downloadPath.toString());
     }
 
-    /** Null when absent - a torrent this engine has never resolved a download path for yet
-     * (resolveDownloadDirectory() then treats it as genuinely new). A corrupt/unparseable
-     * marker is treated the same way, same tolerance as readAddedAtMarker() above. */
+    /** Null when absent or unreadable: resolveDownloadDirectory() then treats the torrent as
+     * new, and restoreOne() skips it. */
     private static Path readDownloadPathMarker(Path configTorrentDirectory) {
-        Path marker = configTorrentDirectory.resolve(DOWNLOAD_PATH_MARKER_FILENAME);
-        if (!Files.exists(marker)) {
-            return null;
-        }
-        try {
-            return Path.of(Files.readString(marker).strip());
-        } catch (IOException | InvalidPathException e) {
-            LOG.log(System.Logger.Level.WARNING, "Could not read download-path marker in " + configTorrentDirectory, e);
-            return null;
-        }
+        return readMarker(configTorrentDirectory, DOWNLOAD_PATH_MARKER_FILENAME, "download-path marker", null,
+                marker -> Path.of(Files.readString(marker).strip()));
     }
 
     private static void writeMagnetPendingMarker(Path configTorrentDirectory, PendingMagnet pending) {
-        try {
-            Files.createDirectories(configTorrentDirectory);
-            StringBuilder content = new StringBuilder();
-            if (pending.displayName() != null) {
-                content.append("displayName=").append(pending.displayName()).append('\n');
-            }
-            for (String tracker : pending.trackers()) {
-                content.append("tracker=").append(tracker).append('\n');
-            }
-            writeAtomically(configTorrentDirectory.resolve(MAGNET_PENDING_MARKER_FILENAME), content.toString());
-        } catch (IOException e) {
-            throw new TorrentEngineIoException(
-                    "Could not persist magnet-pending marker to " + configTorrentDirectory + ": " + e.getMessage(), e);
+        List<KeyValueFile.Entry> entries = new ArrayList<>();
+        if (pending.displayName() != null) {
+            entries.add(KeyValueFile.entry("displayName", pending.displayName()));
         }
+        for (String tracker : pending.trackers()) {
+            entries.add(KeyValueFile.entry("tracker", tracker));
+        }
+        writeMarker(configTorrentDirectory, MAGNET_PENDING_MARKER_FILENAME, "magnet-pending marker",
+                KeyValueFile.format(entries));
     }
 
     private static void deleteMagnetPendingMarker(Path configTorrentDirectory) {
         deleteIfExists(configTorrentDirectory.resolve(MAGNET_PENDING_MARKER_FILENAME));
     }
 
-    /** Null when absent - either never a pending magnet, or one that already concluded (see
-     * MAGNET_PENDING_MARKER_FILENAME's own Javadoc). A corrupt/unparseable marker is treated the
-     * same way, same tolerance as every other marker's read helper here - restore() simply
-     * won't re-drive a fetch it can't reconstruct rather than failing the whole scan over it. */
+    /** Null when absent (never a pending magnet, or one that has concluded) or unreadable:
+     * restore() then doesn't re-drive a fetch it can't reconstruct. */
     private static PendingMagnet readMagnetPendingMarker(InfoHash infoHash, Path configTorrentDirectory) {
-        Path marker = configTorrentDirectory.resolve(MAGNET_PENDING_MARKER_FILENAME);
-        if (!Files.exists(marker)) {
-            return null;
-        }
-        String displayName = null;
-        List<String> trackers = new ArrayList<>();
-        try {
-            for (String line : Files.readAllLines(marker)) {
-                String[] parts = line.split("=", 2);
-                if (parts.length != 2) {
-                    continue;
-                }
-                switch (parts[0]) {
-                    case "displayName" -> displayName = parts[1];
-                    case "tracker" -> trackers.add(parts[1]);
-                    default -> {
-                        // Forward-compatible - see every other marker's own identical comment.
+        return readMarker(configTorrentDirectory, MAGNET_PENDING_MARKER_FILENAME, "magnet-pending marker", null,
+                marker -> {
+                    String displayName = null;
+                    List<String> trackers = new ArrayList<>();
+                    for (KeyValueFile.Entry entry : KeyValueFile.read(marker)) {
+                        switch (entry.key()) {
+                            case "displayName" -> displayName = entry.value();
+                            case "tracker" -> trackers.add(entry.value());
+                            default -> {
+                            }
+                        }
                     }
-                }
-            }
-        } catch (IOException e) {
-            LOG.log(System.Logger.Level.WARNING, "Could not read magnet-pending marker in " + configTorrentDirectory, e);
-            return null;
-        }
-        return new PendingMagnet(infoHash, displayName, trackers);
+                    return new PendingMagnet(infoHash, displayName, trackers);
+                });
     }
 
-    /** Best-effort, like saveDhtRoutingTable() - a failed write here just means this flush is
-     * lost (the next periodic tick, or the next flush-on-stop/shutdown, catches up), not worth
-     * failing whatever caller triggered it (a pause, a shutdown) over. See design_docs/0064. */
+    /** Best-effort, unlike the other writers: rewritten every flush tick by a live session, so a
+     * failed write only loses this flush (the next tick, or the flush on stop/shutdown, catches
+     * up), and the pause or shutdown that triggered it mustn't fail over it. See
+     * design_docs/0064. */
     private static void writeLifetimeStatsMarker(Path configTorrentDirectory, TorrentSession.PersistedLifetimeStats stats) {
         try {
-            Files.createDirectories(configTorrentDirectory);
-            Path marker = configTorrentDirectory.resolve(LIFETIME_STATS_MARKER_FILENAME);
-            String content = "lifetimeUploadedBytes=" + stats.uploadedBytesBaseline()
-                    + "\nactiveMillis=" + stats.activeMillisBaseline()
-                    + "\ncompletedAtEpochMillis=" + stats.completedAtEpochMillis()
-                    + "\nwastedBytes=" + stats.wastedBytesBaseline() + "\n";
-            writeAtomically(marker, content);
+            AtomicFiles.write(configTorrentDirectory.resolve(LIFETIME_STATS_MARKER_FILENAME), KeyValueFile.format(List.of(
+                    KeyValueFile.entry("lifetimeUploadedBytes", stats.uploadedBytesBaseline()),
+                    KeyValueFile.entry("activeMillis", stats.activeMillisBaseline()),
+                    KeyValueFile.entry("completedAtEpochMillis", stats.completedAtEpochMillis()),
+                    KeyValueFile.entry("wastedBytes", stats.wastedBytesBaseline()))));
         } catch (IOException e) {
             LOG.log(System.Logger.Level.WARNING, "Could not persist lifetime stats to " + configTorrentDirectory, e);
         }
     }
 
-    /** PersistedLifetimeStats.NONE (the all-zero baseline) when the marker is absent - a
-     * genuinely new torrent, or one added before design_docs/0064. A corrupt/unparseable
-     * marker is treated the same way, same tolerance as readAddedAtMarker()/
-     * readDownloadPathMarker() above. */
+    /** PersistedLifetimeStats.NONE (all zero) when absent or unreadable. */
     private static TorrentSession.PersistedLifetimeStats readLifetimeStatsMarker(Path configTorrentDirectory) {
-        Path marker = configTorrentDirectory.resolve(LIFETIME_STATS_MARKER_FILENAME);
-        if (!Files.exists(marker)) {
-            return TorrentSession.PersistedLifetimeStats.NONE;
-        }
-        long uploadedBytes = 0;
-        long activeMillis = 0;
-        long completedAtEpochMillis = 0;
-        long wastedBytes = 0;
-        try {
-            for (String line : Files.readAllLines(marker)) {
-                String[] parts = line.split("=", 2);
-                if (parts.length != 2) {
-                    continue;
-                }
-                switch (parts[0]) {
-                    case "lifetimeUploadedBytes" -> uploadedBytes = Long.parseLong(parts[1]);
-                    case "activeMillis" -> activeMillis = Long.parseLong(parts[1]);
-                    case "completedAtEpochMillis" -> completedAtEpochMillis = Long.parseLong(parts[1]);
-                    case "wastedBytes" -> wastedBytes = Long.parseLong(parts[1]);
-                    default -> {
-                        // Forward-compatible: an unknown key from a newer version is ignored
-                        // rather than failing the whole restore over one cosmetic fact.
+        return readMarker(configTorrentDirectory, LIFETIME_STATS_MARKER_FILENAME, "lifetime stats",
+                TorrentSession.PersistedLifetimeStats.NONE, marker -> {
+                    long uploadedBytes = 0;
+                    long activeMillis = 0;
+                    long completedAtEpochMillis = 0;
+                    long wastedBytes = 0;
+                    for (KeyValueFile.Entry entry : KeyValueFile.read(marker)) {
+                        switch (entry.key()) {
+                            case "lifetimeUploadedBytes" -> uploadedBytes = Long.parseLong(entry.value());
+                            case "activeMillis" -> activeMillis = Long.parseLong(entry.value());
+                            case "completedAtEpochMillis" -> completedAtEpochMillis = Long.parseLong(entry.value());
+                            case "wastedBytes" -> wastedBytes = Long.parseLong(entry.value());
+                            default -> {
+                            }
+                        }
                     }
-                }
+                    return new TorrentSession.PersistedLifetimeStats(uploadedBytes, activeMillis,
+                            completedAtEpochMillis, wastedBytes);
+                });
+    }
+
+    /** Only the non-MEDIUM files are written; an absent marker means every file at MEDIUM. */
+    private static void writeFilePrioritiesMarker(Path directory, FilePriorities priorities) {
+        List<KeyValueFile.Entry> entries = new ArrayList<>();
+        for (int i = 0; i < priorities.priorities().size(); i++) {
+            FilePriority priority = priorities.get(i);
+            if (priority != FilePriority.MEDIUM) {
+                entries.add(KeyValueFile.entry(String.valueOf(i), priority.name()));
             }
-        } catch (IOException | NumberFormatException e) {
-            LOG.log(System.Logger.Level.WARNING, "Could not read lifetime stats in " + configTorrentDirectory, e);
-            return TorrentSession.PersistedLifetimeStats.NONE;
         }
-        return new TorrentSession.PersistedLifetimeStats(uploadedBytes, activeMillis, completedAtEpochMillis,
-                wastedBytes);
+        writeMarker(directory, FILE_PRIORITIES_MARKER_FILENAME, "file priorities", KeyValueFile.format(entries));
+    }
+
+    /** Tolerant line by line: an entry it can't make sense of (bad index, unknown priority)
+     * leaves that file at MEDIUM. Falls back to all-MEDIUM if the result would leave nothing
+     * wanted (the invariant setFilePriorities() enforces), since a torrent with every file
+     * skipped would "complete" instantly. See design_docs/0075. */
+    private static FilePriorities readFilePrioritiesMarker(Path directory, int fileCount) {
+        FilePriorities allMedium = FilePriorities.allMedium(fileCount);
+        FilePriorities read = readMarker(directory, FILE_PRIORITIES_MARKER_FILENAME, "file priorities", allMedium,
+                marker -> {
+                    FilePriority[] priorities = new FilePriority[fileCount];
+                    Arrays.fill(priorities, FilePriority.MEDIUM);
+                    for (KeyValueFile.Entry entry : KeyValueFile.read(marker)) {
+                        try {
+                            int index = Integer.parseInt(entry.key().trim());
+                            if (index >= 0 && index < fileCount) {
+                                priorities[index] = FilePriority.valueOf(entry.value().trim());
+                            }
+                        } catch (IllegalArgumentException ignored) {
+                            // that file stays at MEDIUM
+                        }
+                    }
+                    return new FilePriorities(Arrays.asList(priorities));
+                });
+        return read.anyWanted() ? read : allMedium;
+    }
+
+    private static void writeLabelIdsMarker(Path directory, List<String> ids) {
+        writeMarker(directory, LABEL_IDS_MARKER_FILENAME, "labels", ids.isEmpty() ? "" : String.join("\n", ids) + "\n");
+    }
+
+    /** Ids no longer in the registry (deleted while this torrent wasn't loaded) are dropped, a
+     * missing/unreadable marker is no labels, and the result is capped at
+     * MAX_LABELS_PER_TORRENT - so a stale or hand-edited marker can never surface a dead label
+     * or grow without bound. */
+    private List<String> readLabelIdsMarker(Path directory) {
+        return readMarker(directory, LABEL_IDS_MARKER_FILENAME, "labels", List.of(),
+                marker -> Files.readAllLines(marker).stream()
+                        .map(String::strip)
+                        .filter(id -> !id.isEmpty() && labelRegistry.exists(id))
+                        .distinct()
+                        .limit(MAX_LABELS_PER_TORRENT)
+                        .toList());
     }
 
     /** Every torrent's config directory - configDirectory/torrents/<infoHash-hex> - holding
@@ -2423,159 +2414,6 @@ public final class TorrentEngine {
         return metadata instanceof SingleFileTorrent single ? sessionDirectory.resolve(single.name()) : sessionDirectory;
     }
 
-    /** Absent marker (every pre-existing torrent directory, and any brand-new one) means
-     * "inherit both metrics from the global default" - no migration needed. See
-     * design_docs/0054. */
-    private static SeedingLimitOverride readSeedingLimitOverrideMarker(Path directory) {
-        Path marker = directory.resolve(SEEDING_LIMIT_OVERRIDE_MARKER_FILENAME);
-        if (!Files.exists(marker)) {
-            return SeedingLimitOverride.INHERIT;
-        }
-        double ratioLimit = SeedingLimitOverride.INHERIT.ratioLimit();
-        long timeLimitMinutes = SeedingLimitOverride.INHERIT.timeLimitMinutes();
-        try {
-            for (String line : Files.readAllLines(marker)) {
-                String[] parts = line.split("=", 2);
-                if (parts.length != 2) {
-                    continue;
-                }
-                switch (parts[0]) {
-                    case "ratioLimit" -> ratioLimit = Double.parseDouble(parts[1]);
-                    case "timeLimitMinutes" -> timeLimitMinutes = Long.parseLong(parts[1]);
-                    default -> {
-                        // Unknown line - ignore rather than fail, forward-compatible with a
-                        // future field this version doesn't know about yet.
-                    }
-                }
-            }
-            return new SeedingLimitOverride(ratioLimit, timeLimitMinutes);
-        } catch (IOException | RuntimeException e) {
-            // Unreadable or corrupt - fall back to the global defaults rather than dropping the
-            // torrent from restore. See design_docs/0092.
-            LOG.log(System.Logger.Level.WARNING, "Could not read seeding-limit override in " + directory
-                    + " - using the global defaults", e);
-            return SeedingLimitOverride.INHERIT;
-        }
-    }
-
-    private static void writeFilePrioritiesMarker(Path directory, FilePriorities priorities) {
-        StringBuilder lines = new StringBuilder();
-        for (int i = 0; i < priorities.priorities().size(); i++) {
-            FilePriority priority = priorities.get(i);
-            if (priority != FilePriority.MEDIUM) {
-                lines.append(i).append('=').append(priority.name()).append('\n');
-            }
-        }
-        try {
-            writeAtomically(directory.resolve(FILE_PRIORITIES_MARKER_FILENAME), lines.toString());
-        } catch (IOException e) {
-            throw new TorrentEngineIoException(
-                    "Could not persist file priorities to " + directory + ": " + e.getMessage(), e);
-        }
-    }
-
-    /** Tolerant on every axis - a hand-edited or truncated marker degrades to MEDIUM for
-     * whatever it can't make sense of rather than failing the restore. Also falls back to
-     * all-MEDIUM if the marker would leave nothing wanted (the same invariant
-     * setFilePriorities() enforces), since a torrent with every file skipped would "complete"
-     * instantly. See design_docs/0075. */
-    private static void writeLabelIdsMarker(Path directory, List<String> ids) {
-        try {
-            writeAtomically(directory.resolve(LABEL_IDS_MARKER_FILENAME),
-                    ids.isEmpty() ? "" : String.join("\n", ids) + "\n");
-        } catch (IOException e) {
-            throw new TorrentEngineIoException(
-                    "Could not persist labels to " + directory + ": " + e.getMessage(), e);
-        }
-    }
-
-    /** Ids no longer in the registry (deleted while this torrent wasn't loaded) are dropped, a
-     * missing/unreadable marker is no labels, and the result is capped at
-     * MAX_LABELS_PER_TORRENT - so a stale or hand-edited marker can never surface a dead label
-     * or grow without bound. Never throws. */
-    private List<String> readLabelIdsMarker(Path directory) {
-        Path marker = directory.resolve(LABEL_IDS_MARKER_FILENAME);
-        if (!Files.exists(marker)) {
-            return List.of();
-        }
-        try {
-            return Files.readAllLines(marker).stream()
-                    .map(String::strip)
-                    .filter(id -> !id.isEmpty() && labelRegistry.exists(id))
-                    .distinct()
-                    .limit(MAX_LABELS_PER_TORRENT)
-                    .toList();
-        } catch (IOException e) {
-            return List.of();
-        }
-    }
-
-    private static FilePriorities readFilePrioritiesMarker(Path directory, int fileCount) {
-        Path marker = directory.resolve(FILE_PRIORITIES_MARKER_FILENAME);
-        FilePriority[] priorities = new FilePriority[fileCount];
-        java.util.Arrays.fill(priorities, FilePriority.MEDIUM);
-        List<String> lines = List.of();
-        if (Files.exists(marker)) {
-            try {
-                lines = Files.readAllLines(marker);
-            } catch (IOException e) {
-                LOG.log(System.Logger.Level.WARNING, "Could not read file priorities in " + directory
-                        + " - every file at normal priority", e);
-            }
-        }
-        for (String line : lines) {
-            String[] parts = line.split("=", 2);
-            if (parts.length != 2) {
-                continue;
-            }
-            try {
-                int index = Integer.parseInt(parts[0].trim());
-                if (index >= 0 && index < fileCount) {
-                    priorities[index] = FilePriority.valueOf(parts[1].trim());
-                }
-            } catch (IllegalArgumentException ignored) {
-                // unparseable index or unknown priority name - leave that file at MEDIUM
-            }
-        }
-        FilePriorities result = new FilePriorities(java.util.Arrays.asList(priorities));
-        return result.anyWanted() ? result : FilePriorities.allMedium(fileCount);
-    }
-
-    private static TorrentLimitOverride readTorrentLimitOverrideMarker(Path directory) {
-        Path marker = directory.resolve(TORRENT_LIMIT_OVERRIDE_MARKER_FILENAME);
-        if (!Files.exists(marker)) {
-            return TorrentLimitOverride.INHERIT;
-        }
-        long uploadBytesPerSecOverride = TorrentLimitOverride.INHERIT.uploadBytesPerSecOverride();
-        long downloadBytesPerSecOverride = TorrentLimitOverride.INHERIT.downloadBytesPerSecOverride();
-        int maxConnectionsOverride = TorrentLimitOverride.INHERIT.maxConnectionsOverride();
-        try {
-            for (String line : Files.readAllLines(marker)) {
-                String[] parts = line.split("=", 2);
-                if (parts.length != 2) {
-                    continue;
-                }
-                switch (parts[0]) {
-                    case "uploadBytesPerSecOverride" -> uploadBytesPerSecOverride = Long.parseLong(parts[1]);
-                    case "downloadBytesPerSecOverride" -> downloadBytesPerSecOverride = Long.parseLong(parts[1]);
-                    case "maxConnectionsOverride" -> maxConnectionsOverride = Integer.parseInt(parts[1]);
-                    default -> {
-                        // Unknown line - ignore rather than fail, forward-compatible with a
-                        // future field this version doesn't know about yet.
-                    }
-                }
-            }
-            return new TorrentLimitOverride(uploadBytesPerSecOverride, downloadBytesPerSecOverride,
-                    maxConnectionsOverride);
-        } catch (IOException | RuntimeException e) {
-            // Unreadable or corrupt - fall back to the global defaults rather than dropping the
-            // torrent from restore. See design_docs/0092.
-            LOG.log(System.Logger.Level.WARNING, "Could not read torrent limit override in " + directory
-                    + " - using the global defaults", e);
-            return TorrentLimitOverride.INHERIT;
-        }
-    }
-
     private static void deleteIfExists(Path path) {
         try {
             Files.deleteIfExists(path);
@@ -2594,26 +2432,21 @@ public final class TorrentEngine {
         }
     }
 
-    /**
-     * Prefers the torrent's own declared name for its download location (matching real
-     * clients, and human-browsable) rather than the info hash - see design_docs/0024 for the
-     * original naming rationale and design_docs/0065 for how this now resolves a *file* path
-     * directly for a single-file torrent (no wrapper folder) rather than always resolving a
-     * directory. Two failure modes still guarded against: two different torrents sharing a
-     * declared name colliding, and the same torrent being re-added (e.g. after a restart)
-     * being mistaken for a collision with itself - the latter is now answered by a direct
-     * config-side lookup (readDownloadPathMarker) rather than a marker file inside the
-     * download-side candidate itself. Synchronized because two different *new* torrents with
-     * the same name being added concurrently could otherwise both see the same candidate as
-     * free.
-     */
     /** preExisting is true when this info hash already had a download path recorded from a
-     * previous resolveDownloadDirectory() call (reused, not freshly claimed) - see
-     * design_docs/0037 for why addTorrent() needs to know this to decide create() vs
-     * restoreAsync(). */
+     * previous resolveDownloadDirectory() call (reused, not freshly claimed) - addTorrent()
+     * then verifies what's there instead of starting fresh. See design_docs/0037. */
     private record DirectoryResolution(Path directory, boolean preExisting) {
     }
 
+    /**
+     * Names the download location after the torrent's declared name (as other clients do, and
+     * readable when browsing) rather than its info hash - see design_docs/0024; a single-file
+     * torrent resolves to the file itself, with no wrapper folder (design_docs/0065). Guards
+     * two cases: two different torrents with the same name (the second gets a "-2" suffix), and
+     * the same torrent added again, which the download-path marker recognises as a reuse rather
+     * than a collision. Holds directoryResolutionLock so two concurrent adds can't both claim
+     * the same free candidate.
+     */
     private DirectoryResolution resolveDownloadDirectory(TorrentMetadata metadata) {
         InfoHash infoHash = metadata.infoHash();
         Path configTorrentDirectory = configTorrentDirectory(infoHash);
@@ -2749,31 +2582,20 @@ public final class TorrentEngine {
     }
 
     /**
-     * Prefers "announce-list" (BEP 12) when present - a spec-compliant
-     * torrent file already includes the classic "announce" field
-     * redundantly as part of it, so using both would just mean announcing
-     * to the same tracker twice. Falls back to "announce" alone only when
-     * announce-list is absent entirely (legacy single-tracker torrents).
-     * Each tier is filtered down to HTTP(S)/UDP URLs, and tiers that end
-     * up with nothing left are dropped.
+     * Prefers "announce-list" (BEP 12) when present - a spec-compliant torrent file repeats the
+     * classic "announce" inside it, so using both would announce to the same tracker twice. Falls
+     * back to "announce" alone only when announce-list is absent (legacy single-tracker
+     * torrents). Each tier is filtered down to HTTP(S)/UDP URLs, and tiers left empty are
+     * dropped. See design_docs/0022 and design_docs/0023.
      *
-     * <p>A torrent with genuinely zero trackers declared (no "announce",
-     * empty/absent "announce-list" - the shape a DHT-resolved trackerless
-     * magnet's synthesized torrent bytes always have, see
-     * synthesizeTorrentFileBytes) returns an empty list rather than
-     * throwing, once DHT-only torrents became supported (design_docs/0028)
-     * - createTrackerClient turns that into a NoOpTrackerClient. Trackers
-     * that ARE declared but all unsupported still throws: that's a
-     * different, still-fatal situation (the torrent came with tracker
-     * URLs, but none of them are ones this client can talk to at all),
-     * and DHT's own peer-discovery role is limited to the no-trackers-at-all
-     * case for now (see design_docs/0028's slice 6 scope note).
+     * <p>An empty result means the torrent finds peers through DHT alone; createTrackerClient()
+     * turns it into a NoOpTrackerClient (design_docs/0028). That covers a torrent with no
+     * trackers at all (a trackerless magnet's synthesized bytes) and, since design_docs/0099, one
+     * whose trackers are all of kinds this client can't use (wss://, say). The exception is a
+     * private torrent: BEP 27 forbids it DHT, so with no usable tracker it could never find a
+     * peer, and adding it fails instead.
      *
-     * <p>Package-private (not private) so it can be unit-tested directly
-     * without needing a real tracker server. See design_docs/0022 for the
-     * multi-tracker fallback this feeds, and design_docs/0023 for UDP
-     * tracker support - both HTTP(S) and UDP URLs are accepted here now,
-     * where an earlier version only accepted HTTP(S).
+     * <p>Package-private so it can be unit-tested without a tracker server.
      */
     static List<List<String>> selectTrackerTiers(TorrentMetadata metadata) {
         List<List<String>> tierUrls = !metadata.announceList().isEmpty()
@@ -2789,9 +2611,13 @@ public final class TorrentEngine {
                 .filter(tier -> !tier.isEmpty())
                 .toList();
 
+        if (usableTiers.isEmpty() && metadata.isPrivate()) {
+            throw new TorrentEngineException("No usable tracker found for this private torrent - only HTTP(S) and UDP"
+                    + " trackers are supported, and a private torrent can't use DHT instead");
+        }
         if (usableTiers.isEmpty()) {
-            throw new TorrentEngineException(
-                    "No usable tracker found for this torrent - only HTTP(S) and UDP trackers are supported");
+            LOG.log(System.Logger.Level.INFO, "No supported tracker for " + metadata.infoHash()
+                    + " (only HTTP(S) and UDP are) - using DHT alone");
         }
         return usableTiers;
     }

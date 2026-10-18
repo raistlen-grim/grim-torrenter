@@ -9,14 +9,18 @@ import com.grimtorrenter.engine.peerwire.Handshake;
 import com.grimtorrenter.engine.peerwire.PeerWireCodec;
 
 import java.io.BufferedInputStream;
+import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
+import java.util.Arrays;
 import java.util.Collection;
+import java.util.HexFormat;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Semaphore;
@@ -57,7 +61,7 @@ public final class PeerServer implements AutoCloseable {
      * before expecting a reply, so waiting for them costs nothing. */
     private static final byte[] PLAINTEXT_HANDSHAKE_PREFIX =
             ((char) Handshake.PROTOCOL_NAME.length() + Handshake.PROTOCOL_NAME)
-                    .getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+                    .getBytes(StandardCharsets.US_ASCII);
     private static final SecureRandom MSE_RANDOM = new SecureRandom();
     /** Inbound connections allowed to be mid-handshake at once; any more are closed on accept.
      * Generous next to real arrival rates, small next to a file-descriptor limit. Package-private
@@ -171,7 +175,7 @@ public final class PeerServer implements AutoCloseable {
                 return;
             }
             peekable.reset();
-            boolean plaintext = java.util.Arrays.equals(prefix, PLAINTEXT_HANDSHAKE_PREFIX);
+            boolean plaintext = Arrays.equals(prefix, PLAINTEXT_HANDSHAKE_PREFIX);
 
             InputStream in;
             OutputStream out = socket.getOutputStream();
@@ -220,7 +224,7 @@ public final class PeerServer implements AutoCloseable {
      * DEBUG line when its handshake fails - enough to tell an encrypted handshake (random
      * bytes) from some other protocol knocking on the port. Bounded: HEAD_BYTES per connection,
      * for the length of the handshake only. */
-    private static final class HeadRecorder extends java.io.FilterInputStream {
+    private static final class HeadRecorder extends FilterInputStream {
         private static final int HEAD_BYTES = 16;
         private final byte[] head = new byte[HEAD_BYTES];
         private long total;
@@ -255,7 +259,7 @@ public final class PeerServer implements AutoCloseable {
 
         String describe() {
             int shown = (int) Math.min(total, HEAD_BYTES);
-            return total + " bytes received, starting " + java.util.HexFormat.of().formatHex(head, 0, shown);
+            return total + " bytes received, starting " + HexFormat.of().formatHex(head, 0, shown);
         }
     }
 

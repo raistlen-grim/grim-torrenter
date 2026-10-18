@@ -1,11 +1,10 @@
 package com.grimtorrenter.engine.piece;
 
+import com.grimtorrenter.engine.Hashing;
 import com.grimtorrenter.engine.metainfo.PieceHashes;
 import com.grimtorrenter.engine.metainfo.TorrentFile;
 import com.grimtorrenter.engine.metainfo.TorrentMetadata;
 
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.BitSet;
 import java.util.List;
 import java.util.OptionalInt;
@@ -50,6 +49,14 @@ public final class PieceManager {
     /** Guarded by lock. See design_docs/0075. */
     private FilePriorities filePriorities;
     private byte[] pieceTier;
+    /** Running totals, kept in step with completedPieces and pieceTier so the progress and
+     * announce figures cost O(1) rather than a walk over every piece. Guarded by lock;
+     * recounted in full only when the priorities change or completion is reset. */
+    private long completedBytes;
+    private long wantedBytes;
+    private long wantedCompletedBytes;
+    private int wantedPieces;
+    private int wantedCompletedPieces;
 
     public PieceManager(TorrentMetadata metadata) {
         this(metadata, new SequentialPieceSelectionStrategy());
@@ -78,6 +85,7 @@ public final class PieceManager {
         this.completedPieces = new BitSet(pieceCount);
         this.filePriorities = filePriorities;
         this.pieceTier = computePieceTiers(filePriorities);
+        recountWanted();
     }
 
     /**
@@ -94,6 +102,7 @@ public final class PieceManager {
         try {
             this.filePriorities = newPriorities;
             this.pieceTier = tiers;
+            recountWanted();
         } finally {
             lock.unlock();
         }
@@ -160,12 +169,24 @@ public final class PieceManager {
     public boolean isWantedComplete() {
         lock.lock();
         try {
+            return wantedCompletedPieces == wantedPieces;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /** The wanted pieces not yet verified, as a fresh BitSet. */
+    public BitSet stillNeededPieces() {
+        lock.lock();
+        try {
+            BitSet needed = new BitSet(pieceCount);
             for (int i = 0; i < pieceCount; i++) {
-                if (pieceTier[i] > 0 && !completedPieces.get(i)) {
-                    return false;
+                if (pieceTier[i] > 0) {
+                    needed.set(i);
                 }
             }
-            return true;
+            needed.andNot(completedPieces);
+            return needed;
         } finally {
             lock.unlock();
         }
@@ -174,13 +195,7 @@ public final class PieceManager {
     public long wantedBytes() {
         lock.lock();
         try {
-            long total = 0;
-            for (int i = 0; i < pieceCount; i++) {
-                if (pieceTier[i] > 0) {
-                    total += pieceLength(i);
-                }
-            }
-            return total;
+            return wantedBytes;
         } finally {
             lock.unlock();
         }
@@ -189,15 +204,42 @@ public final class PieceManager {
     public long wantedBytesCompleted() {
         lock.lock();
         try {
-            long total = 0;
-            for (int i = 0; i < pieceCount; i++) {
-                if (pieceTier[i] > 0 && completedPieces.get(i)) {
-                    total += pieceLength(i);
-                }
-            }
-            return total;
+            return wantedCompletedBytes;
         } finally {
             lock.unlock();
+        }
+    }
+
+    /** Bytes in verified pieces, wanted or not. */
+    public long completedBytes() {
+        lock.lock();
+        try {
+            return completedBytes;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /** Caller holds lock, or is the constructor. */
+    private void recountWanted() {
+        completedBytes = 0;
+        wantedBytes = 0;
+        wantedCompletedBytes = 0;
+        wantedPieces = 0;
+        wantedCompletedPieces = 0;
+        for (int i = 0; i < pieceCount; i++) {
+            boolean complete = completedPieces.get(i);
+            if (complete) {
+                completedBytes += pieceLength(i);
+            }
+            if (pieceTier[i] > 0) {
+                wantedPieces++;
+                wantedBytes += pieceLength(i);
+                if (complete) {
+                    wantedCompletedPieces++;
+                    wantedCompletedBytes += pieceLength(i);
+                }
+            }
         }
     }
 
@@ -299,12 +341,17 @@ public final class PieceManager {
      */
     public boolean verify(int pieceIndex, byte[] actualBytes) {
         validateIndex(pieceIndex);
-        boolean matches = pieces.matches(pieceIndex, sha1(actualBytes));
+        boolean matches = pieces.matches(pieceIndex, Hashing.sha1(actualBytes));
         lock.lock();
         try {
-            if (matches) {
+            if (matches && !completedPieces.get(pieceIndex)) {
                 completedPieces.set(pieceIndex);
-            } else {
+                completedBytes += pieceLength(pieceIndex);
+                if (pieceTier[pieceIndex] > 0) {
+                    wantedCompletedPieces++;
+                    wantedCompletedBytes += pieceLength(pieceIndex);
+                }
+            } else if (!matches) {
                 blockReceived[pieceIndex].clear();
             }
         } finally {
@@ -323,6 +370,7 @@ public final class PieceManager {
             for (BitSet blocks : blockReceived) {
                 blocks.clear();
             }
+            recountWanted();
         } finally {
             lock.unlock();
         }
@@ -354,6 +402,19 @@ public final class PieceManager {
         } finally {
             lock.unlock();
         }
+    }
+
+    /** For a selection strategy, which runs under lock (selectNextPiece() holds it): the first
+     * piece at or after from that isn't verified yet, or pieceCount if there is none. Skips
+     * completed pieces a word at a time, so a nearly finished torrent isn't rescanned piece by
+     * piece. */
+    int nextIncompletePiece(int from) {
+        return Math.min(completedPieces.nextClearBit(from), pieceCount);
+    }
+
+    /** priorityTier() without taking the lock, for a strategy already running under it. */
+    int tierUnderLock(int pieceIndex) {
+        return pieceTier[pieceIndex];
     }
 
     public OptionalInt selectNextPiece(IntPredicate peerHasPiece) {
@@ -396,14 +457,6 @@ public final class PieceManager {
         if (pieceIndex < 0 || pieceIndex >= pieceCount) {
             throw new IndexOutOfBoundsException(
                     "Piece index " + pieceIndex + " out of range [0," + pieceCount + ")");
-        }
-    }
-
-    private static byte[] sha1(byte[] data) {
-        try {
-            return MessageDigest.getInstance("SHA-1").digest(data);
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-1 not available on this JVM", e);
         }
     }
 }

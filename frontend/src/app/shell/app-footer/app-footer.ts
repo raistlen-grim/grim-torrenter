@@ -50,13 +50,14 @@ export class AppFooter {
   );
 
   /** Lifetime ratio across every torrent, not a per-torrent average - matches the style
-   * guide's own summary row reading a single combined "Ratio 1.84". An em dash when
-   * nothing has been downloaded yet, rather than a misleading 0.00 or a divide-by-zero
-   * Infinity. */
+   * guide's own summary row reading a single combined "Ratio 1.84". The same definition as the
+   * details panel's Ratio (design_docs/0064): lifetime uploaded over verified downloaded, so the
+   * two agree after a restart. An em dash when nothing has been downloaded yet, rather than a
+   * misleading 0.00 or a divide-by-zero Infinity. */
   readonly ratioDisplay = computed(() => {
     const torrents = this.events.torrents();
     const totalDownloaded = torrents.reduce((sum, t) => sum + t.bytesDownloaded, 0);
-    const totalUploaded = torrents.reduce((sum, t) => sum + t.bytesUploaded, 0);
+    const totalUploaded = torrents.reduce((sum, t) => sum + t.lifetimeUploadedBytes, 0);
     return totalDownloaded > 0 ? (totalUploaded / totalDownloaded).toFixed(2) : '—';
   });
 

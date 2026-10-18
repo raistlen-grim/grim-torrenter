@@ -130,7 +130,7 @@
       [ariaLabel]="torrent.state === 'STOPPED' ? 'Resume' : 'Pause'"
       [pTooltip]="torrent.state === 'STOPPED' ? 'Resume' : 'Pause'"
       tooltipPosition="top"
-      (onClick)="torrent.state === 'STOPPED' ? onResume() : onPause()"
+      (onClick)="onToggle()"
     />
     <p-button
       icon="pi pi-ellipsis-h"
@@ -147,6 +147,18 @@
       [torrentName]="torrent.name"
       [visible]="showSeedingLimitsDialog()"
       (visibleChange)="showSeedingLimitsDialog.set($event)"
+    />
+    <app-torrent-limits-dialog
+      [infoHash]="infoHash()"
+      [torrentName]="torrent.name"
+      [visible]="showTorrentLimitsDialog()"
+      (visibleChange)="showTorrentLimitsDialog.set($event)"
+    />
+    <app-torrent-labels-dialog
+      [infoHash]="infoHash()"
+      [torrentName]="torrent.name"
+      [visible]="showTorrentLabelsDialog()"
+      (visibleChange)="showTorrentLabelsDialog.set($event)"
     />
   </div>
 } @else {

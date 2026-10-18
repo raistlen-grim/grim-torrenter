@@ -1,12 +1,13 @@
 import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { RouterLink, RouterLinkActive } from '@angular/router';
-import { catchError, interval, of, startWith, switchMap } from 'rxjs';
+import { catchError, of } from 'rxjs';
 
 import { LabelService } from '../../services/label.service';
 import { SystemService } from '../../services/system.service';
 import { TorrentEventsService } from '../../services/torrent-events.service';
 import { STATUS_FILTER_LABELS, StatusFilter, TorrentFilterService, matchesStatusFilter } from '../../services/torrent-filter.service';
+import { pollEvery } from '../../shared/poll';
 import { ManageLabelsDialog } from './manage-labels-dialog/manage-labels-dialog';
 
 interface FilterOption {
@@ -91,16 +92,15 @@ export class AppSidebar {
   /** DHT/peer-server bind failures are stable for the whole process lifetime (see
    * design_docs/0059), so this cadence is about freshness-on-first-load, not chasing a
    * genuinely live transition - same 30s cadence AppFooter already uses for its own
-   * system-stats polling. */
-  /** Not private - app-sidebar.html reads health() directly, to tell "no failures because
+   * system-stats polling.
+   *
+   * <p>Not private - app-sidebar.html reads health() directly, to tell "no failures because
    * everything's healthy" apart from "no failures because the first poll hasn't resolved yet"
    * (still the null initialValue) - the latter shouldn't flash a false all-clear checkmark. A
-   * failed poll also yields null: no claim either way. See design_docs/0086. */
+   * failed poll yields null too (unlike pollEvery()'s default of keeping the last value): no
+   * claim either way. See design_docs/0086. */
   readonly health = toSignal(
-    interval(SERVICES_POLL_INTERVAL_MS).pipe(
-      startWith(0),
-      switchMap(() => this.system.health().pipe(catchError(() => of(null)))),
-    ),
+    pollEvery(SERVICES_POLL_INTERVAL_MS, () => this.system.health().pipe(catchError(() => of(null)))),
     { initialValue: null },
   );
 

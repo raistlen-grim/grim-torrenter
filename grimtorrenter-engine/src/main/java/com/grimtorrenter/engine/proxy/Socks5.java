@@ -5,6 +5,7 @@ import java.io.DataInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.ConnectException;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
@@ -142,7 +143,7 @@ public final class Socks5 {
             return socket;
         } catch (IOException | RuntimeException e) {
             closeQuietly(socket);
-            if (e instanceof java.net.ConnectException || e instanceof SocketTimeoutException) {
+            if (e instanceof ConnectException || e instanceof SocketTimeoutException) {
                 throw new IOException("Could not reach the proxy at " + proxy.host() + ":" + proxy.port()
                         + " (" + e.getMessage() + ")", e);
             }

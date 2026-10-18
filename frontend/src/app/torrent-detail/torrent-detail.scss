@@ -181,7 +181,7 @@ p-tablist {
 
 /* transition lives on the base rule (applies to every tab, not just [data-p-active]) so it
  * covers both directions: the newly-active tab's underline fading in and the previously-active
- * one's fading out. README.md "Motion" names this "tab underline position" - the underline
+ * one's fading out. The style guide's "Motion" names this "tab underline position" - the underline
  * here is a per-tab inset box-shadow (task 7), not a separate element that could slide between
  * two tabs' positions, so this is a crossfade approximation rather than a literal sliding
  * indicator. A true sliding underline would need a separate absolutely-positioned element

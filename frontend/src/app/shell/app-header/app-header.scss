@@ -27,7 +27,7 @@
   font-weight: 600;
 }
 
-/* STYLE_GUIDE_NOTES.md's constructed skull mark (shared/skull-mark) - font-size-driven, so
+/* The style guide's constructed skull mark (shared/skull-mark) - font-size-driven, so
  * this sets the font-size that determines its rendered size (previously a hardcoded
  * 13px/17px) rather than sizing the mark directly. --void is the one thing every call site
  * must supply itself (see SkullMark's own comment) - this bar's own background, so the

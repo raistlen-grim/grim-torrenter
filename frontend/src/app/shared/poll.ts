@@ -1,3 +1,5 @@
+import { Signal } from '@angular/core';
+import { toObservable, toSignal } from '@angular/core/rxjs-interop';
 import { EMPTY, Observable, catchError, interval, startWith, switchMap } from 'rxjs';
 
 /**
@@ -12,5 +14,21 @@ export function pollEvery<T>(intervalMs: number, fetch: () => Observable<T>): Ob
   return interval(intervalMs).pipe(
     startWith(0),
     switchMap(() => fetch().pipe(catchError(() => EMPTY))),
+  );
+}
+
+/** pollEvery() while visible is true, stopping (no request in flight) the moment it turns false -
+ * for a dialog that only needs live data while it's open. pollWhileInput() is the other gated
+ * form, keyed to a changing value instead. Must be called in an injection context (a field
+ * initializer). See design_docs/0073. */
+export function pollWhileVisible<T>(
+  visible: Signal<boolean>,
+  intervalMs: number,
+  fetch: () => Observable<T>,
+  initialValue: T,
+): Signal<T> {
+  return toSignal(
+    toObservable(visible).pipe(switchMap((isVisible) => (isVisible ? pollEvery(intervalMs, fetch) : EMPTY))),
+    { initialValue },
   );
 }

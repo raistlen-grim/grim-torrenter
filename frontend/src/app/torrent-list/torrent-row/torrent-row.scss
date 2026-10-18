@@ -1,4 +1,4 @@
-/* Row anatomy per the style guide's redesign (STYLE_GUIDE_NOTES.md / README.md "Row
+/* Row anatomy per the style guide's redesign (the style guide "Row
  * anatomy") - see design_docs/0032's second-pass correction for the token/preset side of
  * this. The row itself is the click target (cursor stays "default", never "pointer" - a
  * data row, not a hyperlink) and the containing block for the full-row progress underlay
@@ -6,7 +6,7 @@
 :host {
   position: relative;
   cursor: default;
-  /* README.md "Motion": row background is one of only three 120ms ease-out transitions in
+  /* The style guide's "Motion": row background is one of only three 120ms ease-out transitions in
    * these views - lives on :host itself, not the :hover rule below, so it also covers the
    * transition *out* when the pointer leaves (a transition property only takes effect on a
    * state that's still present after the change, so declaring it solely on `:hover` would
@@ -18,7 +18,7 @@
   background: color-mix(in srgb, var(--color-text) 4%, transparent);
 }
 
-/* Style guide's "Selected row" token in full (STYLE_GUIDE_NOTES.md: "inset 2px 0 0 0
+/* Style guide's "Selected row" token in full (the style guide: "inset 2px 0 0 0
  * var(--color-accent) left edge plus an 8% accent wash - never a fully filled row"), applied
  * to whichever row's torrent the detail drawer currently has open - originally spec'd for
  * multi-select checkboxes (excluded from the style-guide restyle pass, design_docs/0032), but
@@ -79,7 +79,7 @@ td:not(.state-icon-cell) {
 /* The underlay lives inside .state-icon-cell in the markup (the first cell), but is
  * positioned against :host (the row) per the comment above - it visually spans every column,
  * not just its own containing cell. pointer-events: none so it never intercepts row clicks. */
-/* README.md "Motion": "The progress underlay width animates at the data refresh interval
+/* The style guide's "Motion": "The progress underlay width animates at the data refresh interval
  * (1s linear) so it creeps rather than jumps." transition lives on the base rule, not
  * .verifying, since it's the same element switching between the two states - width is the
  * only property this needs to animate; background-color/-image snap instantly between the
