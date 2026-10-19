@@ -29,6 +29,12 @@ Four jobs:
    It logs in with the workflow's own `GITHUB_TOKEN` (`packages: write`), so no personal token is
    stored. Layers are cached in the GitHub Actions cache.
 
+**Every action is pinned to a full commit SHA**, with its release in a comment. A tag like `@v3`
+can be moved to point at other code, and the publish job hands the Docker actions a token that
+can write the package; a pinned SHA can't change underneath it. `.github/dependabot.yml` opens a
+weekly pull request when a pinned action has a new release, so pinning doesn't mean falling
+behind. Only the publish job gets `packages: write`; the rest run with `contents: read`.
+
 **The Dockerfile's two build stages run on the build platform** (`FROM --platform=$BUILDPLATFORM`).
 The Angular bundle and the Quarkus jars are platform-independent, so building them once natively
 and copying them into each platform's runtime stage gives the same image as building under arm64

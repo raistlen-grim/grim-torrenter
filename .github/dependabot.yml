@@ -1,0 +1,8 @@
+# Keeps the release workflow's SHA-pinned actions current: a weekly pull request per update,
+# rewriting the SHA and its version comment together. See design_docs/0103.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
