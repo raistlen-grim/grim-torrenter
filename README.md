@@ -294,13 +294,21 @@ file (or set `COMPOSE_FILE` in `.env`, see `.env.example`):
 docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 ```
 
-To publish a build (needs a GitHub token with the `write:packages` scope):
+To publish a release, bump `<version>` in `pom.xml` and both module poms, commit, and push a
+matching tag. The release workflow (`.github/workflows/release.yml`) checks the tag against the
+poms, runs the backend and frontend tests, and pushes `:<version>` and `:latest` for amd64 and
+arm64:
+
+```sh
+git tag v<version> && git push origin v<version>
+```
+
+To build and push from your own machine instead (one architecture, yours; needs a GitHub token
+with the `write:packages` scope), `scripts/release.sh` runs the same version checks first:
 
 ```sh
 docker login ghcr.io -u raistlen-grim
-docker build -t ghcr.io/raistlen-grim/grim-torrenter:<version> \
-             -t ghcr.io/raistlen-grim/grim-torrenter:latest .
-docker push --all-tags ghcr.io/raistlen-grim/grim-torrenter
+scripts/release.sh            # or --no-push to build only
 ```
 
 Design decisions are recorded one per file in [`design_docs/`](design_docs/); `PROGRESS.md` is

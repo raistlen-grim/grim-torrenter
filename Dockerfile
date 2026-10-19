@@ -1,7 +1,12 @@
 # syntax=docker/dockerfile:1
 
+# The two build stages run on the build machine's own platform even when the image targets
+# another (--platform=$BUILDPLATFORM): what they produce - the Angular bundle and the Quarkus jars
+# - is platform-independent, and building them under arm64 emulation would take many times as
+# long. Only the runtime stage is per-platform. See design_docs/0103.
+
 # ---- Frontend build ----
-FROM node:22-alpine AS frontend-build
+FROM --platform=$BUILDPLATFORM node:22-alpine AS frontend-build
 WORKDIR /frontend
 COPY frontend/package*.json ./
 RUN npm ci
@@ -9,10 +14,7 @@ COPY frontend/ .
 RUN npx ng build --configuration production
 
 # ---- Backend build ----
-# Not build-verified - confirm a maven+eclipse-temurin image with JDK 25
-# actually exists when you build; fall back to JDK 21 here and in the
-# poms' maven.compiler.release if not.
-FROM maven:3.9-eclipse-temurin-25 AS backend-build
+FROM --platform=$BUILDPLATFORM maven:3.9-eclipse-temurin-25 AS backend-build
 WORKDIR /build
 COPY pom.xml .
 COPY grimtorrenter-engine/pom.xml grimtorrenter-engine/pom.xml

@@ -74,3 +74,10 @@ format error" rather than degrading.
 request to the registry returns both tags. Not yet confirmed: on a machine with only the
 README, each of its two examples pulls and starts it; the two-file form still
 builds from source.
+
+## 2026-10-20 addendum: publishing moved to a release workflow
+
+The "natural next step" above is taken: a GitHub Actions workflow publishes on a version tag,
+for amd64 and arm64, after the tests pass. Hand publishing remains as `scripts/release.sh`, with
+the same version checks. See [[0103-release-workflow]].
+

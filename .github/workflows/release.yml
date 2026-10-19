@@ -1,0 +1,120 @@
+# Publishes the container image to ghcr.io when a version tag (vX.Y.Z) is pushed: checks the tag
+# against the poms, runs the backend and frontend tests, then builds for amd64 and arm64 and
+# pushes :X.Y.Z and :latest. See design_docs/0103.
+#
+# Release: bump the version in the three poms, commit, then
+#   git tag v0.9.8 && git push origin v0.9.8
+
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+# One release per tag at a time; a second push of the same tag waits rather than racing.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/raistlen-grim/grim-torrenter
+
+jobs:
+  version:
+    name: Check the version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # every tag, for the "newer than the last release" check
+
+      - id: check
+        run: |
+          version=$(scripts/pom-version.sh)
+          tag="${GITHUB_REF_NAME#v}"
+          if [[ "$tag" != "$version" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match the poms' version $version - bump the poms, or tag v$version"
+            exit 1
+          fi
+          # The newest other release tag; this one must be newer. (A tag can't be pushed twice,
+          # so "already published" is GitHub's job.)
+          previous=$(git tag --list 'v*.*.*' | grep -vx "$GITHUB_REF_NAME" | sed 's/^v//' | sort -V | tail -n 1)
+          if [[ -n "$previous" ]]; then
+            newest=$(printf '%s\n%s\n' "$previous" "$version" | sort -V | tail -n 1)
+            if [[ "$newest" != "$version" ]]; then
+              echo "::error::Version $version is older than the last release, $previous"
+              exit 1
+            fi
+          fi
+          echo "Releasing $version (previous: ${previous:-none})"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  backend-tests:
+    name: Backend tests
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - run: mvn -B test
+
+  frontend-tests:
+    name: Frontend tests
+    needs: version
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22' # the Dockerfile's frontend stage
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npx ng test --watch=false
+
+  publish:
+    name: Build and push (amd64, arm64)
+    needs: [version, backend-tests, frontend-tests]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # QEMU only runs the arm64 runtime stage's few RUN steps; the Maven and npm stages build
+      # on the runner's own platform (--platform=$BUILDPLATFORM in the Dockerfile).
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ needs.version.outputs.version }}
+            ${{ env.IMAGE }}:latest
+          labels: |
+            org.opencontainers.image.version=${{ needs.version.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
