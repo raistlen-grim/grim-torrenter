@@ -133,9 +133,9 @@ came from so the context can be found again.
 ### Thin frontend (design_docs/0071)
 - **Transfer rates are computed in the browser** (`TorrentEventsService` + `RateTracker`, from
   successive snapshots). Every other client would have to rebuild that, and the numbers depend
-  on when snapshots happen to arrive. Expose `downloadRateBytesPerSec`/`uploadRateBytesPerSec`
-  (and ETA) on `TorrentView` from the engine's own counters; the client keeps only the
-  sparkline history.
+  on when snapshots happen to arrive. Specced in design_docs/0102 (Proposed, wanted for beta):
+  rates, ETA and sparkline history all move server-side, with ETA reasons, cap indicators and
+  transfer history on top.
 - **Copy magnet link** is assembled client-side (now in one place, `magnetLinkFor()`,
   design_docs/0101). A `magnetUri` field on `TorrentView` would be one line server-side.
 

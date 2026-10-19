@@ -27,17 +27,18 @@ are not listed here.
 - Restyle task 9 copy pass (`design_docs/0032`).
 
 **Regression pass - from the pre-release code reviews (`code_review/01-03`, 2026-10-17):**
-- Restart the container with the app open: header, footer and an open detail panel recover
-  without a reload (`design_docs/0095`).
-- Log out (header button) lands on the login page; the server log shows no repeated handshake
-  rejections (`design_docs/0095`/`0096`).
-- Log out in one browser: a second logged-in browser goes to the login page within ~2 s and
-  stops reconnecting (`design_docs/0096`).
-- A wrong current password on Security settings shows the error and stays logged in
-  (`design_docs/0095`).
-- Settings: leaving with unsaved edits asks first; an unsaved theme preview reverts; a rate cap
-  switched on at 0 disables Save (`design_docs/0096`).
-- Pasting `magnet:?xt=urn:btih:<40 hex>&dn=50%` shows "50%" and the list keeps updating.
+- ~~Restart the container with the app open: header, footer and an open detail panel recover
+  without a reload (`design_docs/0095`).~~ Confirmed 2026-10-18.
+- ~~Log out (header button) lands on the login page; the server log shows no repeated handshake
+  rejections (`design_docs/0095`/`0096`).~~ Confirmed 2026-10-18.
+- ~~Log out in one browser: a second logged-in browser goes to the login page within ~2 s and
+  stops reconnecting (`design_docs/0096`).~~ Confirmed 2026-10-18.
+- ~~A wrong current password on Security settings shows the error and stays logged in
+  (`design_docs/0095`).~~ Confirmed 2026-10-18.
+- ~~Settings: leaving with unsaved edits asks first; an unsaved theme preview reverts; a rate cap
+  switched on at 0 disables Save (`design_docs/0096`).~~ Confirmed 2026-10-18.
+- ~~Pasting `magnet:?xt=urn:btih:<40 hex>&dn=50%` shows "50%" and the list keeps updating.~~
+  Confirmed 2026-10-18.
 - Remove the same torrent from two tabs: the second shows no error (`design_docs/0094`). Easiest
   via "Remove and delete files…" left open in one tab.
 - Behind a reverse proxy: live updates connect, or `GRIMTORRENTER_ALLOWED_ORIGINS` fixes it
@@ -63,6 +64,15 @@ are not listed here.
     Remove from the panel closes it.
   - Pause all/Resume all: rows show pending, and there's no info toast any more.
   - Footer ratio matches the panel's after a server restart.
+- Esc clears the add field from anywhere on the list (`design_docs/0032`'s 2026-10-18 Esc
+  addendum): paste a magnet, click a row, press Esc - the field clears and the panel stays open;
+  Esc again closes the panel.
+
+**To build for beta:**
+- Server-side transfer rates, ETA with a reason, rate caps shown, and transfer history
+  (`design_docs/0102`, Proposed). All three stages wanted in the beta. Before stage 3's UI: decide
+  where the global and per-torrent graphs live, and the cap marker's form (style guide doesn't
+  cover them).
 
 **Open, decide whether it blocks beta:**
 - Does a VPN container such as gluetun work as the alternative to `network_mode: host` behind a

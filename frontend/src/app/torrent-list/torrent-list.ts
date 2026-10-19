@@ -691,10 +691,12 @@ export class TorrentList {
     }
   }
 
-  /** The guide's Esc order (the style guide's "Interactions"): clear the filter if it's focused, else
-   * close the panel, else clear the selection. The first is the field's own handler; this is
-   * the other two. Left alone while a dialog or menu is open (Esc belongs to that) and while
-   * typing in any other field. */
+  /** The guide's Esc order (the style guide's "Interactions"), extended for the add field: clear
+   * the filter if it's focused, else clear the add field if it has text, else close the panel,
+   * else clear the selection. The first is the filter's own handler; this is the other three.
+   * The add field also clears itself on Esc while focused - this covers focus having moved on
+   * since a paste, so its echo strip's "Esc to clear" holds (design_docs/0032). Left alone while
+   * a dialog or menu is open (Esc belongs to that) and while typing in any other field. */
   onDocumentEscape(event: Event): void {
     const target = event.target as HTMLElement | null;
     // Same exception as onDocumentKeydown(): focus resting on a just-ticked checkbox is still
@@ -705,7 +707,9 @@ export class TorrentList {
     if (this.document.querySelector('.p-dialog, .p-contextmenu-root-list')) {
       return;
     }
-    if (this.isPanelOpen()) {
+    if (this.add.value().length > 0) {
+      this.add.clear();
+    } else if (this.isPanelOpen()) {
       this.closePanel();
     } else if (this.selection().size > 0) {
       this.clearSelection();

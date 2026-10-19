@@ -1304,3 +1304,20 @@ The style guide's own files (`ADD_CONTROL.md`, `STYLE_GUIDE_NOTES.md`, `SETTINGS
 Frontend comments used to cite them by name. They now say "the style guide" (or "the add-control
 guide", "the settings guide") and point here or at [[0045-settings-page]], which record what was
 taken from it. See [[0101-frontend-shared-actions-and-add-controller]].
+
+## 2026-10-18 addendum: Esc clears the add field from anywhere on the list
+
+The add field's echo strip says "Esc to clear", but Esc only cleared it while the field had
+focus. A page-wide paste focuses the field, so Esc right after pasting worked. Once focus moved
+on (a click on a row to check whether the torrent is already there, say), Esc did nothing, and
+only the field's × cleared it. Found in the beta regression pass.
+
+The style guide's page-wide Esc order (clear the filter if focused, else close the panel, else clear
+the selection) now has the add field second: clear the filter if focused, else **clear the add
+field if it has text**, else close the panel, else clear the selection. A deviation from the
+guide's order, confirmed with the user, chosen over rewording the hint: paste works from anywhere
+on the page, so clearing should too. It only takes precedence over the panel while the field has
+text, which is a short-lived state - the text is submitted or cleared.
+
+Unchanged: Esc is still left to an open dialog or menu, and to any other focused text field. No
+stability implication.
