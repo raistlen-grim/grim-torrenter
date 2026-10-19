@@ -105,11 +105,14 @@ class PeerServerTest {
         });
 
         try (Socket client = new Socket(InetAddress.getLoopbackAddress(), server.port())) {
-            PeerWireCodec.writeHandshake(client.getOutputStream(), Handshake.of(infoHashOf(1), peerIdOf(50)));
             try {
+                PeerWireCodec.writeHandshake(client.getOutputStream(), Handshake.of(infoHashOf(1), peerIdOf(50)));
                 assertEquals(-1, client.getInputStream().read());
             } catch (java.net.SocketException expected) {
-                // the server closed with our handshake still unread, which the OS reports as a reset
+                // The server closes the moment it accepts, which is the point. Whether the OS then
+                // reports that on our write (broken pipe - a fast machine closes before we've
+                // written) or our read (reset - our handshake was left unread) is a race.
+                // recordBlocked() runs before the close, so the counts below are final either way.
             }
         }
 
