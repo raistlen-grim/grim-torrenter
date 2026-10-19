@@ -24,9 +24,12 @@ import java.util.Map;
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThan;
+import static org.hamcrest.Matchers.hasKey;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.notNullValue;
+import static org.hamcrest.Matchers.nullValue;
+import static org.hamcrest.Matchers.oneOf;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -613,5 +616,71 @@ class TorrentResourceTest {
         given()
                 .when().get("/api/torrents/not-a-valid-hash")
                 .then().statusCode(400);
+    }
+
+    /** Rates, ETA and caps come from the server (design_docs/0102): a torrent that isn't running
+     * reads 0 with an empty trend, and bytesReceived is gone. */
+    @Test
+    void aTorrentCarriesServerSideRatesEtaAndLimits() {
+        byte[] torrent = torrentBytes("rates.bin", new byte[]{9, 8, 7});
+        String infoHash = given().multiPart("file", "rates.torrent", torrent)
+                .when().post("/api/torrents")
+                .then().statusCode(200)
+                .extract().path("torrent.infoHash");
+
+        given()
+                .when().get("/api/torrents/" + infoHash)
+                .then().statusCode(200)
+                .body("downloadRateBytesPerSec", equalTo(0))
+                .body("uploadRateBytesPerSec", equalTo(0))
+                .body("downloadRateTrend", hasSize(0))
+                .body("etaStatus", oneOf("NOT_RUNNING", "COMPLETE", "NO_PEERS"))
+                .body("etaSeconds", nullValue())
+                .body("downloadLimitSource", oneOf("NONE", "GLOBAL", "SCHEDULED"))
+                .body("downloadCapped", equalTo(false))
+                .body("uploadCapped", equalTo(false))
+                .body("$", not(hasKey("bytesReceived")));
+    }
+
+    @Test
+    void peersCarryTheirOwnRates() {
+        byte[] torrent = torrentBytes("peer-rates.bin", new byte[]{4, 4, 4});
+        String infoHash = given().multiPart("file", "peer-rates.torrent", torrent)
+                .when().post("/api/torrents")
+                .then().statusCode(200)
+                .extract().path("torrent.infoHash");
+
+        // No peers on an unreachable tracker - the shape is checked at the engine level; here it's
+        // enough that the endpoint still answers with the new view.
+        given().when().get("/api/torrents/" + infoHash + "/peers").then().statusCode(200);
+    }
+
+    /** design_docs/0102: per-torrent history at second and minute resolution only. */
+    @Test
+    void torrentHistoryComesAtSecondAndMinuteResolution() {
+        byte[] torrent = torrentBytes("history.bin", new byte[]{1, 1, 1});
+        String infoHash = given().multiPart("file", "history.torrent", torrent)
+                .when().post("/api/torrents")
+                .then().statusCode(200)
+                .extract().path("torrent.infoHash");
+
+        given().when().get("/api/torrents/" + infoHash + "/history?resolution=second")
+                .then().statusCode(200)
+                .body("resolution", equalTo("second"))
+                .body("intervalSeconds", equalTo(1))
+                .body("download", hasSize(60))
+                .body("upload", hasSize(60));
+        given().when().get("/api/torrents/" + infoHash + "/history?resolution=MINUTE")
+                .then().statusCode(200)
+                .body("resolution", equalTo("minute"))
+                .body("intervalSeconds", equalTo(60))
+                .body("download", hasSize(60));
+        given().when().get("/api/torrents/" + infoHash + "/history?resolution=hour")
+                .then().statusCode(400);
+        given().when().get("/api/torrents/" + infoHash + "/history")
+                .then().statusCode(400)
+                .body("error", equalTo("resolution must be second, minute or hour"));
+        given().when().get("/api/torrents/" + "0".repeat(40) + "/history?resolution=second")
+                .then().statusCode(404);
     }
 }

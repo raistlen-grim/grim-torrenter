@@ -15,6 +15,7 @@ import { TorrentActionsService } from '../services/torrent-actions.service';
 import { DetailTab, TorrentDetailTabService } from '../services/torrent-detail-tab.service';
 import { TorrentService } from '../services/torrent.service';
 import { ActiveContextMenuRegistry } from '../shared/active-context-menu-registry';
+import { CapMarker } from '../shared/cap-marker/cap-marker';
 import { FormatBytesPipe } from '../shared/format-bytes.pipe';
 import { FormatDurationPipe } from '../shared/format-duration.pipe';
 import { FormatRatePipe } from '../shared/format-rate.pipe';
@@ -27,6 +28,7 @@ import { TorrentLimitsDialog } from '../torrent-list/torrent-row/torrent-limits-
 import { FilesTab } from './files-tab/files-tab';
 import { PeersTab } from './peers-tab/peers-tab';
 import { PieceMap } from './piece-map/piece-map';
+import { SpeedTab } from './speed-tab/speed-tab';
 import { TrackersTab } from './trackers-tab/trackers-tab';
 
 const FILE_COUNT_POLL_INTERVAL_MS = 3000;
@@ -46,6 +48,7 @@ const FILE_COUNT_POLL_INTERVAL_MS = 3000;
   selector: 'app-torrent-detail',
   imports: [
     ButtonModule,
+    CapMarker,
     ContextMenuModule,
     DatePipe,
     DecimalPipe,
@@ -56,6 +59,7 @@ const FILE_COUNT_POLL_INTERVAL_MS = 3000;
     PeersTab,
     PieceMap,
     SeedingLimitsDialog,
+    SpeedTab,
     TabsModule,
     TooltipModule,
     TorrentLabelsDialog,
@@ -105,7 +109,7 @@ export class TorrentDetail {
   });
 
   /** p-tabs' own value type is the generic string | number | undefined a tab-content library
-   * has to support - this app's own tab values are always one of the four DetailTab strings,
+   * has to support - this app's own tab values are always one of the five DetailTab strings,
    * so anything else here would mean PrimeNG itself emitted something unexpected. */
   onTabChange(tab: string | number | undefined): void {
     if (typeof tab === 'string') {
@@ -143,7 +147,7 @@ export class TorrentDetail {
 
   /** Down/Up fact cells' own tooltip - the lifetime average, a footnote on the current rate
    * rather than a fact of its own (unlike Active/Completed/Wasted, this has somewhere natural
-   * to live already). bytesDownloaded (verified), not bytesReceived, matching the progress
+   * to live already). bytesDownloaded (verified), matching the progress
    * bar/ratio's own basis - lifetime downloaded needs no separate tracking since completed
    * pieces already persist across restarts on their own. Empty string (no tooltip at all)
    * rather than a divide-by-zero for a torrent that's never actually run. See

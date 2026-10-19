@@ -18,13 +18,8 @@ export interface Torrent {
   name: string;
   state: TorrentState;
   progress: number;
-  /** Verified-complete pieces only - moves in whole-piece jumps, drives progress/%.
-   * Use bytesReceived for a rate calculation instead - see TorrentEventsService. */
+  /** Verified-complete pieces only - moves in whole-piece jumps, drives progress/%. */
   bytesDownloaded: number;
-  /** Raw bytes received over the wire, including not-yet-verified data - continuously
-   * moving, unlike bytesDownloaded. Only meaningful for a rate calculation, never for
-   * progress. See the backend's TorrentSession.bytesReceived() / design_docs/0031. */
-  bytesReceived: number;
   bytesUploaded: number;
   totalLength: number;
   connectedPeers: number;
@@ -63,6 +58,51 @@ export interface Torrent {
   /** Ids of this torrent's labels - ids, not names; resolve them through LabelService, so a
    * rename never changes a torrent. See design_docs/0077. */
   labelIds: string[];
+  /** The current rates, measured by the server (the mean of its last 5 s) - 0 unless running.
+   * See design_docs/0102. */
+  downloadRateBytesPerSec: number;
+  uploadRateBytesPerSec: number;
+  /** Bytes/sec for each of up to the last 60 s, oldest first - feeds the Down cell's sparkline
+   * tooltip (design_docs/0063). Empty when nothing arrived in that time. */
+  downloadRateTrend: number[];
+  /** Seconds to completion; null unless etaStatus is ESTIMATE. */
+  etaSeconds: number | null;
+  etaStatus: EtaStatus;
+  /** Wanted pieces no connected peer has - set only when etaStatus is UNAVAILABLE. */
+  unavailablePieces: number;
+  /** The limit applying to this torrent right now (0 for none), whose it is, and whether a
+   * limiter held this torrent back in the last few seconds. See design_docs/0102. */
+  downloadLimitBytesPerSec: number;
+  downloadLimitSource: LimitSource;
+  downloadCapped: boolean;
+  uploadLimitBytesPerSec: number;
+  uploadLimitSource: LimitSource;
+  uploadCapped: boolean;
+}
+
+/** Why a torrent's ETA is what it is - checked in this order on the server, the first that
+ * applies wins. Only ESTIMATE carries etaSeconds. See design_docs/0102. */
+export type EtaStatus = 'COMPLETE' | 'NOT_RUNNING' | 'NO_PEERS' | 'UNAVAILABLE' | 'CHOKED' | 'STALLED' | 'ESTIMATE';
+
+/** Where a rate limit comes from: the global setting, the off-hours schedule, or the torrent's
+ * own override. See design_docs/0102. */
+export type LimitSource = 'NONE' | 'GLOBAL' | 'SCHEDULED' | 'TORRENT';
+
+/** Matches the backend's TransferView - the engine-wide figures behind the header and footer,
+ * pushed as the "transfer" WebSocket message on every snapshot tick. ratio is null until
+ * something has been downloaded. See design_docs/0102. */
+export interface TransferStats {
+  downloadRateBytesPerSec: number;
+  uploadRateBytesPerSec: number;
+  downloadLimitBytesPerSec: number;
+  downloadLimitSource: LimitSource;
+  downloadCapped: boolean;
+  uploadLimitBytesPerSec: number;
+  uploadLimitSource: LimitSource;
+  uploadCapped: boolean;
+  lifetimeDownloadedBytes: number;
+  lifetimeUploadedBytes: number;
+  ratio: number | null;
 }
 
 /** A managed label: an immutable id (what torrents store) and a mutable display name. See
@@ -70,17 +110,6 @@ export interface Torrent {
 export interface Label {
   id: string;
   name: string;
-}
-
-/** downloadRateBytesPerSec/uploadRateBytesPerSec are computed client-side via RateTracker
- * (a smoothed rate over its primary window, not a raw two-sample delta) - not part of the
- * backend's TorrentView DTO. See design_docs/0020/0025. downloadRateTrend is per-interval
- * rate samples over the last ~60s, oldest first - feeds the Down cell's trend sparkline
- * tooltip. No uploadRateTrend - only the Down cell renders a sparkline. See design_docs/0063. */
-export interface TorrentWithRate extends Torrent {
-  downloadRateBytesPerSec: number;
-  uploadRateBytesPerSec: number;
-  downloadRateTrend: number[];
 }
 
 /** alreadyExisted distinguishes "just added" from "you already had this" - both return
@@ -103,8 +132,7 @@ export interface TorrentFile {
  * design_docs/0075. */
 export type FilePriority = 'SKIP' | 'LOW' | 'MEDIUM' | 'HIGH';
 
-/** Matches the backend's PeerView - the existing-field subset (no rate, no % piece
- * availability, no client-name decoding yet). See design_docs/0031. */
+/** Matches the backend's PeerView. No client-name decoding yet. See design_docs/0031. */
 export interface Peer {
   address: string;
   port: number;
@@ -131,6 +159,11 @@ export interface Peer {
   /** At-a-glance health: ACTIVE (a block moved within the last 10s), WAITING (nothing moving
    * but we want something from them), IDLE. Computed by the backend. See design_docs/0076. */
   activity: 'ACTIVE' | 'WAITING' | 'IDLE';
+  /** This connection's own rates, measured by the server like the torrent's. See
+   * design_docs/0102. */
+  downloadRateBytesPerSec: number;
+  uploadRateBytesPerSec: number;
+  downloadRateTrend: number[];
 }
 
 /** Matches the backend's SeedingLimitOverride record - one torrent's override of the global

@@ -64,4 +64,19 @@ class RateLimitScheduleTest {
         assertEquals(100, RateLimitSchedule.effectiveUploadLimit(settings, LocalTime.of(12, 0)));
         assertEquals(200, RateLimitSchedule.effectiveDownloadLimit(settings, LocalTime.of(12, 0)));
     }
+
+    /** design_docs/0102: the same choice, with where the limit came from. */
+    @Test
+    void appliedLimitSaysWhetherTheScheduleSuppliedIt() {
+        Settings settings = scheduled("23:00", "07:00", 5000, 0);
+
+        assertEquals(new AppliedLimit(5000, AppliedLimit.Source.SCHEDULED),
+                RateLimitSchedule.appliedUploadLimit(settings, LocalTime.of(1, 0)));
+        assertEquals(new AppliedLimit(1000, AppliedLimit.Source.GLOBAL),
+                RateLimitSchedule.appliedUploadLimit(settings, LocalTime.of(12, 0)));
+        assertEquals(AppliedLimit.NONE, RateLimitSchedule.appliedDownloadLimit(settings, LocalTime.of(1, 0)),
+                "a scheduled limit of 0 is no limit");
+        assertEquals(new AppliedLimit(2000, AppliedLimit.Source.GLOBAL),
+                RateLimitSchedule.appliedDownloadLimit(settings, LocalTime.of(12, 0)));
+    }
 }

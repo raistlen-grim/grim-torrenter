@@ -4,12 +4,13 @@ import { MenuItem } from 'primeng/api';
 import { ButtonModule } from 'primeng/button';
 import { ContextMenu, ContextMenuModule } from 'primeng/contextmenu';
 
-import { TorrentWithRate } from '../../models/torrent.model';
+import { Torrent } from '../../models/torrent.model';
 import { LabelService } from '../../services/label.service';
 import { TorrentActionsService } from '../../services/torrent-actions.service';
 import { splitFileName } from '../../shared/file-name';
 import { FormatBytesPipe } from '../../shared/format-bytes.pipe';
-import { FormatEtaPipe } from '../../shared/format-eta.pipe';
+import { CapMarker } from '../../shared/cap-marker/cap-marker';
+import { FormatEtaPipe, etaDetail } from '../../shared/format-eta.pipe';
 import { FormatRatePipe } from '../../shared/format-rate.pipe';
 import { progressPercent } from '../../shared/progress-percent';
 import { ActiveContextMenuRegistry } from '../../shared/active-context-menu-registry';
@@ -50,6 +51,7 @@ const MAX_VISIBLE_LABEL_CHIPS = 2;
     ButtonModule,
     ContextMenuModule,
     FormatBytesPipe,
+    CapMarker,
     FormatEtaPipe,
     FormatRatePipe,
     RateTrend,
@@ -77,7 +79,7 @@ export class TorrentRow {
   private readonly router = inject(Router);
   private readonly labelService = inject(LabelService);
 
-  readonly torrent = input.required<TorrentWithRate>();
+  readonly torrent = input.required<Torrent>();
 
   /** True while the details panel is open (design_docs/0044's dock-and-push layout) - the
    * row sheds to state-icon/name/size/done, matching the guide's docking spec ("the table
@@ -150,13 +152,11 @@ export class TorrentRow {
   readonly state = computed(() => this.torrent().state);
   readonly lastError = computed(() => this.torrent().lastError);
   readonly totalLength = computed(() => this.torrent().totalLength);
-  /** Based on bytesDownloaded (verified-complete), not bytesReceived - ETA should reflect
-   * how much legitimately-verified work remains, same basis as the progress bar/%, even
-   * though the rate it's divided by is derived from the continuously-moving bytesReceived
-   * (see TorrentEventsService). Byte totals themselves (bytesDownloaded/bytesUploaded) and
-   * connectedPeers are no longer shown in the row - the style guide's row anatomy drops them
-   * in favor of just a rate/percentage per column, moving totals to the details panel. */
-  readonly bytesRemaining = computed(() => this.torrent().totalLength - this.torrent().bytesDownloaded);
+  /** The ETA and its reason come from the server (design_docs/0102); the cell shows a short
+   * form and this longer explanation as its tooltip. Byte totals and connectedPeers aren't
+   * shown in the row - the style guide's row anatomy drops them in favor of just a
+   * rate/percentage per column, moving totals to the details panel. */
+  readonly etaTitle = computed(() => etaDetail(this.torrent()));
   readonly downloadRateBytesPerSec = computed(() => this.torrent().downloadRateBytesPerSec);
   readonly downloadRateTrend = computed(() => this.torrent().downloadRateTrend);
   readonly uploadRateBytesPerSec = computed(() => this.torrent().uploadRateBytesPerSec);

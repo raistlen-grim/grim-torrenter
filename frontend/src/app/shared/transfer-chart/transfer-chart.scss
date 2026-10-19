@@ -1,0 +1,195 @@
+/* See transfer-chart.ts. Chart colours are the chart-only tokens (styles.scss); every text
+ * element uses the ordinary text colour, never a series colour. */
+:host {
+  display: block;
+  min-width: 0;
+}
+
+.legend {
+  list-style: none;
+  margin: 0 0 var(--space-2);
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  font-size: 13px;
+}
+
+.legend li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.legend-value {
+  opacity: 0.7;
+}
+
+/* A short stroke of the series colour - the legend mirrors the mark (a line), and the tooltip
+ * uses the same key. */
+.key {
+  display: inline-block;
+  width: 14px;
+  height: 2px;
+  border-radius: 1px;
+}
+
+.key-download {
+  background: var(--chart-download);
+}
+
+.key-upload {
+  background: var(--chart-upload);
+}
+
+/* The plot's fixed height includes the x-axis labels, so nothing scrolls inside it. */
+.plot {
+  position: relative;
+  height: 220px;
+  outline-offset: 2px;
+}
+
+.plot:focus-visible {
+  outline: 2px solid var(--color-accent);
+}
+
+svg {
+  display: block;
+  overflow: visible;
+}
+
+.grid {
+  stroke: var(--rule);
+  stroke-width: 1;
+}
+
+.axis-label,
+.limit-label {
+  fill: currentColor;
+  font-size: 11px;
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The limits are thresholds, not data or grid: dashed, thin and faint in the series colour. */
+.limit {
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+  opacity: 0.6;
+}
+
+.limit-download {
+  stroke: var(--chart-download);
+}
+
+.limit-upload {
+  stroke: var(--chart-upload);
+}
+
+.series {
+  fill: none;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.series-download {
+  stroke: var(--chart-download);
+}
+
+.series-upload {
+  stroke: var(--chart-upload);
+}
+
+.crosshair {
+  stroke: var(--color-divider);
+  stroke-width: 1;
+}
+
+/* 8px dot with a 2px surface ring, so it stays legible where it crosses the other line. */
+.dot {
+  stroke: var(--color-surface);
+  stroke-width: 2;
+}
+
+.dot-download {
+  fill: var(--chart-download);
+}
+
+.dot-upload {
+  fill: var(--chart-upload);
+}
+
+.empty {
+  position: absolute;
+  inset: 0 0 28px 72px;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+/* One readout for both series at the crosshair: the value leads, the series name follows. */
+.readout {
+  position: absolute;
+  transform: translateX(12px);
+  pointer-events: none;
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
+  box-shadow: var(--shadow-md);
+  font-size: 12px;
+  white-space: nowrap;
+  z-index: 1;
+}
+
+.readout.flip {
+  transform: translateX(calc(-100% - 12px));
+}
+
+.readout-time {
+  opacity: 0.6;
+  margin-bottom: var(--space-1);
+}
+
+.readout-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.table-view {
+  margin-top: var(--space-2);
+  font-size: 13px;
+}
+
+.table-view summary {
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.table-view table {
+  margin-top: var(--space-2);
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.table-view th,
+.table-view td {
+  text-align: right;
+  padding: var(--space-1) var(--space-3);
+  border-bottom: 1px solid var(--rule);
+}
+
+.table-view th:first-child,
+.table-view td:first-child {
+  text-align: left;
+}
+
+.table-view th {
+  font-weight: 600;
+  opacity: 0.7;
+}

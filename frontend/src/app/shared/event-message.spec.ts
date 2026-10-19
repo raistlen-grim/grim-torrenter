@@ -11,6 +11,11 @@ describe('parseEventMessage', () => {
         ?.type,
     ).toBe('event');
     expect(parseEventMessage(JSON.stringify({ type: 'labels', payload: [{ id: '1', name: 'TV' }] }))?.type).toBe('labels');
+    expect(
+      parseEventMessage(
+        JSON.stringify({ type: 'transfer', payload: { downloadRateBytesPerSec: 10, uploadRateBytesPerSec: 0, ratio: null } }),
+      )?.type,
+    ).toBe('transfer');
   });
 
   it('drops bad JSON, unknown types and non-string frames instead of throwing', () => {
@@ -25,5 +30,6 @@ describe('parseEventMessage', () => {
     expect(parseEventMessage(JSON.stringify({ type: 'snapshot', payload: [TORRENT, { name: 'no hash' }] }))).toBeNull();
     expect(parseEventMessage(JSON.stringify({ type: 'state-changed', payload: [TORRENT] }))).toBeNull();
     expect(parseEventMessage(JSON.stringify({ type: 'labels', payload: [{ id: 1, name: 'TV' }] }))).toBeNull();
+    expect(parseEventMessage(JSON.stringify({ type: 'transfer', payload: { downloadRateBytesPerSec: '10' } }))).toBeNull();
   });
 });

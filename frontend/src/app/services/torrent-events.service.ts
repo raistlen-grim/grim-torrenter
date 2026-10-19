@@ -2,9 +2,8 @@ import { Injectable, computed, inject, signal } from '@angular/core';
 import { Router } from '@angular/router';
 
 import { LibraryEvent } from '../models/events.model';
-import { Torrent, TorrentWithRate } from '../models/torrent.model';
+import { Torrent, TransferStats } from '../models/torrent.model';
 import { TorrentEventMessage, parseEventMessage } from '../shared/event-message';
-import { RateTracker } from '../shared/rate-tracker';
 import { AuthService } from './auth.service';
 import { LabelService } from './label.service';
 import { TorrentService } from './torrent.service';
@@ -16,27 +15,11 @@ import { TorrentService } from './torrent.service';
  * open the whole time can scroll without a reload - the backend's own log is unaffected. */
 const MAX_BUFFERED_LIBRARY_EVENTS = 500;
 
-interface Rates {
-  downloadRateBytesPerSec: number;
-  uploadRateBytesPerSec: number;
-  downloadRateTrend: number[];
-}
-
 const RECONNECT_DELAY_MS = 3000;
 
 /** The server's close code for "no valid auth token" (TorrentWebSocket.SESSION_ENDED). Handled
  * like a REST 401: the session is over, so reconnecting can't help. See design_docs/0096. */
 const SESSION_ENDED_CLOSE_CODE = 4401;
-const ZERO_RATES: Rates = {
-  downloadRateBytesPerSec: 0,
-  uploadRateBytesPerSec: 0,
-  downloadRateTrend: [],
-};
-
-/** Shared by every RateTracker this app creates so the primary rate (the one number shown
- * inline) means the same thing regardless of which one (session or, later, per-peer)
- * produced it. */
-export const PRIMARY_RATE_WINDOW_MS = 15_000;
 
 /**
  * Single source of truth for torrent state on the client. Seeds itself via
@@ -45,11 +28,8 @@ export const PRIMARY_RATE_WINDOW_MS = 15_000;
  * design_docs/0019. Reconnects on socket close since a missed connection
  * self-heals on the next periodic snapshot regardless.
  *
- * <p>Also computes download/upload rates client-side via RateTracker (a windowed
- * average, not a raw two-sample delta - see shared/rate-tracker.ts) from successive
- * bytesDownloaded/bytesUploaded readings - the backend DTO has no rate fields, and this
- * needs no backend changes since the snapshot cadence alone is enough to derive them.
- * See design_docs/0020/0025.
+ * <p>Rates, ETAs and the engine-wide totals arrive ready-made from the server (each torrent's
+ * fields, and the "transfer" message) - this client computes none of them. See design_docs/0102.
  */
 @Injectable({ providedIn: 'root' })
 export class TorrentEventsService {
@@ -59,9 +39,11 @@ export class TorrentEventsService {
   private readonly router = inject(Router);
 
   private readonly torrentsByHash = signal(new Map<string, Torrent>());
-  private readonly ratesByHash = signal(new Map<string, Rates>());
-  private readonly downloadRateTracker = new RateTracker(PRIMARY_RATE_WINDOW_MS);
-  private readonly uploadRateTracker = new RateTracker(PRIMARY_RATE_WINDOW_MS);
+
+  /** The engine-wide figures from the latest "transfer" message - null until the first one
+   * arrives (within one snapshot tick of connecting). */
+  private readonly latestTransfer = signal<TransferStats | null>(null);
+  readonly transfer = this.latestTransfer.asReadonly();
 
   /** Library events pushed since this service connected (app start, not page mount) - newest
    * first. EventsPage merges this with its own REST-loaded page of older history rather than
@@ -70,13 +52,7 @@ export class TorrentEventsService {
   private readonly recentLibraryEvents = signal<LibraryEvent[]>([]);
   readonly libraryEvents = this.recentLibraryEvents.asReadonly();
 
-  readonly torrents = computed<TorrentWithRate[]>(() => {
-    const rates = this.ratesByHash();
-    return Array.from(this.torrentsByHash().values()).map((t) => ({
-      ...t,
-      ...(rates.get(t.infoHash) ?? ZERO_RATES),
-    }));
-  });
+  readonly torrents = computed<Torrent[]>(() => Array.from(this.torrentsByHash().values()));
 
   private socket?: WebSocket;
   /** Set while waiting to reconnect after a close. connect() must treat that wait as "already
@@ -106,7 +82,7 @@ export class TorrentEventsService {
       socket.close();
     }
     this.torrentsByHash.set(new Map());
-    this.ratesByHash.set(new Map());
+    this.latestTransfer.set(null);
     this.recentLibraryEvents.set([]);
   }
 
@@ -114,13 +90,6 @@ export class TorrentEventsService {
    * right after a successful delete rather than waiting for the next snapshot. */
   removeLocal(infoHash: string): void {
     this.torrentsByHash.update((map) => {
-      const next = new Map(map);
-      next.delete(infoHash);
-      return next;
-    });
-    this.downloadRateTracker.delete(infoHash);
-    this.uploadRateTracker.delete(infoHash);
-    this.ratesByHash.update((map) => {
       const next = new Map(map);
       next.delete(infoHash);
       return next;
@@ -196,20 +165,16 @@ export class TorrentEventsService {
       case 'state-changed':
         this.upsert(message.payload);
         break;
+      case 'transfer':
+        this.latestTransfer.set(message.payload);
+        break;
     }
   }
 
-  /** Builds both maps once per snapshot - adding each torrent's rates to a copy of the map one
-   * at a time was O(n²) every 2 s. Also drops rate history for torrents no longer in the list
-   * (removed from another tab or client), which otherwise lived as long as the tab. See
-   * design_docs/0096. */
+  /** One map per snapshot, so a torrent removed elsewhere (another tab or client) simply drops
+   * out. See design_docs/0096. */
   private replaceAll(list: Torrent[]): void {
-    const now = Date.now();
     this.torrentsByHash.set(new Map(list.map((t) => [t.infoHash, t])));
-    this.ratesByHash.set(new Map(list.map((t) => [t.infoHash, this.recordReading(t, now)])));
-    const present = new Set(list.map((t) => t.infoHash));
-    this.downloadRateTracker.retainOnly(present);
-    this.uploadRateTracker.retainOnly(present);
   }
 
   /** Public so a caller that already has a fresh Torrent from a direct REST response
@@ -221,23 +186,5 @@ export class TorrentEventsService {
       next.set(torrent.infoHash, torrent);
       return next;
     });
-    const rates = this.recordReading(torrent, Date.now());
-    this.ratesByHash.update((map) => new Map(map).set(torrent.infoHash, rates));
-  }
-
-  /** Download rate is derived from bytesReceived, not bytesDownloaded - the latter only
-   * moves in whole-piece jumps (verified-complete pieces only), which reads as a stalled
-   * 0 B/s for long stretches on torrents with large pieces even while data is genuinely
-   * streaming in; bytesReceived moves continuously as blocks arrive. Both fields (and
-   * bytesUploaded) only ever increase - see PieceManager/PeerConnection/TorrentSession -
-   * so a negative delta shouldn't happen, but RateTracker clamps to 0 defensively regardless. */
-  private recordReading(torrent: Torrent, now: number): Rates {
-    const download = this.downloadRateTracker.record(torrent.infoHash, torrent.bytesReceived, now);
-    const upload = this.uploadRateTracker.record(torrent.infoHash, torrent.bytesUploaded, now);
-    return {
-      downloadRateBytesPerSec: download.current,
-      uploadRateBytesPerSec: upload.current,
-      downloadRateTrend: download.trend,
-    };
   }
 }

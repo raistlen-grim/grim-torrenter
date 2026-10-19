@@ -26,6 +26,22 @@ final class RateLimitSchedule {
         return effectiveLimit(settings, now, settings.downloadRateLimitBytesPerSec(), settings.scheduledDownloadRateLimitBytesPerSec());
     }
 
+    /** effectiveUploadLimit() plus whether the schedule or the base limit supplied it. */
+    static AppliedLimit appliedUploadLimit(Settings settings, LocalTime now) {
+        return applied(settings, now, settings.uploadRateLimitBytesPerSec(), settings.scheduledUploadRateLimitBytesPerSec());
+    }
+
+    static AppliedLimit appliedDownloadLimit(Settings settings, LocalTime now) {
+        return applied(settings, now, settings.downloadRateLimitBytesPerSec(), settings.scheduledDownloadRateLimitBytesPerSec());
+    }
+
+    private static AppliedLimit applied(Settings settings, LocalTime now, long baseLimit, long scheduledLimit) {
+        if (!settings.rateLimitScheduleEnabled() || !isWithinWindow(settings, now)) {
+            return AppliedLimit.of(baseLimit, AppliedLimit.Source.GLOBAL);
+        }
+        return AppliedLimit.of(scheduledLimit, AppliedLimit.Source.SCHEDULED);
+    }
+
     private static long effectiveLimit(Settings settings, LocalTime now, long baseLimit, long scheduledLimit) {
         if (!settings.rateLimitScheduleEnabled() || !isWithinWindow(settings, now)) {
             return baseLimit;

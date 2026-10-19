@@ -42,8 +42,8 @@ export class RateTrend {
   private readonly formatRate = new FormatRatePipe();
 
   readonly rateBytesPerSec = input.required<number>();
-  /** Per-interval rate samples (bytes/sec) over the last ~60s, oldest first - see
-   * RateTracker.record()'s own RateSnapshot.trend. */
+  /** Per-second rate samples (bytes/sec) over up to the last 60 s, oldest first - the server's
+   * downloadRateTrend on a torrent or peer (design_docs/0102). */
   readonly trend = input<readonly number[]>([]);
 
   readonly active = computed(() => this.rateBytesPerSec() > 0);

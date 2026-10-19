@@ -1,6 +1,6 @@
 # 0102 - Server-side transfer rates, ETA with a reason, rate caps shown, and transfer history
 
-Status: Proposed (2026-10-18). Wanted in the beta, all three stages. Replaces the client-side rate
+Status: Accepted (2026-10-19). Wanted in the beta, all three stages. Replaces the client-side rate
 calculation of [[0020-frontend-torrent-dashboard]], [[0025-seeding-and-upload-logic]],
 [[0031-torrent-detail-endpoints]] and [[0063-rate-trend-tooltip]]. Applies
 [[0051-stability-as-a-standing-consideration]] and
@@ -38,25 +38,27 @@ scheduler.
 
 ## Stage 1 - measure once, on the server
 
-### 1.1 `TransferMeter`: per-second buckets at the byte path
+### 1.1 `TransferMeter`: per-second buckets from the byte counters
 
-A new engine class, `ratelimit/TransferMeter` (or `stats/`), one per direction per counted thing:
-- **Fed where bytes move.** `PeerConnection` already does `downloadedBytes.addAndGet(...)` when a
-  block arrives and `uploadedBytes.addAndGet(...)` when one is sent. Those two lines also add to
-  the connection's meters. No new counting site.
-- **Buckets.** The current second's bytes accumulate in an `AtomicLong`. A 1 s tick rolls it into
-  a 60-slot ring. Writers (connection threads) only ever `addAndGet`; the tick is the only thing
-  that touches the ring, and after rolling it publishes an immutable `TransferSample` record
-  (the ring as a `long[]` copy plus the derived figures below) through a `volatile` field. Readers
-  (snapshot, REST) read that field and never lock. No `synchronized` anywhere on the path
-  ([[0007-concurrency-model]]).
-- **Three levels from one mechanism.** Each peer connection has a meter. A torrent's meter is fed
-  by the tick summing its live connections' just-rolled seconds - not by a second count on the
-  block path - so a torrent always equals the sum of its peers. The global meter is the sum of
-  the torrents'. The header total equals the sum of the rows by construction.
-- **Disconnects lose nothing.** The torrent's bucket for a second includes a connection that
-  closed during that second: the connection's final partial second is added on close, the same
-  accumulator-on-close pattern `bytesUploaded()` already uses ([[0025-seeding-and-upload-logic]]).
+A new engine class, `stats/TransferMeter`, one per direction per counted thing:
+- **Fed from the counters bytes already go through.** `PeerConnection` already does
+  `downloadedBytes.addAndGet(...)` when a block arrives and `uploadedBytes.addAndGet(...)` when one
+  is sent. The 1 s tick reads each connection's two counters and meters the change since the last
+  tick. The block path gains nothing - no new counting site, not even a second `addAndGet`.
+- **Buckets.** Each tick's change, divided by the real time since the last tick, goes into a
+  60-slot ring of bytes/sec. Only the tick writes the ring. After each write it publishes an
+  immutable `TransferRate` record (the samples as a `long[]` copy plus the derived figures below)
+  through a `volatile` field. Readers (snapshot, REST) read that field and never lock. No
+  `synchronized` anywhere on the path ([[0007-concurrency-model]]).
+- **Three levels from one mechanism.** Each peer connection has a meter. A torrent's meter takes
+  the sum of its connections' changes for the tick, so a torrent always equals the sum of its
+  peers. The global meter is the sum of the torrents'. The header total equals the sum of the
+  rows by construction.
+- **Disconnects lose nothing, and count once.** `torrent/SessionTransfer` keeps each connection's
+  counter readings between ticks. A connection that closed since the last tick is still there: its
+  final change is counted, then it's dropped. Differencing `bytesReceived()` instead would not be
+  safe: `TorrentSession` folds a closing connection into its accumulators *before* removing it
+  from the live set, so for a moment `bytesReceived()` counts it twice.
 
 The existing `PeerConnection.downloadRateBytesPerSec` (a 1 s average used to size the request
 pipeline, [[0080-cross-peer-request-coordination]]) stays as it is. It is a control input with its own tuning,
@@ -64,15 +66,18 @@ not a display figure.
 
 ### 1.2 Two averages for two questions
 
-Derived on each tick and stored in the published `TransferSample`:
-- **`rateBytesPerSec`** - "how fast right now". An exponential moving average with a ~5 s time
-  constant over the per-second buckets. A stalled torrent reads 0 within a few seconds.
-- **`etaRateBytesPerSec`** - "how fast on average", used for ETA only. The mean over the last
+Derived on each tick and stored in the published `TransferRate`:
+- **`bytesPerSec`** - "how fast right now". The mean of the last 5 per-second buckets. A stalled
+  torrent reads exactly 0 after 5 seconds. (An exponential average was the first idea; it never
+  actually reaches 0, so a torrent that stopped would show a few B/s for a minute.)
+- **`averageBytesPerSec`** - "how fast on average", used for ETA only. The mean over the last
   60 s, or over this run if it's younger than that. Steady across choke rounds.
-- **`trend`** - the 60 per-second values, oldest first, for the sparkline.
+- **`samples`** - the 60 per-second values, oldest first, for the sparkline and the per-second
+  history.
 
-A paused or stopped torrent's meters are cleared, so it reads 0 at once and a resume starts
-fresh.
+A paused or stopped torrent reads 0 at once (the session returns an idle rate whenever it isn't
+running), and the next tick clears its meters, so a resume starts fresh. The tick does the
+clearing, which keeps the meters single-writer.
 
 ### 1.3 The sampling tick
 
@@ -87,7 +92,7 @@ already does for `bytesReceived()`, with no allocation beyond the published reco
 ### 1.4 ETA
 
 `TorrentSession.eta()` returns an `Eta(Long seconds, EtaStatus status, int unavailablePieces)`:
-`seconds = ceil(bytesRemaining() / etaRateBytesPerSec)`. `bytesRemaining()` counts wanted bytes
+`seconds = ceil(bytesRemaining() / averageBytesPerSec)`. `bytesRemaining()` counts wanted bytes
 only, which fixes the skipped-files bug. Stage 2 fills in the status.
 
 ### 1.5 REST and WebSocket
@@ -135,15 +140,20 @@ Mostly deletions:
 
 `etaStatus`, in precedence order (the first that applies wins):
 
-| Status | When | Row reads |
-|---|---|---|
-| `COMPLETE` | nothing wanted remains | — |
-| `NOT_RUNNING` | paused, stopped, error, verifying, fetching metadata | — |
-| `NO_PEERS` | running, no connected peers | No peers |
-| `UNAVAILABLE` | some wanted, incomplete pieces are held by no connected peer | 12 pieces unavailable |
-| `CHOKED` | peers have what we need, but every one is choking us | Waiting for peers |
-| `STALLED` | none of the above, and `etaRateBytesPerSec` is 0 | Stalled |
-| `ESTIMATE` | otherwise | 4h 12m |
+| Status | When | Row reads | Tooltip |
+|---|---|---|---|
+| `COMPLETE` | nothing wanted remains | — | |
+| `NOT_RUNNING` | paused, stopped, error, verifying, fetching metadata | — | |
+| `NO_PEERS` | running, no connected peers | No peers | Not connected to any peers |
+| `UNAVAILABLE` | some wanted, incomplete pieces are held by no connected peer | 12 unavailable | 12 pieces not held by any connected peer - it can't finish with this swarm |
+| `CHOKED` | peers have what we need, but every one is choking us | Waiting | Peers have what is needed, but none is sending yet |
+| `STALLED` | none of the above, and `averageBytesPerSec` is 0 | Stalled | Nothing has arrived in the last minute |
+| `ESTIMATE` | otherwise | 4h 12m | |
+
+The row text is short because the ETA cell doesn't wrap (`white-space: nowrap`); the longer
+wording first proposed here ("12 pieces unavailable", "Waiting for peers") moved into the cell's
+tooltip. A paused torrent with data left now reads "—" (`NOT_RUNNING`) where it used to read
+"Stalled".
 
 `etaSeconds` is set only for `ESTIMATE`. `unavailablePieces` is set for `UNAVAILABLE` (0
 otherwise).
@@ -172,42 +182,58 @@ sampling tick with the result cached on the session.
 **Why a "throttled recently" flag, not "rate equals limit".** Inheriting torrents share one
 global bucket (0072). A torrent at 200 KB/s can be capped because the global 1 MB/s bucket is
 full of other torrents' traffic; comparing its own rate to the limit would never show it.
-`RateLimiter.acquire()` returns whether it had to wait (today it returns `void`), and
-`PeerConnection` stamps its torrent's meter with the time. Capped means that stamp is under 3 s
-old. No new lock: a `volatile long` per direction per torrent.
+`RateLimiter.acquire()` returns whether it had to wait (it returned `void`), and `PeerConnection`
+keeps the time of its last throttled block per direction. A torrent is capped when any of its
+connections was throttled in the last 3 s. No new lock: a `volatile long` per direction per
+connection.
 
 `GET /api/stats/transfer` and the `transfer` message carry the same three fields for the global
-pair.
+pair. There, capped means the global limiter itself made something wait in the last 3 s; the
+limiter keeps that time. A torrent with its own limit doesn't draw from the global bucket, so it
+can be capped while the global figure isn't.
 
 **UI:** the rate cell shows a small cap marker when capped, with a tooltip naming the source
 ("Capped by the global limit, 1.0 MB/s", "Capped by the off-hours schedule", "Capped by this
-torrent's limit"). The header's totals show the same marker. Exact visual form to confirm against
-the style guide before building - the guide doesn't cover it.
+torrent's limit"). The header's totals show the same marker. **Decided with the user
+(2026-10-19):** a small gauge icon after the rate, quiet when not capped, so the number itself
+doesn't change width; the tooltip carries the source and limit, and the icon has the same text
+as its accessible label. Chosen over colouring the rate (colour alone carries the meaning) and a
+"· capped" text suffix (widens every capped row).
 
 ## Stage 3 - transfer history
 
 ### 3.1 What's kept
 
 Global, both directions:
-- 60 × 1 s (the meter's own ring);
+- 60 × 1 s (the meter's own samples);
 - 120 × 1 min (2 hours);
 - 168 × 1 h (7 days).
 
 Per torrent, both directions:
-- 60 × 1 s (the meter's ring);
+- 60 × 1 s (the meter's samples);
 - 60 × 1 min (1 hour).
 
-Coarser rings are fed by the same 1 s tick: every 60th tick closes a minute bucket from the last
-60 seconds, every 60th minute closes an hour bucket.
+Minutes and hours live in `stats/HistoryRing`, fed by every tick. Its intervals are aligned to
+the wall clock (minute n is [n × 60 s, (n + 1) × 60 s) since the epoch), and interval n sits in
+slot n mod capacity: writing an interval whose slot holds an older one replaces it, so there's no
+close or expiry step. Each interval keeps its bytes and how much of it was actually sampled, and
+reads as bytes over sampled time. An hour the app ran for ten minutes averages over those ten
+minutes; an hour it didn't run at all is a gap. The newest value is the interval in progress.
+
+`HistoryRing` is `synchronized`: the tick writes it once a second and readers are rare (someone
+opening a graph). Neither is the block path, so 0007's rule isn't in play, and the lock keeps its
+three arrays consistent.
 
 Memory is fixed: about 350 longs global, about 240 per torrent (≈2 KB). A 1,000-torrent library
 is about 2 MB.
 
 ### 3.2 Surviving restarts
 
-The **global hourly ring is persisted** to a small JSON file in the config directory on the
-existing lifetime-stats flush ([[0064-persistent-lifetime-stats]]), with the same atomic
-write. "Last night" survives an upgrade or container restart, which is when it would otherwise
+The **global hourly ring is persisted** to `.grimtorrenter-transfer-history` in the config
+directory - the engine's own key=value marker format ([[0099-engine-shared-helpers-and-hot-path-counters]]),
+one `hour=index,downloadBytes,uploadBytes,sampledMillis` line per hour, not JSON (the engine has
+no JSON library). Written on the existing lifetime-stats flush ([[0064-persistent-lifetime-stats]]),
+every 30 s, and at shutdown, with the same atomic write. "Last night" survives an upgrade or container restart, which is when it would otherwise
 be lost. Gaps (hours the app was down) are recorded as gaps, not zeros, so a graph doesn't
 pretend nothing moved. The minute and second rings, and all per-torrent history, are in memory
 only.
@@ -227,27 +253,52 @@ oldest first, with `null` for a gap. Plain values; a client draws them as it lik
 ### 3.4 UI
 
 - **Global graph:** a "Transfer" section with a 1 min / 2 h / 7 d switch. Download and upload as
-  two lines, with the active rate limits drawn as horizontal reference lines so a schedule
-  window is visible as a step.
+  two lines on one rate axis, with the limits applying *now* drawn as faint dashed reference
+  lines labelled "Download limit now ...". Only the current limits are known: the history keeps
+  bytes, not the limit each interval ran under, so a schedule window can't be drawn as a step.
+  The traffic itself still shows the schedule biting. Keeping each interval's limit would be a
+  small engine addition if it's ever wanted (TECH_DEBT).
 - **Per-torrent graph:** in the details panel, with a 1 min / 1 h switch.
-- Drawn as inline SVG like the existing `RateTrend` sparkline; no chart library.
+- Drawn as inline SVG like the existing `RateTrend` sparkline; no chart library. One shared
+  `TransferChart` component serves both: 2px lines in two chart-only colours (see 0032's
+  2026-10-19 addendum), solid hairline gridlines, a legend with line keys that carries each
+  series' latest value, gaps drawn as breaks, a crosshair snapping to the nearest interval with
+  one readout for both series, the same readout from the keyboard (arrow keys, Home/End), and a
+  "Show as table" view of every value so nothing is hover-only. The window switch is a small
+  shared `RangeSwitch` (buttons with `aria-pressed` in a labelled group). While a new window
+  loads, the previous graph stays on screen, faded.
 
-**To decide before building (style guide):** where each lives. Candidates for the global graph
-are a new group on the Health page, its own page in the sidebar, or a popover from the footer's
-totals. For the per-torrent graph, a fifth tab beside Files/Peers/Trackers/Pieces, or a strip in
-the panel's fact grid. Neither placement is covered by the guide.
+**Placement, decided with the user (2026-10-19)** - the style guide covers neither:
+- **The global graph gets its own sidebar page, "Transfer"**, beside Health, Events and Settings:
+  full width for a 7-day view, with the current rates and ratio above it. Chosen over a group on
+  the Health page (a checklist; a large graph changes its character) and a popover from the
+  footer's totals (too small and transient for 7 days).
+- **The per-torrent graph is a fifth details-panel tab, "Speed"**, beside Files, Peers, Trackers
+  and Pieces: the 430 px panel gives a tab its full width and height. Chosen over a strip in the
+  fact grid, which is already dense and has no room for the 1 min / 1 h switch.
 
 ## Order of work
 
-1. **Engine:** `TransferMeter` and its tick, ETA and its status, `RateLimiter.acquire()`
-   reporting waits, the history rings and their persistence. Unit tests with an injected clock:
-   bucket rollover, EMA decay to 0, 60 s mean on a young run, a disconnect mid-second, status
-   precedence, the capped window, ring roll-ups, gap handling, a corrupt history file.
-2. **App:** the view fields, `GET /api/stats/transfer`, the `transfer` message, the history
-   endpoints, and their tests.
-3. **Frontend, stage 1:** delete the client-side rate code; read the new fields.
-4. **Frontend, stages 2-3:** ETA reasons, cap markers, graphs - after the placement questions
-   above are settled.
+1. **Engine** (written 2026-10-19): `TransferMeter` and its tick, ETA and its status,
+   `RateLimiter.acquire()` reporting waits, the applied limit and its source, the history rings
+   and their persistence. Unit tests pass times in rather than reading the clock: bucket rollover,
+   the rate reaching 0, 60 s mean on a young run, a disconnect between ticks, status precedence,
+   the capped window, ring gaps and replacement, the history file's round trip, a corrupt history
+   file.
+2. **App** (written 2026-10-19): the view fields, `GET /api/stats/transfer` (`TransferView`, which
+   also carries the lifetime downloaded/uploaded totals behind the ratio), the `transfer` message,
+   `GET /api/stats/history` and `GET /api/torrents/{infoHash}/history` (`HistoryView`;
+   `resolution` is required, any case, and an unknown value - or `hour` per torrent - is a 400),
+   and their tests.
+3. **Frontend, stage 1** (written 2026-10-19): `RateTracker` and every rate calculation deleted;
+   `Torrent`/`Peer` carry the server's fields (`TorrentWithRate`/`PeerWithRate` are gone); the
+   header and footer read the `transfer` message, ratio included. The ETA reasons (2.1) came
+   along, since they're only the ETA cell's text and tooltip.
+4. **Frontend, stages 2-3** (written 2026-10-19): `CapMarker` (a gauge icon with the source and
+   limit as tooltip and accessible name) after the rate in the row's Down/Up cells, the details
+   panel's Down/Up facts, the header's totals and the Transfer page; the Transfer page
+   (`/transfer`, in the sidebar between Health and Events) with the now-figures and the graph;
+   the panel's Speed tab.
 
 Stages 1-2 change no UI layout. Stage 3 adds UI and needs the placement decision first.
 
@@ -263,15 +314,21 @@ per-viewer: totals over the viewer's own selection, and formatting.
 - **Bounded memory.** Every ring is fixed-size; nothing grows with uptime. Per-connection meters
   die with the connection (bounded by the connection cap); per-torrent meters and history are
   dropped on remove. The persisted file is a fixed 168 entries per direction.
-- **No new threads, no locks.** One more `GuardedTask` on the existing maintenance scheduler; a
-  throw in it is logged and the next tick runs. The block path gains one `addAndGet` per block per
-  direction, beside the one already there. Readers read a `volatile` immutable record.
+- **No new threads, no locks on the block path.** One more `GuardedTask` on the existing
+  maintenance scheduler; a throw in it is logged and the next tick runs. The block path is
+  unchanged apart from `acquire()` returning a boolean. Meter readers read a `volatile` immutable
+  record; `HistoryRing`'s lock is taken once a second by the tick and rarely by a reader.
+- **Garbage.** Each tick publishes one record with a copy of up to 60 longs per meter: four meters
+  per connection pair (down and up for the connection and its torrent). At 200 connections that's
+  roughly 200 KB a second of short-lived objects - nothing for the JVM, and it buys lock-free
+  readers.
 - **The tick can't fall behind dangerously.** `scheduleWithFixedDelay`, so a slow tick delays the
   next rather than piling up. A late tick rolls the bytes of a longer interval into one bucket and
   divides by the real elapsed time, so a late tick reads as the right average, not a spike.
-- **Cleanup on every exit path.** A closing connection adds its partial second to the torrent
-  and drops its meter in the same close path that already folds its byte counts into the
-  torrent's accumulators. Pause and remove clear the torrent's meters.
+- **Cleanup on every exit path.** The tick counts a closed connection's last bytes and drops its
+  meters the first time it finds the connection gone from the live set, whatever closed it. A
+  removed torrent's meters and history go with its session. A stopped torrent's meters are cleared
+  on the next tick.
 - **Hostile peers.** Rates count bytes we actually moved, so a peer can't inflate them. A peer
   can lie in its have-set and make `UNAVAILABLE` read optimistic; that's a display figure only,
   and the same lie already skews `relevance`.

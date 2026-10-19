@@ -2,6 +2,7 @@ import { HttpClient } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
 import { Observable } from 'rxjs';
 
+import { HistoryResolution, TransferHistory } from '../models/stats.model';
 import {
   AddTorrentResponse,
   FilePriority,
@@ -47,6 +48,11 @@ export class TorrentService {
 
   peers(infoHash: string): Observable<Peer[]> {
     return this.http.get<Peer[]>(`${this.baseUrl}/${infoHash}/peers`);
+  }
+
+  /** second (the last minute) or minute (the last hour) - see design_docs/0102. */
+  history(infoHash: string, resolution: Exclude<HistoryResolution, 'hour'>): Observable<TransferHistory> {
+    return this.http.get<TransferHistory>(`${this.baseUrl}/${infoHash}/history`, { params: { resolution } });
   }
 
   trackers(infoHash: string): Observable<Tracker[]> {

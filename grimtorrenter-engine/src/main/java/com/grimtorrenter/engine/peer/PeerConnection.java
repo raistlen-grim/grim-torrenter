@@ -93,6 +93,10 @@ public final class PeerConnection implements AutoCloseable {
     /** Wall-clock millis of the most recent block moved in either direction; 0 = never. Feeds
      * activity() only. See design_docs/0076. */
     private volatile long lastTransferMillis;
+    /** Wall-clock millis of the last block the download/upload rate limiter held back; 0 =
+     * never. Feeds the torrent's "capped" flags. See design_docs/0102. */
+    private volatile long lastDownloadThrottledMillis;
+    private volatile long lastUploadThrottledMillis;
 
     private static final long RATE_WINDOW_MILLIS = 1_000;
     private volatile double downloadRateBytesPerSec;
@@ -493,7 +497,9 @@ public final class PeerConnection implements AutoCloseable {
                 // peer, which is what actually slows the incoming byte rate down (TCP flow
                 // control backs the remote sender off once we stop reading). See
                 // design_docs/0042.
-                rateLimiters.download().acquire(p.block().length);
+                if (rateLimiters.download().acquire(p.block().length)) {
+                    lastDownloadThrottledMillis = System.currentTimeMillis();
+                }
             }
             case KeepAlive ignored -> {
             }
@@ -636,7 +642,9 @@ public final class PeerConnection implements AutoCloseable {
      * until the budget allows it, the precise enforcement point for something we fully
      * control the timing of. */
     public void sendPiece(int index, int begin, byte[] block) {
-        rateLimiters.upload().acquire(block.length);
+        if (rateLimiters.upload().acquire(block.length)) {
+            lastUploadThrottledMillis = System.currentTimeMillis();
+        }
         send(new Piece(index, begin, block));
         uploadedBytes.addAndGet(block.length);
         lastTransferMillis = System.currentTimeMillis();
@@ -753,6 +761,20 @@ public final class PeerConnection implements AutoCloseable {
             return PeerActivity.ACTIVE;
         }
         return amInterested() ? PeerActivity.WAITING : PeerActivity.IDLE;
+    }
+
+    /** True if the download rate limiter held this connection back within windowMillis before
+     * nowMillis. See design_docs/0102. */
+    public boolean downloadThrottledWithin(long windowMillis, long nowMillis) {
+        return within(lastDownloadThrottledMillis, windowMillis, nowMillis);
+    }
+
+    public boolean uploadThrottledWithin(long windowMillis, long nowMillis) {
+        return within(lastUploadThrottledMillis, windowMillis, nowMillis);
+    }
+
+    private static boolean within(long stampMillis, long windowMillis, long nowMillis) {
+        return stampMillis != 0 && nowMillis - stampMillis <= windowMillis;
     }
 
     public boolean isClosed() {

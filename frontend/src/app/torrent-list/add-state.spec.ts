@@ -1,11 +1,11 @@
-import { TorrentWithRate } from '../models/torrent.model';
+import { Torrent } from '../models/torrent.model';
 import { resolveAddState } from './add-state';
 
 const HEX = '0123456789abcdef0123456789abcdef01234567';
 const OTHER_HEX = 'fedcba9876543210fedcba9876543210fedcba98';
 
-function torrent(infoHash: string, name: string): TorrentWithRate {
-  return { infoHash, name } as TorrentWithRate;
+function torrent(infoHash: string, name: string): Torrent {
+  return { infoHash, name } as Torrent;
 }
 
 describe('resolveAddState', () => {

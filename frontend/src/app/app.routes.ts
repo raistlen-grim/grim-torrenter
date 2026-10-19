@@ -32,6 +32,11 @@ export const routes: Routes = [
   // The page's old address, from before it grew into Health (design_docs/0086).
   { path: 'services', redirectTo: 'health', pathMatch: 'full' },
   {
+    path: 'transfer',
+    canActivate: [authGuard],
+    loadComponent: () => import('./transfer-page/transfer-page').then((m) => m.TransferPage),
+  },
+  {
     path: 'events',
     canActivate: [authGuard],
     loadComponent: () => import('./events-page/events-page').then((m) => m.EventsPage),

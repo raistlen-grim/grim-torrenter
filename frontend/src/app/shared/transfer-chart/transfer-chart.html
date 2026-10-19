@@ -1,0 +1,81 @@
+<ul class="legend" aria-hidden="true">
+  <li><span class="key key-download"></span>Download <span class="legend-value tabular-nums">{{ rate(latestDownload()) }}</span></li>
+  <li><span class="key key-upload"></span>Upload <span class="legend-value tabular-nums">{{ rate(latestUpload()) }}</span></li>
+</ul>
+
+<div
+  class="plot"
+  tabindex="0"
+  role="group"
+  aria-roledescription="chart"
+  [attr.aria-label]="label() + '. Download ' + rate(latestDownload()) + ', upload ' + rate(latestUpload()) + ' most recently. Arrow keys step through the readings; the table below lists them all.'"
+  (pointermove)="onPointerMove($event)"
+  (pointerleave)="clearHover()"
+  (focus)="onFocus()"
+  (blur)="clearHover()"
+  (keydown)="onKeydown($event)"
+>
+  @if (width() > 0) {
+    <svg [attr.width]="width()" [attr.height]="height" aria-hidden="true">
+      @for (tick of yTickMarks(); track tick.y) {
+        <line class="grid" [attr.x1]="margin.left" [attr.x2]="width() - margin.right" [attr.y1]="tick.y" [attr.y2]="tick.y" />
+        <text class="axis-label" [attr.x]="margin.left - 8" [attr.y]="tick.y" text-anchor="end" dominant-baseline="middle">{{ tick.label }}</text>
+      }
+      @for (tick of xTickMarks(); track tick.x) {
+        <text class="axis-label" [attr.x]="tick.x" [attr.y]="height - 8" text-anchor="middle">{{ tick.label }}</text>
+      }
+
+      @if (downloadLimit() > 0) {
+        <line class="limit limit-download" [attr.x1]="margin.left" [attr.x2]="width() - margin.right" [attr.y1]="y(downloadLimit())" [attr.y2]="y(downloadLimit())" />
+        <text class="limit-label" [attr.x]="width() - margin.right" [attr.y]="y(downloadLimit()) - 4" text-anchor="end">Download limit now {{ downloadLimit() | formatRate }}</text>
+      }
+      @if (uploadLimit() > 0) {
+        <line class="limit limit-upload" [attr.x1]="margin.left" [attr.x2]="width() - margin.right" [attr.y1]="y(uploadLimit())" [attr.y2]="y(uploadLimit())" />
+        <text class="limit-label" [attr.x]="width() - margin.right" [attr.y]="y(uploadLimit()) - 4" text-anchor="end">Upload limit now {{ uploadLimit() | formatRate }}</text>
+      }
+
+      <path class="series series-upload" [attr.d]="uploadPath()" />
+      <path class="series series-download" [attr.d]="downloadPath()" />
+
+      @if (hover(); as point) {
+        <line class="crosshair" [attr.x1]="point.x" [attr.x2]="point.x" [attr.y1]="margin.top" [attr.y2]="height - margin.bottom" />
+        @if (point.uploadY !== null) {
+          <circle class="dot dot-upload" [attr.cx]="point.x" [attr.cy]="point.uploadY" r="4" />
+        }
+        @if (point.downloadY !== null) {
+          <circle class="dot dot-download" [attr.cx]="point.x" [attr.cy]="point.downloadY" r="4" />
+        }
+      }
+    </svg>
+
+    @if (!hasData()) {
+      <p class="empty">Nothing recorded in this window yet</p>
+    }
+
+    @if (hover(); as point) {
+      <div class="readout" [class.flip]="point.flip" [style.left.px]="point.x" [style.top.px]="margin.top" aria-live="polite">
+        <div class="readout-time">{{ point.atMillis | date: timeFormat() }}</div>
+        <div class="readout-row"><span class="key key-download"></span><strong class="tabular-nums">{{ rate(point.download) }}</strong> Download</div>
+        <div class="readout-row"><span class="key key-upload"></span><strong class="tabular-nums">{{ rate(point.upload) }}</strong> Upload</div>
+      </div>
+    }
+  }
+</div>
+
+<details class="table-view">
+  <summary>Show as table</summary>
+  <table>
+    <thead>
+      <tr><th scope="col">Time</th><th scope="col">Download</th><th scope="col">Upload</th></tr>
+    </thead>
+    <tbody>
+      @for (row of rows(); track row.atMillis) {
+        <tr>
+          <td class="tabular-nums">{{ row.atMillis | date: timeFormat() }}</td>
+          <td class="tabular-nums">{{ rate(row.download) }}</td>
+          <td class="tabular-nums">{{ rate(row.upload) }}</td>
+        </tr>
+      }
+    </tbody>
+  </table>
+</details>

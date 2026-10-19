@@ -1,6 +1,6 @@
 import { Injectable, signal } from '@angular/core';
 
-export type DetailTab = 'files' | 'peers' | 'trackers' | 'pieces';
+export type DetailTab = 'files' | 'peers' | 'trackers' | 'pieces' | 'speed';
 
 /** One remembered tab per torrent, in-memory only (session, not persisted) - see the guide's
  * "Tab choice persists per torrent for the session." A plain component field wouldn't survive

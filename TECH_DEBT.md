@@ -131,11 +131,17 @@ came from so the context can be found again.
 ## Frontend (from code_review/03-frontend.md)
 
 ### Thin frontend (design_docs/0071)
-- **Transfer rates are computed in the browser** (`TorrentEventsService` + `RateTracker`, from
-  successive snapshots). Every other client would have to rebuild that, and the numbers depend
-  on when snapshots happen to arrive. Specced in design_docs/0102 (Proposed, wanted for beta):
-  rates, ETA and sparkline history all move server-side, with ETA reasons, cap indicators and
-  transfer history on top.
+- ~~**Transfer rates are computed in the browser**~~ Done (design_docs/0102): rates, ETA and
+  its reason, sparkline samples, the header/footer totals and the lifetime ratio all come from
+  the server; `RateTracker` is gone. Cap markers, the Transfer page and the Speed tab are built
+  too.
+- **Graphs show only the current rate limits**, not the limit each interval ran under, so an
+  off-hours schedule window can't be drawn as a step (design_docs/0102, 3.4). Storing the applied
+  limit per minute/hour interval in `HistoryRing` would add it.
+- **Per-torrent ratio and average rates** are still divided out in the details panel
+  (`TorrentDetail`: lifetime uploaded over downloaded, and bytes over time active for the Down/Up
+  tooltips). Small, but the same kind of arithmetic 0102 moved for everything else; fields on
+  `TorrentView` would remove it.
 - **Copy magnet link** is assembled client-side (now in one place, `magnetLinkFor()`,
   design_docs/0101). A `magnetUri` field on `TorrentView` would be one line server-side.
 

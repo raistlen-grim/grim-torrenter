@@ -21,10 +21,15 @@ public final class RateLimiters {
 
     private final Supplier<RateLimiter> upload;
     private final Supplier<RateLimiter> download;
+    private final Supplier<AppliedLimit> uploadLimit;
+    private final Supplier<AppliedLimit> downloadLimit;
 
-    private RateLimiters(Supplier<RateLimiter> upload, Supplier<RateLimiter> download) {
+    private RateLimiters(Supplier<RateLimiter> upload, Supplier<RateLimiter> download,
+                         Supplier<AppliedLimit> uploadLimit, Supplier<AppliedLimit> downloadLimit) {
         this.upload = upload;
         this.download = download;
+        this.uploadLimit = uploadLimit;
+        this.downloadLimit = downloadLimit;
     }
 
     public RateLimiter upload() {
@@ -33,6 +38,15 @@ public final class RateLimiters {
 
     public RateLimiter download() {
         return download.get();
+    }
+
+    /** The upload limit upload() enforces right now, and its source. See design_docs/0102. */
+    public AppliedLimit uploadLimit() {
+        return uploadLimit.get();
+    }
+
+    public AppliedLimit downloadLimit() {
+        return downloadLimit.get();
     }
 
     /** Each RateLimiter's limit function calls LocalTime.now() itself, not once up front -
@@ -45,7 +59,9 @@ public final class RateLimiters {
                 new RateLimiter(settingsStore, settings -> RateLimitSchedule.effectiveUploadLimit(settings, LocalTime.now()));
         RateLimiter fixedDownload =
                 new RateLimiter(settingsStore, settings -> RateLimitSchedule.effectiveDownloadLimit(settings, LocalTime.now()));
-        return new RateLimiters(() -> fixedUpload, () -> fixedDownload);
+        return new RateLimiters(() -> fixedUpload, () -> fixedDownload,
+                () -> RateLimitSchedule.appliedUploadLimit(settingsStore.current(), LocalTime.now()),
+                () -> RateLimitSchedule.appliedDownloadLimit(settingsStore.current(), LocalTime.now()));
     }
 
     /** For every pre-existing caller/test that predates rate limiting and doesn't care
@@ -83,6 +99,14 @@ public final class RateLimiters {
                 () -> RateLimiter.burstSeconds(settingsStore.current()));
         return new RateLimiters(
                 () -> liveOverride.get().uploadBytesPerSecOverride() < 0 ? global.upload() : dedicatedUpload,
-                () -> liveOverride.get().downloadBytesPerSecOverride() < 0 ? global.download() : dedicatedDownload);
+                () -> liveOverride.get().downloadBytesPerSecOverride() < 0 ? global.download() : dedicatedDownload,
+                () -> appliedFor(liveOverride.get().uploadBytesPerSecOverride(), global::uploadLimit),
+                () -> appliedFor(liveOverride.get().downloadBytesPerSecOverride(), global::downloadLimit));
+    }
+
+    /** Negative inherits the global pair's limit; 0 is "no limit for this torrent"; positive is
+     * the torrent's own cap. See design_docs/0072. */
+    private static AppliedLimit appliedFor(long override, Supplier<AppliedLimit> global) {
+        return override < 0 ? global.get() : AppliedLimit.of(override, AppliedLimit.Source.TORRENT);
     }
 }

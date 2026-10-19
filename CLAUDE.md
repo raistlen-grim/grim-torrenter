@@ -51,8 +51,11 @@ ergonomics — see 0071 for that distinction.
 - **Builds and tests are run manually by the user.** Never invoke build or
   test commands (`mvn`, `ng build`, `ng test`, `ng serve`, `docker build`,
   etc.) in this project.
-- **Git is handled manually by the user.** Never run `git init` or any git
-  commands in this project unless explicitly asked.
+- **Git is handled manually by the user.** The user reviews each change set
+  at the staging/commit step, so never run anything that changes git state
+  (`git init`, `add`, `commit`, `reset`, `checkout`, `stash`, `rebase`,
+  `push`, etc.) unless explicitly asked. Read-only commands (`status`, `diff`,
+  `log`, `show`, `blame`) are fine whenever they help get the right outcome.
 - **Never look for or read compiled class files / decompiled sources for
   code not present in this project's source tree** (e.g. digging into `.m2`
   jars). If a dependency's API needs to be understood, ask for the source

@@ -72,6 +72,9 @@
 <td class="done-cell tabular-nums">{{ progressPercent() }}%</td>
 <td class="down-cell tabular-nums" [class.col-hidden]="compact()">
   <app-rate-trend [rateBytesPerSec]="downloadRateBytesPerSec()" [trend]="downloadRateTrend()" />
+  @if (torrent().downloadCapped) {
+    <app-cap-marker [limitBytesPerSec]="torrent().downloadLimitBytesPerSec" [source]="torrent().downloadLimitSource" />
+  }
 </td>
 <td class="up-cell tabular-nums" [class.col-hidden]="compact()">
   @if (uploadRateBytesPerSec() > 0) {
@@ -79,8 +82,11 @@
   } @else {
     <span class="rate-idle">&mdash;</span>
   }
+  @if (torrent().uploadCapped) {
+    <app-cap-marker [limitBytesPerSec]="torrent().uploadLimitBytesPerSec" [source]="torrent().uploadLimitSource" />
+  }
 </td>
-<td class="eta-cell tabular-nums" [class.col-hidden]="compact()">{{ bytesRemaining() | formatEta : downloadRateBytesPerSec() }}</td>
+<td class="eta-cell tabular-nums" [class.col-hidden]="compact()" [attr.title]="etaTitle() || null">{{ torrent() | formatEta }}</td>
 <td class="actions-cell" [class.col-hidden]="compact()">
   <div class="row-actions" (click)="$event.stopPropagation()">
     @if (isFetchingMetadata()) {

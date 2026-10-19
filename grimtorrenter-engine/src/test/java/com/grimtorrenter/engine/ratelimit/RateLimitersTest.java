@@ -4,6 +4,7 @@ import com.grimtorrenter.engine.settings.InMemorySettingsStore;
 import com.grimtorrenter.engine.torrent.TorrentLimitOverride;
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -66,5 +67,27 @@ class RateLimitersTest {
         override[0] = new TorrentLimitOverride(0, 0, -1);
 
         assertTrue(perTorrent.upload() != global.upload(), "a live switch away from inherit should stop sharing the global bucket");
+    }
+
+    /** design_docs/0102: which limit applies to a torrent, and whose it is. */
+    @Test
+    void appliedLimitFollowsTheOverride() {
+        RateLimiters global = RateLimiters.from(new InMemorySettingsStore(
+                new com.grimtorrenter.engine.settings.Settings(true, true, 1000, 2000)));
+        TorrentLimitOverride[] override = {TorrentLimitOverride.INHERIT};
+        RateLimiters perTorrent = RateLimiters.forTorrent(global, new InMemorySettingsStore(), () -> override[0]);
+
+        assertEquals(new AppliedLimit(1000, AppliedLimit.Source.GLOBAL), perTorrent.uploadLimit());
+        assertEquals(new AppliedLimit(2000, AppliedLimit.Source.GLOBAL), perTorrent.downloadLimit());
+
+        override[0] = new TorrentLimitOverride(500, 0, -1);
+        assertEquals(new AppliedLimit(500, AppliedLimit.Source.TORRENT), perTorrent.uploadLimit());
+        assertEquals(AppliedLimit.NONE, perTorrent.downloadLimit(), "an explicit 0 means no limit for this torrent");
+    }
+
+    @Test
+    void noGlobalLimitIsNone() {
+        assertEquals(AppliedLimit.NONE, RateLimiters.unlimited().uploadLimit());
+        assertEquals(AppliedLimit.NONE, RateLimiters.unlimited().downloadLimit());
     }
 }

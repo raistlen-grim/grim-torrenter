@@ -65,6 +65,14 @@
      directly. */
   --alarm: oklch(0.58 0.13 27);
 
+  /* The transfer graphs' two series (design_docs/0102) - chart-only, used nowhere else. A
+     deliberate, scoped exception to the guide's "one hue, one alarm": the accent is too muted to
+     pass a chart's colour checks, and download/upload need two hues a colour-blind reader can
+     still tell apart. Validated (lightness band, chroma, CVD and normal-vision separation,
+     contrast) against each mode's surface. See design_docs/0032's 2026-10-19 addendum. */
+  --chart-download: #3b7bc0;
+  --chart-upload: #c0821e;
+
   /* Guide's elevation scale (ds/industry.css) - only the one step anything in this app has
      needed so far (the rate-trend tooltip, design_docs/0063); --shadow-sm/-lg aren't ported
      since nothing uses them yet. */
@@ -82,6 +90,8 @@
 :root[data-theme='dark'] {
   --color-bg: #171a1c;
   --field-ink: #e6e8ea;
+  --chart-download: #4f8bcb;
+  --chart-upload: #bf8526;
   --color-accent-600: var(--p-primary-300);
   --color-accent-700: var(--p-primary-200);
 }

@@ -1,0 +1,44 @@
+/* Same frame width as Health, Events and Settings - see design_docs/0045's addendum. */
+:host {
+  display: block;
+  max-width: 1100px;
+}
+
+/* The figures now: small uppercase labels over plain values, like the details panel's facts. */
+.now {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4) var(--space-6);
+  margin: 0 0 var(--space-6);
+}
+
+.now-fact dt {
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  opacity: 0.55;
+}
+
+.now-fact dd {
+  margin: var(--space-1) 0 0;
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+}
+
+.filters {
+  display: flex;
+  margin-bottom: var(--space-3);
+}
+
+/* Keeps the previous window on screen, faded, while the new one loads. */
+app-transfer-chart.loading {
+  opacity: 0.5;
+}
+
+.note {
+  margin: var(--space-3) 0 0;
+  font-size: 12px;
+  opacity: 0.6;
+}

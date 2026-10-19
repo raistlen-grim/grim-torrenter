@@ -5,6 +5,7 @@ import com.grimtorrenter.engine.magnet.MagnetLink;
 import com.grimtorrenter.engine.metainfo.InfoHash;
 import com.grimtorrenter.engine.piece.FilePriorities;
 import com.grimtorrenter.engine.piece.FilePriority;
+import com.grimtorrenter.engine.stats.HistoryResolution;
 import com.grimtorrenter.engine.torrent.SeedingLimitOverride;
 import com.grimtorrenter.engine.torrent.TorrentLimitOverride;
 import com.grimtorrenter.engine.torrent.TorrentSession;
@@ -113,13 +114,28 @@ public class TorrentResource {
         return files(infoHashHex);
     }
 
-    /** See design_docs/0031 - transfer rate, % piece availability, and client-name
-     * decoding aren't included yet, only what PeerConnection already tracks. */
+    /** Each peer with its own server-measured rates (design_docs/0102). Client-name decoding
+     * isn't included yet. See design_docs/0031. */
     @GET
     @Path("/{infoHash}/peers")
     @Produces(MediaType.APPLICATION_JSON)
     public List<PeerView> peers(@PathParam("infoHash") String infoHashHex) {
         return requireSession(infoHashHex).peers().stream().map(PeerView::from).toList();
+    }
+
+    /** resolution=second (the last minute) or minute (the last hour); there's no per-torrent
+     * hourly history, so hour is a 400 like any unknown value. See design_docs/0102. */
+    @GET
+    @Path("/{infoHash}/history")
+    @Produces(MediaType.APPLICATION_JSON)
+    public HistoryView history(@PathParam("infoHash") String infoHashHex,
+                               @QueryParam("resolution") String resolutionParam) {
+        HistoryResolution resolution = HistoryView.parseResolution(resolutionParam);
+        if (resolution == HistoryResolution.HOUR) {
+            throw new BadRequestException("Per-torrent history is kept at second or minute resolution");
+        }
+        TorrentSession session = requireSession(infoHashHex);
+        return HistoryView.from(resolution, session.transferHistory(resolution, System.currentTimeMillis()));
     }
 
     /** Self-contained detail endpoint - per-tracker status (URL, tier, WORKING/ERROR/

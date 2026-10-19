@@ -1,14 +1,15 @@
 import { LibraryEvent } from '../models/events.model';
-import { Label, Torrent } from '../models/torrent.model';
+import { Label, Torrent, TransferStats } from '../models/torrent.model';
 
 /** A /ws/torrents message, matching the backend's TorrentEventMessage envelope: a full snapshot
- * (design_docs/0019), one torrent's state change, a library event (design_docs/0055), or the
- * label list (design_docs/0077). */
+ * (design_docs/0019), one torrent's state change, a library event (design_docs/0055), the
+ * label list (design_docs/0077), or the engine-wide transfer figures (design_docs/0102). */
 export type TorrentEventMessage =
   | { type: 'snapshot'; payload: Torrent[] }
   | { type: 'state-changed'; payload: Torrent }
   | { type: 'event'; payload: LibraryEvent }
-  | { type: 'labels'; payload: Label[] };
+  | { type: 'labels'; payload: Label[] }
+  | { type: 'transfer'; payload: TransferStats };
 
 /**
  * Parses and checks one WebSocket frame. Returns null for anything that isn't a message this
@@ -40,6 +41,8 @@ export function parseEventMessage(data: unknown): TorrentEventMessage | null {
       return isLibraryEvent(payload) ? { type: 'event', payload } : null;
     case 'labels':
       return Array.isArray(payload) && payload.every(isLabel) ? { type: 'labels', payload } : null;
+    case 'transfer':
+      return isTransfer(payload) ? { type: 'transfer', payload } : null;
     default:
       return null;
   }
@@ -65,4 +68,12 @@ function isLibraryEvent(value: unknown): value is LibraryEvent {
 
 function isLabel(value: unknown): value is Label {
   return isRecord(value) && typeof value['id'] === 'string' && typeof value['name'] === 'string';
+}
+
+function isTransfer(value: unknown): value is TransferStats {
+  return (
+    isRecord(value) &&
+    typeof value['downloadRateBytesPerSec'] === 'number' &&
+    typeof value['uploadRateBytesPerSec'] === 'number'
+  );
 }

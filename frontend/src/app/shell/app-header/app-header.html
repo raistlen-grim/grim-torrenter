@@ -5,8 +5,22 @@
   </a>
 
   <div class="header-stats tabular-nums">
-    <span class="rate"><i class="pi pi-arrow-down" aria-hidden="true"></i>{{ totalDownloadRate() | formatRate }}</span>
-    <span class="rate"><i class="pi pi-arrow-up" aria-hidden="true"></i>{{ totalUploadRate() | formatRate }}</span>
+    <span class="rate">
+      <i class="pi pi-arrow-down" aria-hidden="true"></i>{{ totalDownloadRate() | formatRate }}
+      @if (events.transfer(); as t) {
+        @if (t.downloadCapped) {
+          <app-cap-marker [limitBytesPerSec]="t.downloadLimitBytesPerSec" [source]="t.downloadLimitSource" />
+        }
+      }
+    </span>
+    <span class="rate">
+      <i class="pi pi-arrow-up" aria-hidden="true"></i>{{ totalUploadRate() | formatRate }}
+      @if (events.transfer(); as t) {
+        @if (t.uploadCapped) {
+          <app-cap-marker [limitBytesPerSec]="t.uploadLimitBytesPerSec" [source]="t.uploadLimitSource" />
+        }
+      }
+    </span>
     <app-status-indicator
       [icon]="dhtStatus().enabled ? 'pi-share-alt' : 'pi-circle-off'"
       [label]="dhtStatus().enabled ? dhtStatus().nodeCount + ' DHT nodes' : 'DHT off'"

@@ -1,7 +1,7 @@
 import { DecimalPipe } from '@angular/common';
 import { ChangeDetectionStrategy, Component, computed, input, output } from '@angular/core';
 
-import { TorrentState, TorrentWithRate } from '../../models/torrent.model';
+import { Torrent, TorrentState } from '../../models/torrent.model';
 import { FormatBytesPipe } from '../../shared/format-bytes.pipe';
 import { FormatRatePipe } from '../../shared/format-rate.pipe';
 import { pluralTorrentCount } from '../../shared/plural-torrent-count';
@@ -29,7 +29,7 @@ const STATE_ORDER: TorrentState[] = ['DOWNLOADING', 'SEEDING', 'STARTING', 'VERI
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class SelectionSummary {
-  readonly torrents = input.required<TorrentWithRate[]>();
+  readonly torrents = input.required<Torrent[]>();
   readonly closed = output<void>();
   /** A torrent in the list below was clicked - the parent opens its own details. */
   readonly torrentOpened = output<string>();
@@ -74,7 +74,7 @@ export class SelectionSummary {
     return torrentStateDisplay(state).label;
   }
 
-  private sum(value: (torrent: TorrentWithRate) => number): number {
+  private sum(value: (torrent: Torrent) => number): number {
     return this.torrents().reduce((total, torrent) => total + value(torrent), 0);
   }
 }

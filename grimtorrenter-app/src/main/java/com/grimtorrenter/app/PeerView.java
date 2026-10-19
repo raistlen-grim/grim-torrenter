@@ -28,7 +28,12 @@ public record PeerView(
         String transportType,
         /** ACTIVE (a block moved within the last 10s), WAITING (nothing moving but we want
          * something from them) or IDLE - see PeerActivity. See design_docs/0076. */
-        String activity
+        String activity,
+        /** This connection's own rates, measured server-side the same way as the torrent's -
+         * see TorrentView and design_docs/0102. */
+        long downloadRateBytesPerSec,
+        long uploadRateBytesPerSec,
+        long[] downloadRateTrend
 ) {
     public static PeerView from(TorrentSession.PeerSnapshot snapshot) {
         return new PeerView(
@@ -46,6 +51,9 @@ public record PeerView(
                 snapshot.percentAvailable(),
                 snapshot.relevance(),
                 snapshot.transportType().name(),
-                snapshot.activity().name());
+                snapshot.activity().name(),
+                snapshot.downloadRate().bytesPerSec(),
+                snapshot.uploadRate().bytesPerSec(),
+                snapshot.downloadRate().recentTrend());
     }
 }

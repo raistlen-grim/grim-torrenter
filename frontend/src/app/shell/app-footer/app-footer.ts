@@ -42,23 +42,18 @@ export class AppFooter {
 
   readonly torrentCount = computed(() => this.events.torrents().length);
   readonly torrentCountDisplay = computed(() => pluralTorrentCount(this.torrentCount()));
-  readonly totalDownloadRate = computed(() =>
-    this.events.torrents().reduce((sum, t) => sum + t.downloadRateBytesPerSec, 0),
-  );
-  readonly totalUploadRate = computed(() =>
-    this.events.torrents().reduce((sum, t) => sum + t.uploadRateBytesPerSec, 0),
-  );
+  /** The server's engine-wide figures (the "transfer" message, design_docs/0102) - 0 until the
+   * first one arrives. */
+  readonly totalDownloadRate = computed(() => this.events.transfer()?.downloadRateBytesPerSec ?? 0);
+  readonly totalUploadRate = computed(() => this.events.transfer()?.uploadRateBytesPerSec ?? 0);
 
   /** Lifetime ratio across every torrent, not a per-torrent average - matches the style
-   * guide's own summary row reading a single combined "Ratio 1.84". The same definition as the
-   * details panel's Ratio (design_docs/0064): lifetime uploaded over verified downloaded, so the
-   * two agree after a restart. An em dash when nothing has been downloaded yet, rather than a
-   * misleading 0.00 or a divide-by-zero Infinity. */
+   * guide's own summary row reading a single combined "Ratio 1.84". The server computes it the
+   * same way as the details panel's Ratio (design_docs/0064, 0102). An em dash when nothing has
+   * been downloaded yet (ratio is null), or before the first transfer message. */
   readonly ratioDisplay = computed(() => {
-    const torrents = this.events.torrents();
-    const totalDownloaded = torrents.reduce((sum, t) => sum + t.bytesDownloaded, 0);
-    const totalUploaded = torrents.reduce((sum, t) => sum + t.lifetimeUploadedBytes, 0);
-    return totalDownloaded > 0 ? (totalUploaded / totalDownloaded).toFixed(2) : '—';
+    const ratio = this.events.transfer()?.ratio;
+    return ratio === null || ratio === undefined ? '—' : ratio.toFixed(2);
   });
 
   private readonly diskUsage = toSignal<DiskUsage | null>(

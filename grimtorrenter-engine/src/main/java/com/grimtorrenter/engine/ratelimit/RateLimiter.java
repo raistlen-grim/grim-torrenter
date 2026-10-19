@@ -38,6 +38,9 @@ public final class RateLimiter {
 
     private double availableTokens;
     private long lastRefillNanos = System.nanoTime();
+    /** Wall-clock millis of the last acquire() that had to wait; 0 = never. Read by
+     * waitedWithin() for the "capped" flag. See design_docs/0102. */
+    private volatile long lastWaitMillis;
 
     /** The general-purpose constructor - both the limit and the burst window are read fresh
      * on every acquire() call via these suppliers, so this class has no idea whether either
@@ -60,28 +63,41 @@ public final class RateLimiter {
      * a wait is needed, so a settings change mid-wait is picked up promptly rather than
      * only on the next call), until bytes worth of budget is available, then consumes it.
      * A limit of 0 or less means unlimited - returns immediately without ever taking the
-     * lock's wait path. */
-    public void acquire(int bytes) {
+     * lock's wait path.
+     *
+     * <p>Returns whether it had to wait - the limit held this caller back, which is what the
+     * "capped" flag reports (design_docs/0102). */
+    public boolean acquire(int bytes) {
         if (bytes <= 0) {
-            return;
+            return false;
         }
+        boolean waited = false;
         while (true) {
             long waitMs;
             synchronized (this) {
                 long limit = limitBytesPerSecond.getAsLong();
                 if (limit <= 0) {
-                    return;
+                    return waited;
                 }
                 refill(limit, burstSecondsSupplier.getAsLong(), bytes);
                 if (availableTokens >= bytes) {
                     availableTokens -= bytes;
-                    return;
+                    return waited;
                 }
                 double missing = bytes - availableTokens;
                 waitMs = Math.max(1, (long) Math.ceil(missing * 1000.0 / limit));
             }
+            waited = true;
+            lastWaitMillis = System.currentTimeMillis();
             sleep(waitMs);
         }
+    }
+
+    /** True if some acquire() had to wait within windowMillis before nowMillis - this limiter
+     * is what's holding its traffic back. See design_docs/0102. */
+    public boolean waitedWithin(long windowMillis, long nowMillis) {
+        long last = lastWaitMillis;
+        return last != 0 && nowMillis - last <= windowMillis;
     }
 
     /** Package-private, not private - RateLimiters.forTorrent() also needs this exact

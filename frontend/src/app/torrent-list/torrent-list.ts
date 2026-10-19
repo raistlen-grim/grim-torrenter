@@ -22,7 +22,7 @@ import { ToastModule } from 'primeng/toast';
 import { TooltipModule } from 'primeng/tooltip';
 import { Observable, catchError, filter, forkJoin, map, of } from 'rxjs';
 
-import { TorrentWithRate } from '../models/torrent.model';
+import { Torrent } from '../models/torrent.model';
 import { LabelService } from '../services/label.service';
 import { TorrentActionsService } from '../services/torrent-actions.service';
 import { TorrentEventsService } from '../services/torrent-events.service';
@@ -45,17 +45,17 @@ import { TorrentCommands } from './torrent-commands';
 import { TorrentRow } from './torrent-row/torrent-row';
 
 /** A discriminated union rather than injecting a synthetic "pending" torrent into
- * TorrentWithRate's own shape - a pending upload genuinely doesn't have most of that
+ * Torrent's own shape - a pending upload genuinely doesn't have most of that
  * shape (no infoHash yet, no state, no actions), so it gets its own minimal row
  * rendering instead of being forced through TorrentRow. See design_docs/0029. */
-type TableRow = { kind: 'pending'; upload: PendingUpload } | { kind: 'torrent'; torrent: TorrentWithRate };
+type TableRow = { kind: 'pending'; upload: PendingUpload } | { kind: 'torrent'; torrent: Torrent };
 
 type SortField = 'name' | 'size' | 'status' | 'progress';
 type SortDirection = 'asc' | 'desc';
 
 /** A torrent Pause can act on: running, or still starting (design_docs/0098) - a pause then
  * cancels the start. */
-function isPausable(torrent: TorrentWithRate): boolean {
+function isPausable(torrent: Torrent): boolean {
   return torrent.state === 'DOWNLOADING' || torrent.state === 'SEEDING' || torrent.state === 'STARTING';
 }
 
@@ -290,7 +290,7 @@ export class TorrentList {
     return this.sortDirection() === 'asc' ? 'pi-sort-amount-up' : 'pi-sort-amount-down';
   }
 
-  private compare(a: TorrentWithRate, b: TorrentWithRate, field: SortField): number {
+  private compare(a: Torrent, b: Torrent, field: SortField): number {
     switch (field) {
       case 'name':
         return a.name.localeCompare(b.name);
@@ -459,7 +459,7 @@ export class TorrentList {
   readonly removeAlsoDeleteData = signal(false);
   /** The selection as it was when the dialog opened - what the dialog describes and what
    * confirming it removes, even if the list changes underneath while it is open. */
-  private readonly removeTargets = signal<TorrentWithRate[]>([]);
+  private readonly removeTargets = signal<Torrent[]>([]);
 
   /** The style guide's "Copy": `Remove 3 torrents?`, and the body/button below - the singular forms
    * are this app's own, the guide only spells out the plural. */
@@ -483,7 +483,7 @@ export class TorrentList {
     this.openRemoveFor(this.selectedTorrents());
   }
 
-  private openRemoveFor(targets: TorrentWithRate[]): void {
+  private openRemoveFor(targets: Torrent[]): void {
     if (targets.length === 0) {
       return;
     }
@@ -512,7 +512,7 @@ export class TorrentList {
   /** One request per torrent through TorrentActionsService (so each row shows its own pending
    * state), all at once, with a single toast if any fail rather than one per torrent. */
   private runOnEach(
-    targets: TorrentWithRate[],
+    targets: Torrent[],
     action: (infoHash: string) => Observable<void>,
     verb: 'pause' | 'resume' | 'remove',
   ): void {
@@ -569,7 +569,7 @@ export class TorrentList {
   }
 
   /** What Enter and Delete act on: the ticked rows if any, otherwise the current row. */
-  private shortcutTargets(): TorrentWithRate[] {
+  private shortcutTargets(): Torrent[] {
     const selected = this.selectedTorrents();
     if (selected.length > 0) {
       return selected;
@@ -593,8 +593,8 @@ export class TorrentList {
   }
 
   /** Enter: pause whatever in the targets is running; if nothing is, resume what's paused. */
-  private pauseOrResume(targets: TorrentWithRate[]): void {
-    const idle = (t: TorrentWithRate) => this.actions.pendingFor(t.infoHash) === null;
+  private pauseOrResume(targets: Torrent[]): void {
+    const idle = (t: Torrent) => this.actions.pendingFor(t.infoHash) === null;
     const running = targets.filter((t) => isPausable(t) && idle(t));
     if (running.length > 0) {
       this.runOnEach(running, (infoHash) => this.actions.pause(infoHash), 'pause');
@@ -722,7 +722,7 @@ export class TorrentList {
    * already have a request in flight, and one summary toast if any fail. See design_docs/0043
    * and 0101. */
   pauseAll(): void {
-    const idle = (t: TorrentWithRate) => this.actions.pendingFor(t.infoHash) === null;
+    const idle = (t: Torrent) => this.actions.pendingFor(t.infoHash) === null;
     this.runOnEach(
       this.events.torrents().filter((t) => isPausable(t) && idle(t)),
       (infoHash) => this.actions.pause(infoHash),
@@ -731,7 +731,7 @@ export class TorrentList {
   }
 
   resumeAll(): void {
-    const idle = (t: TorrentWithRate) => this.actions.pendingFor(t.infoHash) === null;
+    const idle = (t: Torrent) => this.actions.pendingFor(t.infoHash) === null;
     this.runOnEach(
       this.events.torrents().filter((t) => t.state === 'STOPPED' && idle(t)),
       (infoHash) => this.actions.resume(infoHash),

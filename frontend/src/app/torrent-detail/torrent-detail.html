@@ -30,6 +30,9 @@
         } @else {
           &mdash;
         }
+        @if (torrent.downloadCapped) {
+          <app-cap-marker [limitBytesPerSec]="torrent.downloadLimitBytesPerSec" [source]="torrent.downloadLimitSource" />
+        }
       </div>
     </div>
     <div class="fact-cell">
@@ -39,6 +42,9 @@
           {{ torrent.uploadRateBytesPerSec | formatRate }}
         } @else {
           &mdash;
+        }
+        @if (torrent.uploadCapped) {
+          <app-cap-marker [limitBytesPerSec]="torrent.uploadLimitBytesPerSec" [source]="torrent.uploadLimitSource" />
         }
       </div>
     </div>
@@ -104,6 +110,7 @@
       <p-tab value="peers">Peers <span class="tab-count tabular-nums">{{ torrent.connectedPeers }}</span></p-tab>
       <p-tab value="trackers">Trackers <span class="tab-count tabular-nums">{{ torrent.trackerCount }}</span></p-tab>
       <p-tab value="pieces">Pieces <span class="tab-count tabular-nums">{{ torrent.totalPieces }}</span></p-tab>
+      <p-tab value="speed">Speed</p-tab>
     </p-tablist>
     <p-tabpanels>
       <p-tabpanel value="files">
@@ -117,6 +124,9 @@
       </p-tabpanel>
       <p-tabpanel value="pieces">
         <app-piece-map [infoHash]="infoHash()" />
+      </p-tabpanel>
+      <p-tabpanel value="speed">
+        <app-speed-tab [infoHash]="infoHash()" />
       </p-tabpanel>
     </p-tabpanels>
   </p-tabs>

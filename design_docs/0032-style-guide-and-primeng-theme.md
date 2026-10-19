@@ -1321,3 +1321,21 @@ text, which is a short-lived state - the text is submitted or cleared.
 
 Unchanged: Esc is still left to an open dialog or menu, and to any other focused text field. No
 stability implication.
+
+## 2026-10-19 addendum: two chart-only colours for the transfer graphs
+
+The transfer graphs ([[0102-server-side-transfer-rates-eta-and-history]]) plot download and
+upload as two lines on one axis, and need two colours a reader can tell apart, colour-blind or
+not. The guide has no chart palette, and its "one hue, one alarm" rule leaves no second hue.
+Its accent (#5980a6 light, #749dc4 dark) is also too muted for a chart series: it fails a
+categorical palette's chroma floor (it reads greyish), and paired with grey it fails
+normal-vision separation outright.
+
+Decided with the user: two **chart-only** tokens, used inside the graphs and nowhere else -
+`--chart-download` (blue: #3b7bc0 light, #4f8bcb dark) and `--chart-upload` (amber: #c0821e light,
+#bf8526 dark). Checked with a palette validator against each mode's chart surface (#ffffff, and
+#1f2325 dark): lightness band, chroma floor, colour-blind separation (ΔE ≈ 23), normal-vision
+separation and contrast all pass. App chrome keeps the guide's palette; text in and around the
+graphs stays in the ordinary text colour, never a series colour. The alternatives were the
+guide's accent with a muted amber (both fail the chroma floor) and the accent with grey (fails
+normal-vision separation).

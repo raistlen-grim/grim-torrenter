@@ -32,7 +32,12 @@ import com.grimtorrenter.engine.piece.FilePriorities;
 import com.grimtorrenter.engine.piece.FilePriority;
 import com.grimtorrenter.engine.piece.PieceManager;
 import com.grimtorrenter.engine.piece.PieceState;
+import com.grimtorrenter.engine.ratelimit.AppliedLimit;
 import com.grimtorrenter.engine.ratelimit.RateLimiters;
+import com.grimtorrenter.engine.stats.HistoryResolution;
+import com.grimtorrenter.engine.stats.TransferDelta;
+import com.grimtorrenter.engine.stats.TransferHistory;
+import com.grimtorrenter.engine.stats.TransferRate;
 import com.grimtorrenter.engine.storage.FileHandlePool;
 import com.grimtorrenter.engine.storage.StorageException;
 import com.grimtorrenter.engine.storage.TorrentStorage;
@@ -302,6 +307,10 @@ public final class TorrentSession implements AutoCloseable {
     private final Instant addedAt;
 
     private final Set<PeerConnection> connections = ConcurrentHashMap.newKeySet();
+    /** Rates, per-peer rates and minute history, fed by the engine's sampling tick through
+     * sampleTransfer(). See design_docs/0102. */
+    private final SessionTransfer<PeerConnection> transfer =
+            new SessionTransfer<>(PeerConnection::downloadedBytes, PeerConnection::uploadedBytes);
     /** How this session originally learned of each candidate address - first source wins
      * (putIfAbsent via recordKnownPeers()), never overwritten by a later rediscovery through a
      * different source. attemptConnect() looks this up to tag the resulting PeerConnection.
@@ -2588,7 +2597,10 @@ public final class TorrentSession implements AutoCloseable {
              * uses. See design_docs/0066's own addendum. */
             PeerTransportType transportType,
             /** At-a-glance health summary - see PeerActivity. design_docs/0076. */
-            PeerActivity activity
+            PeerActivity activity,
+            /** This connection's own rates, from the sampling tick. See design_docs/0102. */
+            TransferRate downloadRate,
+            TransferRate uploadRate
     ) {
     }
 
@@ -2609,9 +2621,116 @@ public final class TorrentSession implements AutoCloseable {
                     return new PeerSnapshot(c.remoteAddress(), c.remotePeerId(), c.amChoking(), c.amInterested(),
                             c.peerChoking(), c.peerInterested(), c.downloadedBytes(), c.uploadedBytes(),
                             c.incoming(), c.source(), percentAvailable, relevance, c.transportType(),
-                            c.activity());
+                            c.activity(), transfer.peerDownload(c), transfer.peerUpload(c));
                 })
                 .toList();
+    }
+
+    /** How long "capped" stays true after the limiter last held this torrent back - long enough to
+     * bridge the gaps between blocks under a tight cap, short enough to clear soon after the cap
+     * stops biting. See design_docs/0102. */
+    public static final long CAPPED_WINDOW_MILLIS = 3_000;
+
+    /** Called by the engine's 1 s sampling tick, and only by it: meters every connection's bytes
+     * since the last tick. Returns the torrent's total for the engine-wide figure. See
+     * design_docs/0102. */
+    public TransferDelta sampleTransfer(long elapsedNanos, long nowMillis) {
+        return transfer.sample(connections, state.isRunning(), elapsedNanos, nowMillis);
+    }
+
+    /** IDLE unless running, so a pause reads 0 at once rather than on the next tick. */
+    public TransferRate downloadRate() {
+        return state.isRunning() ? transfer.download() : TransferRate.IDLE;
+    }
+
+    public TransferRate uploadRate() {
+        return state.isRunning() ? transfer.upload() : TransferRate.IDLE;
+    }
+
+    /** SECOND or MINUTE; there is no per-torrent hourly history. */
+    public TransferHistory transferHistory(HistoryResolution resolution, long nowMillis) {
+        return switch (resolution) {
+            case SECOND -> TransferHistory.ofSeconds(downloadRate(), uploadRate(), nowMillis);
+            case MINUTE -> transfer.minutes().snapshot(nowMillis);
+            case HOUR -> throw new IllegalArgumentException("Per-torrent history has no hourly resolution");
+        };
+    }
+
+    /** The download limit applying to this torrent right now, and whose it is. */
+    public AppliedLimit downloadLimit() {
+        return rateLimiters.downloadLimit();
+    }
+
+    public AppliedLimit uploadLimit() {
+        return rateLimiters.uploadLimit();
+    }
+
+    /** True if a rate limiter held any of this torrent's connections back in the last few
+     * seconds. Asked of the connections, not by comparing the rate with the limit: torrents that
+     * inherit the global limit share one bucket, so a torrent can be held back by the others'
+     * traffic while well under the limit itself (design_docs/0072). See design_docs/0102. */
+    public boolean downloadCapped(long nowMillis) {
+        for (PeerConnection connection : connections) {
+            if (connection.downloadThrottledWithin(CAPPED_WINDOW_MILLIS, nowMillis)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public boolean uploadCapped(long nowMillis) {
+        for (PeerConnection connection : connections) {
+            if (connection.uploadThrottledWithin(CAPPED_WINDOW_MILLIS, nowMillis)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Time to completion, and why there is none when there isn't. The pieces check is BitSet
+     * arithmetic, O(peers x pieces / 64), and only runs for a running torrent with peers and
+     * something left to get. See design_docs/0102. */
+    public Eta eta() {
+        long remaining = bytesRemaining();
+        if (remaining <= 0 || !state.isRunning() || connections.isEmpty()) {
+            return etaFrom(remaining, state.isRunning(), connections.size(), 0, false, 0);
+        }
+        int totalPieces = pieceManager.pieceCount();
+        BitSet needed = pieceManager.stillNeededPieces();
+        BitSet held = new BitSet(totalPieces);
+        boolean allChoking = true;
+        for (PeerConnection connection : connections) {
+            held.or(connection.peerPieces(totalPieces));
+            allChoking &= connection.peerChoking();
+        }
+        needed.andNot(held);
+        return etaFrom(remaining, true, connections.size(), needed.cardinality(), allChoking,
+                downloadRate().averageBytesPerSec());
+    }
+
+    /** EtaStatus's precedence as a pure function, for testing. */
+    static Eta etaFrom(long bytesRemaining, boolean running, int peerCount, int unavailablePieces,
+                       boolean allPeersChoking, long averageBytesPerSec) {
+        if (bytesRemaining <= 0) {
+            return Eta.of(EtaStatus.COMPLETE);
+        }
+        if (!running) {
+            return Eta.of(EtaStatus.NOT_RUNNING);
+        }
+        if (peerCount == 0) {
+            return Eta.of(EtaStatus.NO_PEERS);
+        }
+        if (unavailablePieces > 0) {
+            return new Eta(null, EtaStatus.UNAVAILABLE, unavailablePieces);
+        }
+        if (allPeersChoking) {
+            return Eta.of(EtaStatus.CHOKED);
+        }
+        if (averageBytesPerSec <= 0) {
+            return Eta.of(EtaStatus.STALLED);
+        }
+        long seconds = (bytesRemaining + averageBytesPerSec - 1) / averageBytesPerSec;
+        return new Eta(seconds, EtaStatus.ESTIMATE, 0);
     }
 
     /** Delegates straight to the wrapped TrackerClient - a plain TrackerClient reports

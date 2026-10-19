@@ -67,12 +67,24 @@ are not listed here.
 - Esc clears the add field from anywhere on the list (`design_docs/0032`'s 2026-10-18 Esc
   addendum): paste a magnet, click a row, press Esc - the field clears and the panel stays open;
   Esc again closes the panel.
+- Server-side rates (`design_docs/0102`, stage 1 frontend): rates show at once on page load and
+  agree across two tabs; a paused torrent's rates drop to — straight away; the Down sparkline
+  still appears on hover; the header, footer and a row's speeds agree; the footer ratio matches;
+  the Peers tab shows per-peer speeds on its first poll; the ETA cell shows a time, or "No
+  peers"/"N unavailable"/"Waiting"/"Stalled" with a tooltip, and "—" when paused.
+- Transfer UI (`design_docs/0102`, stages 2-3):
+  - Set a low global download limit: the gauge appears after the row's Down rate, the panel's
+    Down fact, the header total and the Transfer page, with "Capped by the global limit, ...".
+    A per-torrent limit says "this torrent's limit"; the off-hours schedule says so too.
+  - Transfer page (sidebar, between Health and Events): 1 min / 2 h / 7 d switch, both lines,
+    limit lines, crosshair readout by mouse and by keyboard (Tab to the graph, arrows, Home/End),
+    "Show as table". Restart the container: the 7 d view keeps its history and shows the
+    downtime as a gap. Check both themes, and that the five-tab strip in the panel still fits.
+  - Details panel Speed tab: 1 min / 1 h, follows the torrent when switching rows.
 
 **To build for beta:**
-- Server-side transfer rates, ETA with a reason, rate caps shown, and transfer history
-  (`design_docs/0102`, Proposed). All three stages wanted in the beta. Before stage 3's UI: decide
-  where the global and per-torrent graphs live, and the cap marker's form (style guide doesn't
-  cover them).
+- ~~Server-side transfer rates, ETA with a reason, rate caps shown, and transfer history
+  (`design_docs/0102`)~~ - **Built (2026-10-19)**, all three stages; browser checks above.
 
 **Open, decide whether it blocks beta:**
 - Does a VPN container such as gluetun work as the alternative to `network_mode: host` behind a
@@ -85,6 +97,38 @@ are not listed here.
 - ~~Row action (Pause/Resume/Remove) state lagging up to ~2s behind its spinner clearing~~ -
   **Done (2026-10-17):** pause/resume return the torrent and the UI applies it at once
   (`design_docs/0097`). Remove already dropped the row locally.
+
+## Details panel along the bottom instead of the side (2026-10-19)
+
+Idea, not decided: move the details panel from the right-hand side (design_docs/0044's
+dock-and-push) to a panel along the bottom. A design pass in Claude Design comes first.
+
+Why it's tempting:
+- **The list keeps its columns.** While the side panel is open, every row hides Down, Up, ETA
+  and the actions (`compact()` in `torrent-row.html`), so the live figures for every other
+  torrent disappear the moment one torrent's details are open.
+- **The tabs want width.** Files (long paths), Peers (no room for a real connection-type column
+  - see 0066's addendum), Trackers (URLs, errors) and the new Speed graph are all squeezed into
+  430 px. The fact grid could become one or two wide rows instead of a tall stack.
+- It's the layout qBittorrent, Deluge and Transmission users expect.
+
+What it costs / needs:
+- **Height is the scarce axis.** Header, toolbar, filter row and footer already take a lot of it;
+  a 768-900 px-tall laptop screen could be left with only 5-6 list rows. Needs a resize handle
+  with a remembered height, and an easy collapse.
+- Very wide screens use their spare width less well, and short tabs (one tracker) look sparse.
+- A rework of the fixed-frame shell that took six visual bug rounds (design_docs/0032) - grid,
+  sticky header and scrolling, the panel's internal layout - with lots of checking in the
+  browser. Route-driven open/close, the Esc order and keyboard shortcuts should carry over.
+- A deviation from the style guide's panel (0044), so it gets its own design doc.
+
+Approach if picked up:
+- One layout, not a user setting (two layouts means testing everything twice).
+- Prove the vertical space first: a static mockup with the real columns, the fact strip and the
+  Peers/Speed tabs, at 1366x768 and 1920x1080.
+- Cheaper fallback if the bottom panel feels cramped: keep the side panel but make it resizable
+  (width remembered), and only hide row columns once the list is actually narrow. That eases the
+  crowding, but doesn't give the tabs real width.
 
 ## Peers/Trackers/General detail — qBittorrent-parity backlog (2026-09-10)
 

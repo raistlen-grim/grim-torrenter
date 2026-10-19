@@ -31,7 +31,14 @@ import com.grimtorrenter.engine.proxy.Socks5;
 import com.grimtorrenter.engine.peer.PeerSource;
 import com.grimtorrenter.engine.peer.UtpIncomingConnectionHandler;
 import com.grimtorrenter.engine.peer.UtpPeerAcceptor;
+import com.grimtorrenter.engine.ratelimit.AppliedLimit;
 import com.grimtorrenter.engine.ratelimit.RateLimiters;
+import com.grimtorrenter.engine.stats.HistoryResolution;
+import com.grimtorrenter.engine.stats.HistoryRing;
+import com.grimtorrenter.engine.stats.TransferDelta;
+import com.grimtorrenter.engine.stats.TransferHistory;
+import com.grimtorrenter.engine.stats.TransferMeter;
+import com.grimtorrenter.engine.stats.TransferRate;
 import com.grimtorrenter.engine.settings.InMemorySettingsStore;
 import com.grimtorrenter.engine.settings.Settings;
 import com.grimtorrenter.engine.settings.SettingsStore;
@@ -186,6 +193,16 @@ public final class TorrentEngine {
      * the shared maintenanceScheduler tick. See design_docs/0064. */
     private static final long LIFETIME_STATS_FLUSH_INTERVAL_SECONDS = 30;
 
+    /** The engine-wide hourly transfer history, so "last night" survives a restart - one
+     * "hour=index,downloadBytes,uploadBytes,coveredMillis" line per hour held. Saved on the
+     * lifetime-stats flush and at shutdown; missing or unreadable means starting empty, never a
+     * failed startup. See design_docs/0102. */
+    private static final String TRANSFER_HISTORY_FILENAME = ".grimtorrenter-transfer-history";
+    /** The transfer meters' bucket width. See design_docs/0102. */
+    private static final long TRANSFER_SAMPLE_INTERVAL_MILLIS = 1_000;
+    private static final int GLOBAL_MINUTES_KEPT = 120;
+    private static final int GLOBAL_HOURS_KEPT = 168;
+
     /** When this torrent was added, ISO-8601 instant text - for the details panel's "Added"
      * fact (design_docs/0032). Absent on a directory added before this field existed; no
      * migration/backfill for those (see readAddedAtMarker()) - "unknown" is a real, permanent
@@ -293,6 +310,15 @@ public final class TorrentEngine {
      * design_docs/0042. Never null; the lower-arity constructors default to an unlimited,
      * engine-private SettingsStore so every pre-existing caller/test is unaffected. */
     private final RateLimiters rateLimiters;
+
+    /** Engine-wide transfer figures: the sum of every session's, each tick. Written only by
+     * sampleTransfer() on maintenanceScheduler. See design_docs/0102. */
+    private final TransferMeter globalDownload = new TransferMeter();
+    private final TransferMeter globalUpload = new TransferMeter();
+    private final HistoryRing globalMinutes = new HistoryRing(60_000, GLOBAL_MINUTES_KEPT);
+    private final HistoryRing globalHours = new HistoryRing(3_600_000, GLOBAL_HOURS_KEPT);
+    /** System.nanoTime() of the previous sampleTransfer(); 0 before the first. Tick thread only. */
+    private long lastTransferSampleNanos;
     /** Bounds total open torrent-data file handles across every TorrentSession this engine
      * creates or restores - see design_docs/0047. Never null; the lower-arity constructors
      * default to an unbounded pool so every pre-existing caller/test is unaffected. */
@@ -622,6 +648,9 @@ public final class TorrentEngine {
                 SEEDING_LIMIT_CHECK_INTERVAL_SECONDS, SEEDING_LIMIT_CHECK_INTERVAL_SECONDS, TimeUnit.SECONDS);
         this.maintenanceScheduler.scheduleWithFixedDelay(GuardedTask.of("lifetime-stats flush", this::flushLifetimeStats),
                 LIFETIME_STATS_FLUSH_INTERVAL_SECONDS, LIFETIME_STATS_FLUSH_INTERVAL_SECONDS, TimeUnit.SECONDS);
+        this.globalHours.restore(readTransferHistory(configDirectory));
+        this.maintenanceScheduler.scheduleWithFixedDelay(GuardedTask.of("transfer sampling", this::sampleTransfer),
+                TRANSFER_SAMPLE_INTERVAL_MILLIS, TRANSFER_SAMPLE_INTERVAL_MILLIS, TimeUnit.MILLISECONDS);
         this.maintenanceScheduler.scheduleWithFixedDelay(GuardedTask.of("watch-folder scan", this::scanWatchFolder),
                 this.watchFolderScanIntervalSeconds, this.watchFolderScanIntervalSeconds, TimeUnit.SECONDS);
         if (this.dhtNode != null) {
@@ -677,6 +706,99 @@ public final class TorrentEngine {
         for (TorrentSession session : sessions.values()) {
             flushLifetimeStats(session);
         }
+        writeTransferHistory();
+    }
+
+    /** One transfer sampling tick: every session meters its connections, and the engine-wide
+     * meters and history take the sum. Measures the real time since the previous tick, so a late
+     * tick reads as the right average rather than a spike. A session removed between two ticks
+     * takes its last second with it - not worth tracking removals for. Package-private so tests
+     * can drive it. See design_docs/0102. */
+    void sampleTransfer() {
+        long nowNanos = System.nanoTime();
+        long elapsedNanos = lastTransferSampleNanos == 0
+                ? TimeUnit.MILLISECONDS.toNanos(TRANSFER_SAMPLE_INTERVAL_MILLIS)
+                : nowNanos - lastTransferSampleNanos;
+        lastTransferSampleNanos = nowNanos;
+        long nowMillis = System.currentTimeMillis();
+        long downloaded = 0;
+        long uploaded = 0;
+        for (TorrentSession session : sessions.values()) {
+            TransferDelta delta = session.sampleTransfer(elapsedNanos, nowMillis);
+            downloaded += delta.downloadBytes();
+            uploaded += delta.uploadBytes();
+        }
+        globalDownload.record(downloaded, elapsedNanos, nowMillis);
+        globalUpload.record(uploaded, elapsedNanos, nowMillis);
+        long coveredMillis = TimeUnit.NANOSECONDS.toMillis(elapsedNanos);
+        globalMinutes.add(downloaded, uploaded, coveredMillis, nowMillis);
+        globalHours.add(downloaded, uploaded, coveredMillis, nowMillis);
+    }
+
+    /** The engine-wide transfer picture: rates, the global limits and whether they are holding
+     * traffic back. See design_docs/0102. */
+    public record GlobalTransfer(TransferRate download, TransferRate upload,
+                                 AppliedLimit downloadLimit, AppliedLimit uploadLimit,
+                                 boolean downloadCapped, boolean uploadCapped) {
+    }
+
+    /** Capped here means the global limiter itself made something wait. A torrent with its own
+     * limit doesn't draw from it, so it can be capped while this isn't. */
+    public GlobalTransfer globalTransfer() {
+        long nowMillis = System.currentTimeMillis();
+        return new GlobalTransfer(globalDownload.current(), globalUpload.current(),
+                rateLimiters.downloadLimit(), rateLimiters.uploadLimit(),
+                rateLimiters.download().waitedWithin(TorrentSession.CAPPED_WINDOW_MILLIS, nowMillis),
+                rateLimiters.upload().waitedWithin(TorrentSession.CAPPED_WINDOW_MILLIS, nowMillis));
+    }
+
+    public TransferHistory transferHistory(HistoryResolution resolution) {
+        long nowMillis = System.currentTimeMillis();
+        return switch (resolution) {
+            case SECOND -> TransferHistory.ofSeconds(globalDownload.current(), globalUpload.current(), nowMillis);
+            case MINUTE -> globalMinutes.snapshot(nowMillis);
+            case HOUR -> globalHours.snapshot(nowMillis);
+        };
+    }
+
+    /** Best-effort, like the lifetime-stats markers: a failed write loses one flush. */
+    private void writeTransferHistory() {
+        try {
+            AtomicFiles.write(configDirectory.resolve(TRANSFER_HISTORY_FILENAME), formatTransferHistory(globalHours.intervals()));
+        } catch (IOException e) {
+            LOG.log(System.Logger.Level.WARNING, "Could not persist transfer history to " + configDirectory, e);
+        }
+    }
+
+    /** Empty when absent or unreadable - losing it costs only a graph. */
+    private static List<HistoryRing.Interval> readTransferHistory(Path configDirectory) {
+        return readMarker(configDirectory, TRANSFER_HISTORY_FILENAME, "transfer history", List.of(),
+                marker -> parseTransferHistory(KeyValueFile.read(marker)));
+    }
+
+    static String formatTransferHistory(List<HistoryRing.Interval> intervals) {
+        List<KeyValueFile.Entry> entries = new ArrayList<>();
+        for (HistoryRing.Interval interval : intervals) {
+            entries.add(KeyValueFile.entry("hour", interval.index() + "," + interval.downloadBytes() + ","
+                    + interval.uploadBytes() + "," + interval.coveredMillis()));
+        }
+        return KeyValueFile.format(entries);
+    }
+
+    /** A malformed line throws, and readMarker() then falls back to empty for the whole file. */
+    static List<HistoryRing.Interval> parseTransferHistory(List<KeyValueFile.Entry> entries) {
+        List<HistoryRing.Interval> intervals = new ArrayList<>();
+        for (KeyValueFile.Entry entry : entries) {
+            if (entry.key().equals("hour")) {
+                String[] fields = entry.value().split(",");
+                if (fields.length != 4) {
+                    throw new IllegalArgumentException("Malformed transfer history line: " + entry.value());
+                }
+                intervals.add(new HistoryRing.Interval(Long.parseLong(fields[0]), Long.parseLong(fields[1]),
+                        Long.parseLong(fields[2]), Long.parseLong(fields[3])));
+            }
+        }
+        return intervals;
     }
 
     private void flushLifetimeStats(TorrentSession session) {
@@ -2111,6 +2233,7 @@ public final class TorrentEngine {
             session.close();
         }
         sessions.clear();
+        writeTransferHistory();
         awaitStoppedAnnounces(closed);
         if (peerServer != null) {
             peerServer.close();

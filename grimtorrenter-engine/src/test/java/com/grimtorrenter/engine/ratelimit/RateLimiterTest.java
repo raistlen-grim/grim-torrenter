@@ -5,6 +5,7 @@ import com.grimtorrenter.engine.settings.InMemorySettingsStore;
 import com.grimtorrenter.engine.settings.Settings;
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class RateLimiterTest {
@@ -114,5 +115,26 @@ class RateLimiterTest {
         long secondElapsed = elapsedMs(() -> limiter.acquire(1000));
         assertTrue(secondElapsed >= 700,
                 "a live change to a real limit should now throttle, took " + secondElapsed + "ms");
+    }
+
+    /** design_docs/0102: acquire() says whether it had to wait, and the limiter remembers when. */
+    @Test
+    void reportsWhetherItHadToWait() {
+        InMemorySettingsStore store = new InMemorySettingsStore(new Settings(true, true, 1000, 1000));
+        RateLimiter limiter = new RateLimiter(store, Settings::uploadRateLimitBytesPerSec);
+
+        assertFalse(limiter.waitedWithin(3_000, System.currentTimeMillis()));
+        assertTrue(limiter.acquire(500), "the bucket starts empty, so the first acquire waits");
+        assertTrue(limiter.waitedWithin(3_000, System.currentTimeMillis()));
+        assertFalse(limiter.waitedWithin(3_000, System.currentTimeMillis() + 10_000));
+    }
+
+    @Test
+    void unlimitedNeverReportsAWait() {
+        InMemorySettingsStore store = new InMemorySettingsStore(new Settings(true, true, 0, 0));
+        RateLimiter limiter = new RateLimiter(store, Settings::uploadRateLimitBytesPerSec);
+
+        assertFalse(limiter.acquire(10_000_000));
+        assertFalse(limiter.waitedWithin(3_000, System.currentTimeMillis()));
     }
 }

@@ -5,6 +5,7 @@ import { Router, RouterLink } from '@angular/router';
 import { AuthService } from '../../services/auth.service';
 import { DhtService } from '../../services/dht.service';
 import { TorrentEventsService } from '../../services/torrent-events.service';
+import { CapMarker } from '../../shared/cap-marker/cap-marker';
 import { FormatRatePipe } from '../../shared/format-rate.pipe';
 import { pollEvery } from '../../shared/poll';
 import { SkullMark } from '../../shared/skull-mark/skull-mark';
@@ -16,21 +17,21 @@ const DHT_POLL_INTERVAL_MS = 5000;
  * Sticky top bar, present on every route. Styled after the style guide's own document
  * chrome (a dark bar using the darkest primary step) - see design_docs/0043.
  *
- * <p>Aggregate rates are summed client-side from TorrentEventsService, same per-torrent
- * rate fields torrent-row.ts already displays - no backend change needed. The DHT pill
+ * <p>Aggregate rates are the server's engine-wide figures (the "transfer" message,
+ * design_docs/0102), not a sum of the rows here - 0 until the first message. The DHT pill
  * polls GET /api/dht/status the whole time this header is mounted, which - being the
  * header - is always, matching DhtResource's own "polled on demand only while something's
  * displaying it" intent (design_docs/0028).
  */
 @Component({
   selector: 'app-header',
-  imports: [FormatRatePipe, RouterLink, SkullMark, StatusIndicator],
+  imports: [CapMarker, FormatRatePipe, RouterLink, SkullMark, StatusIndicator],
   templateUrl: './app-header.html',
   styleUrl: './app-header.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class AppHeader {
-  private readonly events = inject(TorrentEventsService);
+  readonly events = inject(TorrentEventsService);
   private readonly dht = inject(DhtService);
   private readonly auth = inject(AuthService);
   private readonly router = inject(Router);
@@ -39,12 +40,8 @@ export class AppHeader {
    * end. authGuard refreshes authEnabled on every guarded navigation. See design_docs/0095. */
   readonly canLogOut = computed(() => this.auth.authEnabled() === true && this.auth.token() !== null);
 
-  readonly totalDownloadRate = computed(() =>
-    this.events.torrents().reduce((sum, t) => sum + t.downloadRateBytesPerSec, 0),
-  );
-  readonly totalUploadRate = computed(() =>
-    this.events.torrents().reduce((sum, t) => sum + t.uploadRateBytesPerSec, 0),
-  );
+  readonly totalDownloadRate = computed(() => this.events.transfer()?.downloadRateBytesPerSec ?? 0);
+  readonly totalUploadRate = computed(() => this.events.transfer()?.uploadRateBytesPerSec ?? 0);
 
   readonly dhtStatus = toSignal(
     pollEvery(DHT_POLL_INTERVAL_MS, () => this.dht.status()),

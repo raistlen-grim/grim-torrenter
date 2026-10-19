@@ -1,6 +1,10 @@
 package com.grimtorrenter.app;
 
 import com.grimtorrenter.engine.engine.TorrentEngine;
+import com.grimtorrenter.engine.ratelimit.AppliedLimit;
+import com.grimtorrenter.engine.stats.TransferRate;
+import com.grimtorrenter.engine.torrent.Eta;
+import com.grimtorrenter.engine.torrent.EtaStatus;
 import com.grimtorrenter.engine.torrent.TorrentSession;
 
 import java.time.Instant;
@@ -12,7 +16,6 @@ public record TorrentView(
         String state,
         double progress,
         long bytesDownloaded,
-        long bytesReceived,
         long bytesUploaded,
         long totalLength,
         int connectedPeers,
@@ -42,14 +45,35 @@ public record TorrentView(
          * recheck downloads them again; removing the torrent is the other way out. A flag as
          * well as the message so a client can offer those two choices without reading text. See
          * design_docs/0088. */
-        boolean missingFiles
+        boolean missingFiles,
+        /** The current rates: the mean of the last 5 s, measured server-side. 0 unless running.
+         * See design_docs/0102. */
+        long downloadRateBytesPerSec,
+        long uploadRateBytesPerSec,
+        /** Bytes/sec for each of up to the last 60 s, oldest first, for a sparkline - empty when
+         * nothing arrived in that time, so idle torrents cost nothing. */
+        long[] downloadRateTrend,
+        /** Seconds to completion; null unless etaStatus is ESTIMATE. */
+        Long etaSeconds,
+        /** Why the ETA is what it is: COMPLETE, NOT_RUNNING, NO_PEERS, UNAVAILABLE, CHOKED,
+         * STALLED or ESTIMATE - see EtaStatus. */
+        String etaStatus,
+        /** Wanted pieces no connected peer has; set only when etaStatus is UNAVAILABLE. */
+        int unavailablePieces,
+        /** The limit applying to this torrent right now (0 for none) and its source: NONE,
+         * GLOBAL, SCHEDULED or TORRENT. */
+        long downloadLimitBytesPerSec,
+        String downloadLimitSource,
+        /** True when a rate limiter held this torrent back in the last few seconds - not "rate
+         * equals limit", since inheriting torrents share one global bucket. */
+        boolean downloadCapped,
+        long uploadLimitBytesPerSec,
+        String uploadLimitSource,
+        boolean uploadCapped
 ) {
-    /** bytesReceived (raw, includes not-yet-verified data - see
-     * TorrentSession.bytesReceived()) is separate from bytesDownloaded (verified-complete
-     * pieces only, drives progress/%) specifically so a client-side rate calculation has a
-     * continuously-moving number to work from - bytesDownloaded alone only moves in
-     * whole-piece jumps, which reads as a stalled 0 B/s for long stretches on torrents with
-     * large pieces even while data is genuinely streaming in. See design_docs/0031.
+    /** Rates, ETA and caps are the server's own figures (design_docs/0102), so a client shows
+     * them as they come - no rate calculation of its own. bytesReceived, which existed only for
+     * the browser's old rate calculation, is gone.
      *
      * <p>usesDht/trackerCount ride this always-broadcast DTO rather than a dedicated
      * Summary endpoint - both are now cheap (usesDht() and trackers().size()), and
@@ -75,13 +99,18 @@ public record TorrentView(
      * cheap-enough-not-to-need-a-dedicated-endpoint reasoning as usesDht/trackerCount above. */
     public static TorrentView from(TorrentSession session) {
         Throwable error = session.lastError();
+        TransferRate download = session.downloadRate();
+        TransferRate upload = session.uploadRate();
+        Eta eta = session.eta();
+        AppliedLimit downloadLimit = session.downloadLimit();
+        AppliedLimit uploadLimit = session.uploadLimit();
+        long now = System.currentTimeMillis();
         return new TorrentView(
                 session.metadata().infoHash().hex(),
                 session.metadata().name(),
                 session.state().name(),
                 session.progress(),
                 session.bytesDownloaded(),
-                session.bytesReceived(),
                 session.bytesUploaded(),
                 session.metadata().totalLength(),
                 session.connectedPeerCount(),
@@ -98,7 +127,19 @@ public record TorrentView(
                 session.completedAtEpochMillis(),
                 session.wastedBytes(),
                 session.labelIds(),
-                session.missingFiles());
+                session.missingFiles(),
+                download.bytesPerSec(),
+                upload.bytesPerSec(),
+                download.recentTrend(),
+                eta.seconds(),
+                eta.status().name(),
+                eta.unavailablePieces(),
+                downloadLimit.bytesPerSec(),
+                downloadLimit.source().name(),
+                session.downloadCapped(now),
+                uploadLimit.bytesPerSec(),
+                uploadLimit.source().name(),
+                session.uploadCapped(now));
     }
 
     /** A magnet still fetching metadata, rendered through the exact same DTO shape a resolved
@@ -120,7 +161,6 @@ public record TorrentView(
                 0,
                 0,
                 0,
-                0,
                 null,
                 false,
                 pending.trackers().size(),
@@ -132,6 +172,18 @@ public record TorrentView(
                 0,
                 0,
                 List.of(),
+                false,
+                0,
+                0,
+                new long[0],
+                null,
+                EtaStatus.NOT_RUNNING.name(),
+                0,
+                0,
+                AppliedLimit.Source.NONE.name(),
+                false,
+                0,
+                AppliedLimit.Source.NONE.name(),
                 false);
     }
 }

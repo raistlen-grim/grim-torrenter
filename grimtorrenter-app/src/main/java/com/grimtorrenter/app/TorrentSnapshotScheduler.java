@@ -65,6 +65,10 @@ public class TorrentSnapshotScheduler {
             // snapshot above.
             broadcaster.broadcast(objectMapper.writeValueAsString(
                     new TorrentEventMessage("labels", torrentEngine.labels().list())));
+            // The engine-wide rates and ratio for the header and footer (design_docs/0102) - the
+            // same object GET /api/stats/transfer returns.
+            broadcaster.broadcast(objectMapper.writeValueAsString(new TorrentEventMessage("transfer",
+                    TransferView.from(torrentEngine.globalTransfer(), torrentEngine.listTorrents()))));
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("Failed to serialize torrent snapshot", e);
         }
