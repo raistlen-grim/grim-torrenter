@@ -49,10 +49,16 @@ fi
 
 # --- Is it newer than "latest"? --------------------------------------------------------------------
 
-# Images built by this script carry their version as a label. One built before it doesn't, and
-# then only the check above applies.
-latest=$(docker buildx imagetools inspect "$IMAGE:latest" \
-  --format "{{ index .Image.Config.Labels \"$VERSION_LABEL\" }}" 2>/dev/null || true)
+# Images built by this script or the release workflow carry their version as a label. One built
+# before them doesn't, and then only the check above applies. A multi-arch image (the workflow's)
+# has one config per platform, all with the same label, so the first one's is taken; a
+# single-platform image has just the one.
+if [[ $(docker buildx imagetools inspect "$IMAGE:latest" --raw 2>/dev/null) == *'"manifests"'* ]]; then
+  latest_format="{{ range .Image }}{{ index .Config.Labels \"$VERSION_LABEL\" }}{{ \"\\n\" }}{{ end }}"
+else
+  latest_format="{{ index .Image.Config.Labels \"$VERSION_LABEL\" }}"
+fi
+latest=$(docker buildx imagetools inspect "$IMAGE:latest" --format "$latest_format" 2>/dev/null | head -n 1 || true)
 latest=$(tr -d '[:space:]' <<<"$latest")
 
 if [[ "$latest" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
