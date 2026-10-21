@@ -6,7 +6,7 @@ nothing here gets acted on until it's explicitly picked up.
 
 ## Beta readiness (2026-10-17)
 
-What stands between the current test build (0.9.3) and calling it a beta. Gathered from items
+What stands between the current test build (0.9.8) and calling it a beta. Gathered from items
 already tagged pre/post-release elsewhere in this file and from manual checks deferred to a full
 regression pass. Items explicitly marked post-beta (automatic port mapping, BEP 55 hole punching)
 are not listed here.
