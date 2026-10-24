@@ -1,7 +1,9 @@
 # 0089 - Tracker errors say why; Health warns when no tracker answers
 
 Status: Accepted (2026-10-15). Extends [[0086-health-page-and-healthcheck]]'s connectivity group
-and the tracker clients ([[0022-multi-tracker-fallback]]).
+and the tracker clients ([[0022-multi-tracker-fallback]]). Item 4's README advice revised by
+[[0104-vpn-container-as-the-recommended-vpn-setup]] (2026-10-21): a gluetun container is now the
+recommended setup, host networking the second option.
 
 ## Problem
 

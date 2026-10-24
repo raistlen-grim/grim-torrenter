@@ -87,9 +87,9 @@ are not listed here.
   (`design_docs/0102`)~~ - **Built (2026-10-19)**, all three stages; browser checks above.
 
 **Open, decide whether it blocks beta:**
-- Does a VPN container such as gluetun work as the alternative to `network_mode: host` behind a
-  host VPN (see "Working behind a VPN" below)? Decides what the README tells VPN users. Tracked as
-  "Investigate gluetun support" there; doesn't block beta.
+- ~~Does a VPN container such as gluetun work as the alternative to `network_mode: host` behind a
+  host VPN (see "Working behind a VPN" below)?~~ **Done (2026-10-21):** yes, unmodified; the README
+  now leads with it (`design_docs/0104`).
 - ~~`.torrent` upload latency - the add request waits on the initial tracker announce~~ -
   **Done (2026-10-17):** add and resume start in the background and show a new Starting state
   (`design_docs/0098`). Check in a browser: add a torrent with a dead tracker - it shows Starting
@@ -552,9 +552,11 @@ dialling and the retry above make that case workable; still open:
   with the Health page correctly showing no incoming connections. Meanwhile the app's Health page
   read `OK` and tracker errors said only "failed". All three follow-ups done the same day
   (tracker error reasons, a Health trackers check, a README section) - see `design_docs/0089`.
-  Still open: whether a VPN container such as gluetun works as the alternative.
+  ~~Still open: whether a VPN container such as gluetun works as the alternative.~~ It does - see below.
 - **Investigate gluetun support** (added 2026-10-17). Two parts, the second depending on the first:
-  1. *Does it work as-is?* Run GrimTorrenter with `network_mode: "service:gluetun"` behind a
+  1. ~~*Does it work as-is?*~~ **Done (2026-10-21):** yes, with NordVPN over WireGuard - trackers
+     working, DHT, 15 peers, health check and web UI fine; PEX/LSD not checked individually. README
+     section and `design_docs/0104`. Original plan: Run GrimTorrenter with `network_mode: "service:gluetun"` behind a
      gluetun container (e.g. with NordVPN). Check trackers, DHT, PEX and LSD (LSD multicast likely
      won't cross the tunnel), the Health page, and how the web UI port is published (on gluetun,
      not on GrimTorrenter). Outcome: a README section with a working `docker-compose.yml`, or a

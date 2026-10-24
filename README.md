@@ -130,6 +130,71 @@ or set `PUID`/`PGID` to the user that already owns the folder.
 
 ### Running behind a VPN
 
+**The simplest way is a VPN container, with GrimTorrenter using its network.** Only the torrent
+client's traffic then goes through the VPN; everything else on the machine (a media server, say)
+keeps using the normal connection, and if the VPN drops, the VPN container blocks the traffic
+rather than letting it out on your own address. [gluetun](https://github.com/qdm12/gluetun)
+supports most VPN providers. With NordVPN over WireGuard:
+
+```yaml
+services:
+  gluetun:
+    image: qmcgaw/gluetun:v3
+    container_name: gluetun
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      VPN_SERVICE_PROVIDER: nordvpn
+      VPN_TYPE: wireguard
+      WIREGUARD_PRIVATE_KEY: "${NORDVPN_WIREGUARD_PRIVATE_KEY}"
+      SERVER_COUNTRIES: "Netherlands"
+    ports:
+      # GrimTorrenter's web UI. It goes here, not on grimtorrenter, because the two share
+      # gluetun's network. Change only the first number to use another port.
+      - "8080:8080"
+
+  grimtorrenter:
+    image: ghcr.io/raistlen-grim/grim-torrenter:latest
+    container_name: grimtorrenter
+    restart: unless-stopped
+    network_mode: "service:gluetun"
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      GRIMTORRENTER_LISTEN_PORT: "6881"
+    volumes:
+      - ./data/downloads:/app/downloads
+      - ./data/config:/app/config
+      - ./data/watch:/app/watch
+```
+
+- **The key** goes in a `.env` file next to the Compose file, which Compose reads automatically:
+  `NORDVPN_WIREGUARD_PRIVATE_KEY=...`. For NordVPN, generate an access token in your Nord
+  Account (NordVPN → *Set up NordVPN manually*), then
+  `curl -s -u token:<TOKEN> https://api.nordvpn.com/v1/users/services/credentials | jq -r .nordlynx_private_key`.
+  Other providers need other settings; gluetun's wiki lists them.
+- **There is no BitTorrent port mapping**, because a VPN without port forwarding can't pass
+  incoming connections anyway; see [Known limitations](#known-limitations).
+- **Turn off any VPN client on the machine itself**, or gluetun's connection runs inside it and
+  may be blocked by it.
+- **If gluetun restarts on its own** (an update, say), GrimTorrenter loses its network until it
+  is restarted too. Recreate the two together: `docker compose up -d`.
+
+To check it's working, both of these should print the VPN's address, not yours:
+
+```sh
+docker logs gluetun | grep -i "public ip"
+docker exec grimtorrenter wget -qO- https://ifconfig.me/ip; echo
+```
+
+#### A VPN on the machine itself
+
 **If the VPN runs on the same machine as Docker, the container may not be able to reach the
 internet at all.** Some VPN clients don't pass on traffic from Docker's own network (NordVPN on
 Linux is one); the machine itself works normally, but every torrent stays at 0 peers. The
@@ -141,8 +206,10 @@ curl -sS -o /dev/null -w "host: %{http_code}\n" https://example.com/
 docker exec grimtorrenter wget -q -T 10 -O /dev/null https://example.com/ && echo "container: ok" || echo "container: failed"
 ```
 
-If the host answers and the container fails, run the container on the host's network so its
-traffic goes through the VPN like any other program's. In the Compose file, add
+If the host answers and the container fails, either switch to a VPN container as above, or run
+the container on the host's network so its traffic goes through the VPN like any other
+program's. The host's network is simpler to set up, but the VPN client then also carries (and
+can block) every other service on the machine. In the Compose file, add
 `network_mode: host` and remove the `ports:` lines. Port mappings don't apply on the host's
 network, so the web UI is on the port the app itself listens on, 8080. To use another, set it
 with `QUARKUS_HTTP_PORT` and point the health check at it too:
