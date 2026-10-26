@@ -1,8 +1,41 @@
-# Keeps the release workflow's SHA-pinned actions current: a weekly pull request per update,
-# rewriting the SHA and its version comment together. See design_docs/0103.
+# Weekly version-update pull requests for every dependency source in the repo. See design_docs/0103
+# (actions) and design_docs/0105 (Maven, npm, Docker base images). Security updates for known
+# vulnerabilities come separately, from the repository's Dependabot security updates setting.
 version: 2
 updates:
+  # Keeps the release workflow's SHA-pinned actions current, rewriting the SHA and its version
+  # comment together.
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+
+  # The reactor pom and both module poms.
+  - package-ecosystem: maven
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      maven-minor-and-patch:
+        update-types: [minor, patch]
+
+  # Angular packages release in lockstep and have to move together, so they get their own group.
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    groups:
+      angular:
+        patterns: ['@angular/*', '@angular-devkit/*', '@schematics/angular']
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+
+  # Dockerfile base images. Major versions (Node, Java) are chosen deliberately and kept in step
+  # with the release workflow, so only minor/patch tag updates are proposed.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']

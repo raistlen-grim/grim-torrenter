@@ -33,7 +33,8 @@ Four jobs:
 can be moved to point at other code, and the publish job hands the Docker actions a token that
 can write the package; a pinned SHA can't change underneath it. `.github/dependabot.yml` opens a
 weekly pull request when a pinned action has a new release, so pinning doesn't mean falling
-behind. Only the publish job gets `packages: write`; the rest run with `contents: read`.
+behind ([[0105-dependency-updates-and-scanning]] extends it to Maven, npm and the Docker base
+images). Only the publish job gets `packages: write`; the rest run with `contents: read`.
 
 **The Dockerfile's two build stages run on the build platform** (`FROM --platform=$BUILDPLATFORM`).
 The Angular bundle and the Quarkus jars are platform-independent, so building them once natively
