@@ -16,7 +16,7 @@
     "@angular/compiler": "^21.2.0",
     "@angular/core": "^21.2.0",
     "@angular/forms": "^21.2.0",
-    "@angular/platform-browser": "^21.2.0",
+    "@angular/platform-browser": "^22.2.3",
     "@angular/router": "^21.2.0",
     "@primeuix/themes": "^2.0.3",
     "primeicons": "^8.0.0",
