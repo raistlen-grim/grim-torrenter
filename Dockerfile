@@ -14,7 +14,7 @@ COPY frontend/ .
 RUN npx ng build --configuration production
 
 # ---- Backend build ----
-FROM --platform=$BUILDPLATFORM maven:3.9-eclipse-temurin-25 AS backend-build
+FROM --platform=$BUILDPLATFORM maven:3.9-eclipse-temurin-26 AS backend-build
 WORKDIR /build
 COPY pom.xml .
 COPY grimtorrenter-engine/pom.xml grimtorrenter-engine/pom.xml
