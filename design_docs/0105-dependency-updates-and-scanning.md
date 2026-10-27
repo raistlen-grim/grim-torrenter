@@ -23,6 +23,9 @@ Angular package or the Alpine/Temurin base would go unnoticed until someone look
      bumps are grouped into one pull request.
    - `npm` at `/frontend`. Angular's packages are grouped on their own, since they release in
      lockstep and a partial bump doesn't build; other minor/patch bumps are grouped together.
+     Major versions of Angular and PrimeNG are ignored (added 2026-10-27, see
+     [[0106-stay-on-angular-21-and-primeng-21]]): security updates don't follow the group, and
+     single-package Angular 22 bumps left the tree unresolvable.
    - `docker` at `/`, the Dockerfile's three base images. Major versions are ignored: the Node and
      Java majors are chosen deliberately and must match the release workflow's `node-version` and
      `java-version`, so moving them is a manual change to both places.

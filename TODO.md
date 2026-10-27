@@ -98,6 +98,14 @@ are not listed here.
   **Done (2026-10-17):** pause/resume return the torrent and the UI applies it at once
   (`design_docs/0097`). Remove already dropped the row locally.
 
+## Angular 22 + an MIT PrimeNG replacement (2026-10-27)
+
+Staying on Angular 21 + PrimeNG 21 for now (`design_docs/0106`). PrimeNG 22 is commercially
+licensed; the MIT fork is OpenNG's `@openng/optimus-ui`. Revisit when Optimus UI has a few more
+months of steady releases, or as Angular 21 support nears its end (around mid-2027), whichever
+comes first. The upgrade includes TypeScript 6.0, the import rename, a check of the PrimeNG
+styling hooks (0032), and removing the `undici` override from `frontend/package.json`.
+
 ## Details panel along the bottom instead of the side (2026-10-19)
 
 Idea, not decided: move the details panel from the right-hand side (design_docs/0044's

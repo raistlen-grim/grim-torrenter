@@ -20,6 +20,8 @@ updates:
         update-types: [minor, patch]
 
   # Angular packages release in lockstep and have to move together, so they get their own group.
+  # Angular and PrimeNG majors are ignored: a major is a deliberate, manual upgrade via `ng update`
+  # (design_docs/0106), and single-package major bumps leave the tree unresolvable.
   - package-ecosystem: npm
     directory: /frontend
     schedule:
@@ -29,6 +31,15 @@ updates:
         patterns: ['@angular/*', '@angular-devkit/*', '@schematics/angular']
       npm-minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      - dependency-name: '@angular/*'
+        update-types: ['version-update:semver-major']
+      - dependency-name: '@angular-devkit/*'
+        update-types: ['version-update:semver-major']
+      - dependency-name: '@schematics/angular'
+        update-types: ['version-update:semver-major']
+      - dependency-name: 'primeng'
+        update-types: ['version-update:semver-major']
 
   # Dockerfile base images. Major versions (Node, Java) are chosen deliberately and kept in step
   # with the release workflow, so only minor/patch tag updates are proposed.
