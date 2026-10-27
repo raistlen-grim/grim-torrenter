@@ -22,7 +22,7 @@
   <properties>
     <!-- 3.31 introduced Java 25 support; 3.38.2 is the latest stable release
          as of 2026-08-22 (3.33.0 was no longer available). -->
-    <quarkus.platform.version>3.38.2</quarkus.platform.version>
+    <quarkus.platform.version>3.40.1.1</quarkus.platform.version>
     <quarkus.platform.group-id>io.quarkus.platform</quarkus.platform.group-id>
     <quarkus.platform.artifact-id>quarkus-bom</quarkus.platform.artifact-id>
   </properties>
