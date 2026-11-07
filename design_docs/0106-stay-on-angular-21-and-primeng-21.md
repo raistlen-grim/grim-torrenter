@@ -62,6 +62,26 @@ either of these happens first:
 A security advisory that only an Angular 22 release fixes, and that reaches the shipped bundle,
 would also bring it forward. That upgrade gets its own design doc.
 
+## Status checks
+
+**2026-11-07: no trigger met, decision stands.** Next check around January–February 2027.
+
+- **PrimeNG 22 is still commercial** (PrimeUI license; 22.1.4 released 2026-10-22). PrimeTek
+  says existing MIT versions stay MIT. The installed `primeng@21.1.10` `LICENSE.md` confirms
+  MIT for community versions; the commercial terms in that file apply only to `-lts` builds.
+- **PrimeNG 21 patches may have stopped.** No 21.x release since `21.1.10` (2026-09-09), and
+  sources disagree on whether 21.x still gets security fixes. If it doesn't, staying on 21
+  depends on Angular 21's support window and on no fix being needed. That argues for planning
+  the move in the first half of 2027 rather than waiting until mid-2027.
+- **Optimus UI hasn't released since this doc was written.** Latest is 2.0.2 (2026-08-28,
+  Angular `^22.1.4`), with a `v1-lts` 1.0.2 line for Angular 21. Four releases in July–August,
+  then none for about ten weeks, so the "steady releases" trigger isn't met. The repository is
+  still active (about 25 commits since September, 30 contributors, last push 2026-11-06), so it
+  looks paused between releases rather than abandoned.
+- **Migration cost is lower than first assumed:** Optimus UI ships a `migrate-from-primeng`
+  schematic that rewrites imports. It probably won't cover the PrimeNG-specific styling hooks
+  from [[0032-style-guide-and-primeng-theme]], which still need a manual pass.
+
 ## Alternatives considered
 
 - **Angular 22 + PrimeNG 22 under the commercial license.** Rejected for the AGPL reasons above.
