@@ -20,7 +20,8 @@ updates:
         update-types: [minor, patch]
 
   # Angular packages release in lockstep and have to move together, so they get their own group.
-  # Angular and PrimeNG majors are ignored: a major is a deliberate, manual upgrade via `ng update`
+  # Angular and PrimeNG majors (plus the typescript/vitest/@primeuix majors they pin) are ignored:
+  # a major is a deliberate, manual upgrade via `ng update`
   # (design_docs/0106), and single-package major bumps leave the tree unresolvable.
   - package-ecosystem: npm
     directory: /frontend
@@ -39,6 +40,15 @@ updates:
       - dependency-name: '@schematics/angular'
         update-types: ['version-update:semver-major']
       - dependency-name: 'primeng'
+        update-types: ['version-update:semver-major']
+      # Majors that @angular/build 21 or PrimeNG 21 can't take: @angular/build 21 peers on
+      # typescript >=5.9 <6.0 and vitest ^4, and PrimeNG 21 is built on @primeuix 2.x. They move
+      # with the Angular 22 upgrade (design_docs/0106).
+      - dependency-name: 'typescript'
+        update-types: ['version-update:semver-major']
+      - dependency-name: 'vitest'
+        update-types: ['version-update:semver-major']
+      - dependency-name: '@primeuix/*'
         update-types: ['version-update:semver-major']
 
   # Dockerfile base images. Major versions (Node, Java) are chosen deliberately and kept in step

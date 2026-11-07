@@ -25,7 +25,9 @@ Angular package or the Alpine/Temurin base would go unnoticed until someone look
      lockstep and a partial bump doesn't build; other minor/patch bumps are grouped together.
      Major versions of Angular and PrimeNG are ignored (added 2026-10-27, see
      [[0106-stay-on-angular-21-and-primeng-21]]): security updates don't follow the group, and
-     single-package Angular 22 bumps left the tree unresolvable.
+     single-package Angular 22 bumps left the tree unresolvable. Majors of `typescript`, `vitest`
+     and `@primeuix/*`, which the Angular 21 / PrimeNG 21 line pins, were added to the ignore
+     list on 2026-11-07 for the same reason.
    - `docker` at `/`, the Dockerfile's three base images. Major versions are ignored: the Node and
      Java majors are chosen deliberately and must match the release workflow's `node-version` and
      `java-version`, so moving them is a manual change to both places.

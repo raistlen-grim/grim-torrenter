@@ -1,6 +1,6 @@
 # 0106 - Stay on Angular 21 and PrimeNG 21 for now
 
-Status: Accepted (2026-10-27). Revises the npm part of [[0105-dependency-updates-and-scanning]].
+Status: Accepted (2026-10-27; ignore list extended 2026-11-07). Revises the npm part of [[0105-dependency-updates-and-scanning]].
 Applies [[0051-stability-as-a-standing-consideration]].
 
 ## Problem
@@ -40,6 +40,17 @@ major upgrade:
 2. **Dependabot ignores major versions** of `@angular/*`, `@angular-devkit/*`,
    `@schematics/angular` and `primeng`. A major is done by hand with `ng update`, which also runs
    the framework's code migrations, rather than by merging single-package bumps.
+3. **Dependabot also ignores majors of the packages pinned by the Angular 21 / PrimeNG 21 line**
+   (added 2026-11-07): `typescript` (`@angular/build@21` peers on `>=5.9 <6.0`), `vitest`
+   (`@angular/build@21` peers on `^4.0.8`) and `@primeuix/*` (PrimeNG 21 depends on
+   `@primeuix/styles` `^2`). Dependabot had opened typescript 7, vitest 5 and
+   `@primeuix/themes` 3 pull requests that merged cleanly but left the tree unresolvable, the
+   same failure as the Angular 22 bumps. These move as part of the Angular 22 upgrade, not on
+   their own. Minor and patch updates for all three still come through.
+
+Ignore rules only stop scheduled version updates. A security update that needs one of these
+majors still opens a pull request; treat it as the advisory trigger under "When to revisit"
+below, not as something to merge on its own.
 
 **When to revisit:** move to Angular 22 + Optimus UI (or whatever the MIT fork is by then) when
 either of these happens first:
@@ -71,4 +82,6 @@ traced to `undici` means dropping the override.
 
 **Cleanup:** remove the `undici` override when moving to Angular 22, whose `@angular/build`
 depends on a fixed `undici`. Left in place, it would keep overriding versions newer releases
-choose for themselves.
+choose for themselves. The same upgrade should remove the `typescript`, `vitest` and `@primeuix/*`
+major-version ignores in `.github/dependabot.yml` (keeping only the Angular and PrimeNG ones, if
+the project is still on the manual-major policy), or those packages will quietly fall behind.
