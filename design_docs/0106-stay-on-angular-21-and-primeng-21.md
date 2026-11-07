@@ -1,6 +1,6 @@
 # 0106 - Stay on Angular 21 and PrimeNG 21 for now
 
-Status: Accepted (2026-10-27; ignore list extended 2026-11-07). Revises the npm part of [[0105-dependency-updates-and-scanning]].
+Status: Accepted (2026-10-27; ignore list extended and advisory handling added 2026-11-07). Revises the npm part of [[0105-dependency-updates-and-scanning]].
 Applies [[0051-stability-as-a-standing-consideration]].
 
 ## Problem
@@ -48,9 +48,34 @@ major upgrade:
    same failure as the Angular 22 bumps. These move as part of the Angular 22 upgrade, not on
    their own. Minor and patch updates for all three still come through.
 
-Ignore rules only stop scheduled version updates. A security update that needs one of these
-majors still opens a pull request; treat it as the advisory trigger under "When to revisit"
-below, not as something to merge on its own.
+Ignore rules only stop scheduled version updates. **Security updates don't follow them**: on
+2026-11-07, with the Angular-major ignore already on `main`, Dependabot opened #19, which moved
+`@angular/cli` to 22.2.6 to drop a vulnerable transitive `minimatch`. Expect more pull requests
+like this, which bump a parent package to Angular 22 to fix something underneath it. Close them
+instead of merging, and handle the advisory with the steps below. Only an advisory that reaches
+the shipped bundle counts as the trigger under "When to revisit".
+
+4. **A frontend advisory with no Angular 21 fix is handled in one of two ways** (added
+   2026-11-07):
+   - **Override**, as for `undici`, when the fixed version is a patch or minor move within what
+     the dependents already accept, and the code is exercised by `ng build` / `ng test`, so the
+     local build and test pass actually checks the override.
+   - **Dismiss as tolerable risk** in the Dependabot alert, with a comment pointing here, when
+     the fix needs a major version the dependents don't ask for, *and* the vulnerable code is
+     dev-only and doesn't run during `ng build`, `ng serve` or tests. Forcing a major there
+     risks a break that nothing in the build or tests would catch.
+
+   **Dismissed so far:**
+   - **Alert #77, `minimatch` 10.2.6** (GHSA-g3hv-75wg-m249, medium; fixed in 11.0.1). It's
+     only reached through `@angular/cli` → `pacote` (`npm-packlist`/`ignore-walk`,
+     `sigstore`/`tuf-js`, `cacache`/`glob`), the package-fetch path used by `ng add` and
+     `ng update`. The three direct dependents ask for `minimatch` `^10`, so an override would be a
+     major jump on code the tests never run. The advisory also needs attacker-supplied glob
+     patterns and `optimizationLevel >= 2` (the default is 1). Whether these callers ever set it
+     wasn't checked.
+
+   **Cleanup:** the Angular 22 upgrade re-checks every dismissed alert. If the new tree still
+   has the vulnerable version, the alert is reopened and handled again.
 
 **When to revisit:** move to Angular 22 + Optimus UI (or whatever the MIT fork is by then) when
 either of these happens first:
@@ -89,6 +114,13 @@ would also bring it forward. That upgrade gets its own design doc.
   three-month-old fork, and Angular 21 isn't under any time pressure yet.
 - **Leave the audit warning alone.** `undici` here is build-time only, so the risk is low. But a
   standing high-severity warning trains people to ignore audit output, and the override is cheap.
+  For advisories where an override isn't cheap or can't be tested, see decision point 4: they're
+  dismissed with a recorded reason rather than left as a standing warning, which keeps open
+  alerts meaningful.
+- **Override `minimatch` to `^11.0.1` like `undici`.** Rejected for alert #77. It's a major jump
+  under three packages that ask for `^10`, and the affected code (`ng add` / `ng update`
+  package fetching) isn't run by `ng build` or `ng test`, so a break would only show the next
+  time someone adds or updates a package.
 - **`npm audit fix --force`.** Installs `@angular/build@22` alone, which is the broken mixed tree
   this started from.
 
